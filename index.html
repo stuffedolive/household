@@ -50,7 +50,7 @@
 <div id="root"></div>
 
 <script type="text/plain" id="app-source">
-const { useState, useEffect, useMemo } = React;
+const { useState, useEffect, useMemo, useRef } = React;
 
 /* ---------- design tokens ---------- */
 const C = {
@@ -140,7 +140,7 @@ function App() {
   const [authReady, setAuthReady] = useState(null);
   const [me, setMe] = useState(null);
   const [tasks, setTasks] = useState(null);
-  const [config, setConfig] = useState({ rooms: DEFAULT_ROOMS, categories: DEFAULT_CATEGORIES });
+  const [config, setConfig] = useState({ rooms: DEFAULT_ROOMS, sharedCategories: DEFAULT_CATEGORIES, personalCategories: { jade: DEFAULT_CATEGORIES, john: DEFAULT_CATEGORIES } });
   const [view, setView] = useState("grid");
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -183,16 +183,15 @@ function App() {
       (doc) => {
         setConfigError(false);
         const d = doc.data() || {};
-        // merge in anything from the old split shared/personal category lists so nothing already created gets lost
-        const merged = [
-          ...(d.categories || []),
-          ...(d.sharedCategories || []),
-          ...((d.personalCategories && d.personalCategories.jade) || []),
-          ...((d.personalCategories && d.personalCategories.john) || []),
-        ];
+        // fold in anything from the brief unified-categories period so nothing already created gets lost
+        const unifiedExtras = sanitizeList(d.categories, []);
         setConfig({
           rooms: sanitizeList(d.rooms, DEFAULT_ROOMS),
-          categories: sanitizeList(merged, DEFAULT_CATEGORIES),
+          sharedCategories: sanitizeList([...(d.sharedCategories || []), ...unifiedExtras], DEFAULT_CATEGORIES),
+          personalCategories: {
+            jade: sanitizeList([...((d.personalCategories && d.personalCategories.jade) || []), ...unifiedExtras], DEFAULT_CATEGORIES),
+            john: sanitizeList([...((d.personalCategories && d.personalCategories.john) || []), ...unifiedExtras], DEFAULT_CATEGORIES),
+          },
         });
       },
       (err) => { console.error("config sync error — likely a Firestore rules issue on /meta/config:", err); setConfigError(true); }
@@ -201,14 +200,22 @@ function App() {
   }, [authReady]);
 
   const addRoom = (name) => CONFIG_DOC.set({ rooms: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
-  const addCategory = (name) => CONFIG_DOC.set({ categories: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
+  const addCategory = (scope, owner, name) => {
+    if (scope === "shared") CONFIG_DOC.set({ sharedCategories: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
+    else CONFIG_DOC.set({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
+  };
   const deleteRoom = (name) => {
     CONFIG_DOC.update({ rooms: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
     (tasks || []).filter((t) => t.room === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ room: null }).catch(console.error));
   };
-  const deleteCategory = (name) => {
-    CONFIG_DOC.update({ categories: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
-    (tasks || []).filter((t) => t.category === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
+  const deleteCategory = (scope, owner, name) => {
+    if (scope === "shared") {
+      CONFIG_DOC.update({ sharedCategories: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
+      (tasks || []).filter((t) => t.scope === "shared" && t.category === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
+    } else {
+      CONFIG_DOC.update({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
+      (tasks || []).filter((t) => t.scope === "personal" && t.owner === owner && t.category === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
+    }
   };
 
   const upsertTask = (task) => {
@@ -438,9 +445,10 @@ function FilterChip({ active, onClick, label }) {
 
 /* ---------- priority grid ---------- */
 function PriorityGrid({ tasks, me, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
+  const order = [me, ...Object.keys(PEOPLE).filter((p) => p !== me)];
   return (
     <div style={{ padding: 16, overflowY: "auto", height: "calc(100% - 96px)" }}>
-      {Object.keys(PEOPLE).map((person) => (
+      {order.map((person) => (
         <div key={person} style={{ marginBottom: 22 }}>
           <div style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600, color: C.ink, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
             {PEOPLE[person]}{person === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
@@ -521,7 +529,7 @@ function NeedsDetailsList({ tasks, onPick, onClose }) {
 /* ---------- to-do list: a simple first pass — urgent/pressing items across everything visible to me ---------- */
 const DAY_MS = 86400000;
 const SOON_DAYS = 3; // "due soon" window
-const STALE_DAYS = 60; // 2 months untouched = stale
+const STALE_DAYS_DEFAULT = 60; // fallback for one-off (non-recurring) tasks
 const LINGER_MS = 24 * 3600 * 1000; // how long a just-completed task stays visible
 
 function urgencyBand(dueDate, todayStr) {
@@ -531,41 +539,44 @@ function urgencyBand(dueDate, todayStr) {
   if (diff <= SOON_DAYS) return "soon";
   return "later";
 }
-function importanceBand(priority) { return priority || "none"; }
+/* approximate recurrence period in days, or null for one-off tasks */
+function recurrencePeriodDays(rec) {
+  const r = normRecurrence(rec);
+  if (r.unit === "none") return null;
+  if (r.unit === "day") return r.amount;
+  if (r.unit === "week") return r.amount * 7;
+  if (r.unit === "month") return r.amount * 30;
+  return null;
+}
 
-/* explicit tier ladder — first match wins. Encodes: overdue+(high|med) is the top tier outright;
-   overdue+low is deliberately ranked below soon+high, not just below overdue+high/med. */
-const TIER_RULES = [
-  (u, i) => u === "overdue" && (i === "high" || i === "med"),
-  (u, i) => u === "soon" && i === "high",
-  (u, i) => u === "overdue" && i === "low",
-  (u, i) => u === "soon" && i === "med",
-  (u, i) => u === "soon" && i === "low",
-  (u, i) => (u === "later" || u === "none") && i === "high",
-  (u, i) => (u === "later" || u === "none") && i === "med",
-  (u, i) => (u === "later" || u === "none") && i === "low",
-];
+/* Strict two-level ranking: high/med importance ALWAYS outranks low/none, with zero exceptions.
+   Within that group, urgency (overdue > soon > later) decides order; importance is only a fine tiebreak. */
 function tierFor(dueDate, priority, todayStr) {
-  const u = urgencyBand(dueDate, todayStr), i = importanceBand(priority);
-  const idx = TIER_RULES.findIndex((rule) => rule(u, i));
-  return idx === -1 ? TIER_RULES.length : idx;
+  const group = (priority === "high" || priority === "med") ? 0 : 1; // 0 = not-low, always first
+  const u = urgencyBand(dueDate, todayStr);
+  const urgencyRank = u === "overdue" ? 0 : u === "soon" ? 1 : 2;
+  const tie = priority === "high" ? 0 : priority === "med" ? 1 : priority === "low" ? 2 : 3;
+  return group * 100 + urgencyRank * 10 + tie;
 }
 
 /* a compact row representing a project's next action, standing in for the whole project */
-function ActionAsRow({ task, action, onToggleAction, onEdit }) {
+function ActionAsRow({ task, action, onToggleAction, onEdit, onSnooze }) {
   const overdue = action.dueDate && action.dueDate < new Date().toISOString().slice(0, 10);
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
   return (
     <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: "11px 12px", marginBottom: 8 }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
         <button onClick={() => onToggleAction(task.id, action.id)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${imp ? imp.color : C.inkSoft}`, background: "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, marginTop: 1 }} />
-        <div style={{ flex: 1, minWidth: 0 }} onClick={() => onEdit(task)}>
-          <div style={{ fontSize: 14, color: C.ink, fontWeight: 600 }}>{action.title}</div>
-          <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 2 }}>↳ {task.title}</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5, alignItems: "center" }}>
-            {imp && <Tag color={imp.color}>{imp.label}</Tag>}
-            <span style={{ fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, fontWeight: overdue ? 700 : 500 }}>{fmtDate(action.dueDate || task.dueDate)}</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div onClick={() => onEdit(task)} style={{ cursor: "pointer" }}>
+            <div style={{ fontSize: 14, color: C.ink, fontWeight: 600 }}>{action.title}</div>
+            <div style={{ fontSize: 11, color: C.inkSoft, marginTop: 2 }}>↳ {task.title}</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5, alignItems: "center" }}>
+              {imp && <Tag color={imp.color}>{imp.label}</Tag>}
+              <span style={{ fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, fontWeight: overdue ? 700 : 500 }}>{fmtDate(action.dueDate || task.dueDate)}</span>
+            </div>
           </div>
+          {onSnooze && <div style={{ marginTop: 6 }}><SnoozeControl onSnooze={onSnooze} /></div>}
         </div>
       </div>
     </div>
@@ -584,9 +595,24 @@ function snoozeTarget(kind) {
 }
 const notStartableYet = (t, todayStr) => t.startsOnDue && t.dueDate && t.dueDate > todayStr;
 
+/* shared "not today" control — used on the hero card and, in overwhelmed mode, on every row */
+function SnoozeControl({ onSnooze, light }) {
+  const [open, setOpen] = useState(false);
+  const textColor = light ? "rgba(255,255,255,0.65)" : C.inkSoft;
+  if (!open) {
+    return <button onClick={() => setOpen(true)} style={{ background: "none", border: "none", color: textColor, fontSize: 11.5, textDecoration: "underline", cursor: "pointer", padding: 0 }}>Not today</button>;
+  }
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {[["tomorrow", "Tomorrow"], ["next-weekend", "Next weekend"], ["next-month", "Next month"]].map(([k, l]) => (
+        <button key={k} onClick={() => { onSnooze(k); setOpen(false); }} style={{ background: light ? "rgba(255,255,255,0.14)" : C.card, color: light ? C.white : C.ink, border: light ? "none" : `1px solid ${C.rule}`, borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer" }}>{l}</button>
+      ))}
+    </div>
+  );
+}
+
 /* prominent hero card for "overwhelmed" mode — visually set apart from everything else */
 function HeroCard({ pick, onToggle, onToggleAction, onEdit, onSnooze }) {
-  const [snoozing, setSnoozing] = useState(false);
   const isChore = pick.kind === "chore";
   const task = isChore ? pick.item : pick.item.task;
   const action = isChore ? null : pick.item.action;
@@ -594,33 +620,32 @@ function HeroCard({ pick, onToggle, onToggleAction, onEdit, onSnooze }) {
   const dueDate = isChore ? task.dueDate : (action.dueDate || task.dueDate);
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
   return (
-    <div style={{ background: C.ink, color: C.white, borderRadius: 20, padding: "34px 24px", textAlign: "center", boxShadow: "0 14px 34px rgba(43,42,40,0.3)" }}>
+    <div style={{ background: C.ink, color: C.white, borderRadius: 20, padding: "30px 24px", textAlign: "center", boxShadow: "0 14px 34px rgba(43,42,40,0.3)", marginBottom: 18 }}>
+      <div style={{ fontSize: 10, opacity: 0.55, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>Most pressing right now</div>
       {!isChore && <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>from {task.title}</div>}
       {imp && <div style={{ display: "inline-block", fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", background: imp.color, color: C.white, padding: "3px 11px", borderRadius: 20, marginBottom: 14 }}>{imp.label} importance</div>}
-      <div style={{ fontFamily: "Fraunces, serif", fontSize: 28, fontWeight: 600, lineHeight: 1.25, marginBottom: 12 }}>{title}</div>
-      <div style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 13, opacity: 0.8, marginBottom: 26 }}>{fmtDate(dueDate)}</div>
-      <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+      <div style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, lineHeight: 1.25, marginBottom: 12 }}>{title}</div>
+      <div style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 13, opacity: 0.8, marginBottom: 22 }}>{fmtDate(dueDate)}</div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 18 }}>
         <button onClick={() => (isChore ? onToggle(task) : onToggleAction(task.id, action.id))} style={{ background: C.white, color: C.ink, border: "none", borderRadius: 10, padding: "11px 22px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Done</button>
         <button onClick={() => onEdit(task)} style={{ background: "transparent", color: C.white, border: "1px solid rgba(255,255,255,0.4)", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>Open</button>
       </div>
-      <div style={{ marginTop: 20 }}>
-        {!snoozing ? (
-          <button onClick={() => setSnoozing(true)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.65)", fontSize: 12, textDecoration: "underline", cursor: "pointer" }}>Not today</button>
-        ) : (
-          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
-            {[["tomorrow", "Tomorrow"], ["next-weekend", "Next weekend"], ["next-month", "Next month"]].map(([k, l]) => (
-              <button key={k} onClick={() => { onSnooze(k); setSnoozing(false); }} style={{ background: "rgba(255,255,255,0.14)", color: C.white, border: "none", borderRadius: 8, padding: "7px 13px", fontSize: 12, cursor: "pointer" }}>{l}</button>
-            ))}
-          </div>
-        )}
-      </div>
+      <div style={{ display: "flex", justifyContent: "center" }}><SnoozeControl onSnooze={onSnooze} light /></div>
     </div>
   );
+}
+
+function upcomingLeadDays(periodDays) {
+  if (periodDays >= 300) return 30; // yearly-ish
+  if (periodDays >= 150) return 14; // ~6-monthly
+  if (periodDays >= 7) return 3;   // weekly through ~5-monthly
+  return 1;                          // more frequent than weekly
 }
 
 function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, onSetTaskDueDate }) {
   const [viewAs, setViewAs] = useState(me);
   const [showStale, setShowStale] = useState(false);
+  const [showUpcoming, setShowUpcoming] = useState(false);
   const [overwhelmed, setOverwhelmed] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const now = Date.now();
@@ -640,12 +665,26 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
     [assignedToViewAs, now]
   );
 
+  // upcoming: recurring, "due date is start date" tasks approaching their window — computed before the
+  // not-startable-yet exclusion below, since this IS how those tasks get any visibility before they're due
+  const upcoming = useMemo(() => assignedToViewAs.filter((t) => {
+    if (t.completed || !t.startsOnDue || !t.dueDate || t.dueDate <= today) return false;
+    const period = recurrencePeriodDays(t.recurrence);
+    if (!period) return false;
+    const daysUntil = Math.round((new Date(t.dueDate + "T00:00:00") - new Date(today + "T00:00:00")) / DAY_MS);
+    return daysUntil <= upcomingLeadDays(period);
+  }).sort((a, b) => a.dueDate.localeCompare(b.dueDate)), [assignedToViewAs, today]);
+
   const active = useMemo(() => assignedToViewAs.filter((t) => !t.completed && !notStartableYet(t, today)), [assignedToViewAs, today]);
 
-  // stale: has a due date, low/no importance, not saved/touched in a long time
-  const stale = useMemo(() => active.filter((t) =>
-    t.dueDate && (t.priority === "low" || !t.priority) && (now - (t.updatedAt || t.createdAt || 0) > STALE_DAYS * DAY_MS)
-  ), [active, now]);
+  // stale: low/no importance only, overdue by more than half its recurrence period (60 days for one-off tasks)
+  const stale = useMemo(() => active.filter((t) => {
+    if (!t.dueDate || !(t.priority === "low" || !t.priority)) return false;
+    const daysOverdue = Math.round((new Date(today + "T00:00:00") - new Date(t.dueDate + "T00:00:00")) / DAY_MS);
+    const period = recurrencePeriodDays(t.recurrence);
+    const threshold = period ? period * 0.5 : STALE_DAYS_DEFAULT;
+    return daysOverdue > threshold;
+  }), [active, today]);
   const staleIds = new Set(stale.map((t) => t.id));
 
   // chores: dated, not stale, ranked by tier
@@ -658,23 +697,24 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
     }), [active, today, staleIds]
   );
 
-  // projects: only ones pinned in the Priorities grid for the viewed person, shown via their next action, only if a date exists somewhere
+  // projects: only ones pinned in the Priorities grid for the viewed person — their first/next action always
+  // shows, even with no priority or due date of its own (falls back to the project's own date, or no date at all)
   const projectItems = useMemo(() => {
     const items = active
       .filter((t) => t.listType === "project" && t.gridBucket && t.gridBucket[viewAs] && !staleIds.has(t.id))
       .map((t) => ({ task: t, action: nextAction(t) }))
-      .filter(({ task, action }) => action && (action.dueDate || task.dueDate));
+      .filter(({ action }) => !!action);
     return items.sort((a, b) => {
       const da = a.action.dueDate || a.task.dueDate, db = b.action.dueDate || b.task.dueDate;
       const ta = tierFor(da, a.task.priority, today), tb = tierFor(db, b.task.priority, today);
       if (ta !== tb) return ta - tb;
-      return da.localeCompare(db);
+      return (da || "9999").localeCompare(db || "9999");
     });
   }, [active, viewAs, today, staleIds]);
 
   const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate };
 
-  // the single most urgent thing across chores + project actions, for the overwhelmed view
+  // the single most urgent thing across chores + project actions, for the overwhelmed spotlight
   const topPick = useMemo(() => {
     const choreTop = chores[0] ? { kind: "chore", tier: tierFor(chores[0].dueDate, chores[0].priority, today), item: chores[0] } : null;
     const projTop = projectItems[0] ? { kind: "project", tier: tierFor(projectItems[0].action.dueDate || projectItems[0].task.dueDate, projectItems[0].task.priority, today), item: projectItems[0] } : null;
@@ -684,22 +724,13 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
     return candidates[0];
   }, [chores, projectItems, today]);
 
-  const handleSnooze = (kind) => {
-    if (!topPick) return;
-    const target = snoozeTarget(kind);
-    if (topPick.kind === "chore") onSetTaskDueDate(topPick.item.id, target);
-    else onSetActionDueDate(topPick.item.task.id, topPick.item.action.id, target);
-  };
+  const snoozeChore = (task, kind) => onSetTaskDueDate(task.id, snoozeTarget(kind));
+  const snoozeProjectAction = (task, action, kind) => onSetActionDueDate(task.id, action.id, snoozeTarget(kind));
 
-  if (overwhelmed) {
-    return (
-      <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "18px 16px 90px" }}>
-        <button onClick={() => setOverwhelmed(false)} style={{ border: "none", background: "none", color: C.inkSoft, fontSize: 12, cursor: "pointer", marginBottom: 18, textDecoration: "underline" }}>← back to the full list</button>
-        {!topPick && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing urgent — you're clear.</div>}
-        {topPick && <HeroCard pick={topPick} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={handleSnooze} />}
-      </div>
-    );
-  }
+  const displayChores = overwhelmed && topPick && topPick.kind === "chore" ? chores.filter((t) => t.id !== topPick.item.id) : chores;
+  const displayProjects = overwhelmed && topPick && topPick.kind === "project"
+    ? projectItems.filter(({ task, action }) => !(task.id === topPick.item.task.id && action.id === topPick.item.action.id))
+    : projectItems;
 
   return (
     <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
@@ -710,31 +741,32 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
           </button>
         ))}
       </div>
-      <button onClick={() => setOverwhelmed(true)} style={{ width: "100%", border: `1px solid ${C.rule}`, background: C.card, color: C.inkSoft, borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer", marginBottom: 10 }}>I'm overwhelmed — just show me one thing</button>
+      <button onClick={() => setOverwhelmed((o) => !o)} style={{ width: "100%", border: `1px solid ${C.rule}`, background: overwhelmed ? C.ink : C.card, color: overwhelmed ? C.white : C.inkSoft, borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer", marginBottom: 10 }}>
+        {overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — highlight the top thing"}
+      </button>
       {viewAs !== me && <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10 }}>Only {PEOPLE[viewAs]}'s shared tasks — their personal list isn't visible to you.</div>}
 
-      {justDone.length > 0 && (
-        <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 11, color: C.sageDeep, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Just done ✓</div>
-          {justDone.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
-        </div>
+      {overwhelmed && topPick && (
+        <HeroCard pick={topPick} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={(kind) => (topPick.kind === "chore" ? snoozeChore(topPick.item, kind) : snoozeProjectAction(topPick.item.task, topPick.item.action, kind))} />
       )}
 
-      {chores.length === 0 && projectItems.length === 0 && justDone.length === 0 && (
+      {displayChores.length === 0 && displayProjects.length === 0 && justDone.length === 0 && (
         <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing pressing right now.</div>
       )}
 
-      {chores.length > 0 && (
+      {displayChores.length > 0 && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Chores</div>
-          {chores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+          {displayChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? (kind) => snoozeChore(t, kind) : undefined} />)}
         </div>
       )}
 
-      {projectItems.length > 0 && (
+      {displayProjects.length > 0 && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Projects</div>
-          {projectItems.map(({ task, action }) => <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} />)}
+          {displayProjects.map(({ task, action }) => (
+            <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? (kind) => snoozeProjectAction(task, action, kind) : undefined} />
+          ))}
         </div>
       )}
 
@@ -744,12 +776,32 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
         </button>
         {showStale && (
           <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Has a due date, low or no importance, untouched for {STALE_DAYS}+ days.</div>
+            <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Low or no importance, overdue by more than half its usual cycle (or 60+ days for one-off tasks).</div>
             {stale.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing stale right now.</div>}
             {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
           </div>
         )}
       </div>
+
+      <div style={{ marginTop: 10 }}>
+        <button onClick={() => setShowUpcoming((s) => !s)} style={{ width: "100%", border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }}>
+          {showUpcoming ? "Hide" : "Show"} upcoming ({upcoming.length})
+        </button>
+        {showUpcoming && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Recurring, can't-start-early tasks whose window is approaching.</div>
+            {upcoming.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing coming up yet.</div>}
+            {upcoming.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+          </div>
+        )}
+      </div>
+
+      {justDone.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontSize: 11, color: C.sageDeep, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Just done ✓</div>
+          {justDone.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+        </div>
+      )}
     </div>
   );
 }
@@ -826,17 +878,32 @@ function QueueView(props) {
       ) : (
         <CategoryBoard
           tasks={sorted} rowProps={rowProps}
-          categories={withOrphans(config.categories, sorted, "category")}
-          onAddCategory={onAddCategory} onDeleteCategory={onDeleteCategory}
+          categories={withOrphans(projectScope === "shared" ? config.sharedCategories : config.personalCategories[me], sorted, "category")}
+          onAddCategory={(name) => onAddCategory(projectScope, me, name)}
+          onDeleteCategory={(name) => onDeleteCategory(projectScope, me, name)}
         />
       )}
     </div>
   );
 }
 
+/* horizontally scrolling row with tap-to-scroll arrows — helps when there are many sections */
+function ScrollableRow({ children }) {
+  const ref = useRef(null);
+  const scrollBy = (dir) => { if (ref.current) ref.current.scrollBy({ left: dir * 260, behavior: "smooth" }); };
+  return (
+    <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
+      <div ref={ref} style={{ height: "100%", overflowX: "auto", overflowY: "hidden", padding: "12px 38px 90px", display: "flex", gap: 12 }}>
+        {children}
+      </div>
+      <button onClick={() => scrollBy(-1)} aria-label="Scroll left" style={{ position: "absolute", left: 2, top: "42%", transform: "translateY(-50%)", width: 28, height: 28, borderRadius: "50%", border: "none", background: "rgba(43,42,40,0.55)", color: C.white, fontSize: 15, cursor: "pointer", zIndex: 2 }}>‹</button>
+      <button onClick={() => scrollBy(1)} aria-label="Scroll right" style={{ position: "absolute", right: 2, top: "42%", transform: "translateY(-50%)", width: 28, height: 28, borderRadius: "50%", border: "none", background: "rgba(43,42,40,0.55)", color: C.white, fontSize: 15, cursor: "pointer", zIndex: 2 }}>›</button>
+    </div>
+  );
+}
 function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom }) {
   return (
-    <div style={{ flex: 1, overflowX: "auto", overflowY: "hidden", padding: "12px 16px 90px", display: "flex", gap: 12 }}>
+    <ScrollableRow>
       {rooms.map((room) => {
         const roomTasks = tasks.filter((t) => (t.room || "Unassigned") === room);
         const deletable = room !== "Unassigned";
@@ -858,12 +925,12 @@ function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom }) {
         );
       })}
       <AddSectionColumn onAdd={onAddRoom} label="room" />
-    </div>
+    </ScrollableRow>
   );
 }
 function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCategory }) {
   return (
-    <div style={{ flex: 1, overflowX: "auto", overflowY: "hidden", padding: "12px 16px 90px", display: "flex", gap: 12 }}>
+    <ScrollableRow>
       {categories.map((cat) => {
         const catTasks = tasks.filter((t) => (t.category || "Unassigned") === cat);
         const deletable = cat !== "Unassigned";
@@ -885,7 +952,7 @@ function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCat
         );
       })}
       <AddSectionColumn onAdd={onAddCategory} label="category" />
-    </div>
+    </ScrollableRow>
   );
 }
 function AddSectionColumn({ onAdd, label }) {
@@ -900,7 +967,7 @@ function AddSectionColumn({ onAdd, label }) {
   );
 }
 
-function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, compact }) {
+function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, compact, onSnooze }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
@@ -941,6 +1008,7 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
       </div>
 
       {task.notes && !compact && <div style={{ marginLeft: 30, marginTop: 5, fontSize: 11.5, color: C.inkSoft, fontStyle: "italic" }}>{task.notes}</div>}
+      {onSnooze && <div style={{ marginLeft: 30, marginTop: 6 }}><SnoozeControl onSnooze={onSnooze} /></div>}
 
       <div style={{ marginLeft: 30, marginTop: 6 }}>
         {na ? (
@@ -1047,7 +1115,7 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
   };
   const setFormActionDate = (id, date) => set("actions", (t.actions || []).map((a) => (a.id === id ? { ...a, dueDate: date || null } : a)));
 
-  const categoryOptions = config.categories;
+  const categoryOptions = t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me];
   const showAssignee = t.scope === "shared";
   const isValid = t.title.trim() && (deferDetails || (t.listType === "chore" ? !!t.room : !!t.category));
 
@@ -1084,7 +1152,7 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
           {t.listType === "chore" ? (
             <Field label="Room *"><SectionSelect value={t.room} onChange={(v) => set("room", v)} options={config.rooms} onAddNew={onAddRoom} /></Field>
           ) : (
-            <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={onAddCategory} /></Field>
+            <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={(name) => onAddCategory(t.scope, t.owner || me, name)} /></Field>
           )}
 
           {showAssignee && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
