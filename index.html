@@ -48,7 +48,7 @@
 
 <div id="root"></div>
 
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo } = React;
 
 /* ---------- design tokens (unchanged from the Claude version) ---------- */
@@ -533,6 +533,17 @@ function SegRow({ options, value, onChange }) {
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+
+<script>
+  // Manually transform the JSX above with the "classic" runtime (React.createElement calls),
+  // instead of Babel's newer default "automatic" runtime, which emits `import` statements
+  // that don't work in a plain (non-module) script.
+  const sourceCode = document.getElementById("app-source").textContent;
+  const compiled = Babel.transform(sourceCode, { presets: [["react", { runtime: "classic" }]] }).code;
+  const runnable = document.createElement("script");
+  runnable.textContent = compiled;
+  document.body.appendChild(runnable);
 </script>
 </body>
 </html>
