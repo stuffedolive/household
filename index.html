@@ -160,7 +160,6 @@ function App() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pickerFor, setPickerFor] = useState(null);
-  const [undoAction, setUndoAction] = useState(null);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -298,51 +297,19 @@ function App() {
   };
   const deleteTask = (id) => db.collection(TASKS_COLLECTION).doc(id).delete().catch((e) => console.error(e));
 
-const toggleComplete = (task) => {
-  const ref = db.collection(TASKS_COLLECTION).doc(task.id);
-
-  // Save the current state so it can be restored
-  const previousState = {
-    completed: task.completed,
-    completedAt: task.completedAt || null,
-    dueDate: task.dueDate || null,
-  };
-
-  const rec = normRecurrence(task.recurrence);
-
-  if (!task.completed && rec.unit !== "none" && task.dueDate) {
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const base = rec.mode === "fixed" ? task.dueDate : todayStr;
-    const nextDue = addInterval(base, rec.unit, rec.amount);
-
-    ref.update({
-      dueDate: nextDue,
-      completed: false,
-      completedAt: null
-    }).catch(console.error);
-  } else {
-    const nowCompleting = !task.completed;
-
-    ref.update({
-      completed: nowCompleting,
-      completedAt: nowCompleting ? Date.now() : null
-    }).catch(console.error);
-  }
-
-  // Store the undo action
-  setUndoAction({
-    message: task.completed ? "Task reopened" : "Task completed",
-    undo: () => {
-      ref.update(previousState).catch(console.error);
-      setUndoAction(null);
+  const toggleComplete = (task) => {
+    const ref = db.collection(TASKS_COLLECTION).doc(task.id);
+    const rec = normRecurrence(task.recurrence);
+    if (!task.completed && rec.unit !== "none" && task.dueDate) {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const base = rec.mode === "fixed" ? task.dueDate : todayStr;
+      const nextDue = addInterval(base, rec.unit, rec.amount);
+      ref.update({ dueDate: nextDue, completed: false, completedAt: null }).catch(console.error);
+    } else {
+      const nowCompleting = !task.completed;
+      ref.update({ completed: nowCompleting, completedAt: nowCompleting ? Date.now() : null }).catch(console.error);
     }
-  });
-
-  // Hide Undo after 8 seconds
-  setTimeout(() => {
-    setUndoAction(null);
-  }, 8000);
-};
+  };
 
   const updateActions = (taskId, actions) => db.collection(TASKS_COLLECTION).doc(taskId).update({ actions }).catch(console.error);
   const toggleAction = (taskId, actionId) => {
@@ -481,49 +448,6 @@ const toggleComplete = (task) => {
           onClose={() => setPickerFor(null)}
         />
       )}
-       )}
-
-      {undoAction && (
-        <div
-          style={{
-            position: "absolute",
-            bottom: 90,
-            left: 16,
-            right: 16,
-            background: C.ink,
-            color: C.white,
-            padding: "12px 14px",
-            borderRadius: 10,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            boxShadow: "0 6px 16px rgba(43,42,40,0.28)",
-            zIndex: 100
-          }}
-        >
-          <span style={{ fontSize: 13 }}>
-            {undoAction.message}
-          </span>
-
-          <button
-            onClick={undoAction.undo}
-            style={{
-              border: "none",
-              background: "transparent",
-              color: C.mustard,
-              fontWeight: 700,
-              cursor: "pointer",
-              fontSize: 13
-            }}
-          >
-            UNDO
-          </button>
-        </div>
-      )}
-
-    </Shell>
-  );
-}
     </Shell>
   );
 }
