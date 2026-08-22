@@ -260,6 +260,7 @@ function App() {
     if (!task) return;
     updateActions(taskId, (task.actions || []).map((a) => (a.id === actionId ? { ...a, dueDate: date || null } : a)));
   };
+  const setTaskDueDate = (taskId, date) => db.collection(TASKS_COLLECTION).doc(taskId).update({ dueDate: date }).catch(console.error);
 
   /* scope-aware: pinning a task only clears the previous occupant of that slot
      if the previous occupant was pinned from the SAME scope (personal vs shared) — personal and
@@ -313,7 +314,7 @@ function App() {
       {view === "grid" ? (
         <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
       ) : view === "todo" ? (
-        <ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetActionDueDate={setActionDueDate} me={me} />
+        <ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} me={me} />
       ) : (
         <QueueView
           tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter}
@@ -571,7 +572,53 @@ function ActionAsRow({ task, action, onToggleAction, onEdit }) {
   );
 }
 
-function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate }) {
+function snoozeTarget(kind) {
+  const d = new Date();
+  if (kind === "tomorrow") d.setDate(d.getDate() + 1);
+  else if (kind === "next-weekend") {
+    const day = d.getDay();
+    const diff = (6 - day + 7) % 7 || 7;
+    d.setDate(d.getDate() + diff);
+  } else if (kind === "next-month") d.setMonth(d.getMonth() + 1);
+  return d.toISOString().slice(0, 10);
+}
+const notStartableYet = (t, todayStr) => t.startsOnDue && t.dueDate && t.dueDate > todayStr;
+
+/* prominent hero card for "overwhelmed" mode — visually set apart from everything else */
+function HeroCard({ pick, onToggle, onToggleAction, onEdit, onSnooze }) {
+  const [snoozing, setSnoozing] = useState(false);
+  const isChore = pick.kind === "chore";
+  const task = isChore ? pick.item : pick.item.task;
+  const action = isChore ? null : pick.item.action;
+  const title = isChore ? task.title : action.title;
+  const dueDate = isChore ? task.dueDate : (action.dueDate || task.dueDate);
+  const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
+  return (
+    <div style={{ background: C.ink, color: C.white, borderRadius: 20, padding: "34px 24px", textAlign: "center", boxShadow: "0 14px 34px rgba(43,42,40,0.3)" }}>
+      {!isChore && <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>from {task.title}</div>}
+      {imp && <div style={{ display: "inline-block", fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", background: imp.color, color: C.white, padding: "3px 11px", borderRadius: 20, marginBottom: 14 }}>{imp.label} importance</div>}
+      <div style={{ fontFamily: "Fraunces, serif", fontSize: 28, fontWeight: 600, lineHeight: 1.25, marginBottom: 12 }}>{title}</div>
+      <div style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 13, opacity: 0.8, marginBottom: 26 }}>{fmtDate(dueDate)}</div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+        <button onClick={() => (isChore ? onToggle(task) : onToggleAction(task.id, action.id))} style={{ background: C.white, color: C.ink, border: "none", borderRadius: 10, padding: "11px 22px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Done</button>
+        <button onClick={() => onEdit(task)} style={{ background: "transparent", color: C.white, border: "1px solid rgba(255,255,255,0.4)", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>Open</button>
+      </div>
+      <div style={{ marginTop: 20 }}>
+        {!snoozing ? (
+          <button onClick={() => setSnoozing(true)} style={{ background: "none", border: "none", color: "rgba(255,255,255,0.65)", fontSize: 12, textDecoration: "underline", cursor: "pointer" }}>Not today</button>
+        ) : (
+          <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+            {[["tomorrow", "Tomorrow"], ["next-weekend", "Next weekend"], ["next-month", "Next month"]].map(([k, l]) => (
+              <button key={k} onClick={() => { onSnooze(k); setSnoozing(false); }} style={{ background: "rgba(255,255,255,0.14)", color: C.white, border: "none", borderRadius: 8, padding: "7px 13px", fontSize: 12, cursor: "pointer" }}>{l}</button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, onSetTaskDueDate }) {
   const [viewAs, setViewAs] = useState(me);
   const [showStale, setShowStale] = useState(false);
   const [overwhelmed, setOverwhelmed] = useState(false);
@@ -593,7 +640,7 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
     [assignedToViewAs, now]
   );
 
-  const active = useMemo(() => assignedToViewAs.filter((t) => !t.completed), [assignedToViewAs]);
+  const active = useMemo(() => assignedToViewAs.filter((t) => !t.completed && !notStartableYet(t, today)), [assignedToViewAs, today]);
 
   // stale: has a due date, low/no importance, not saved/touched in a long time
   const stale = useMemo(() => active.filter((t) =>
@@ -637,15 +684,19 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
     return candidates[0];
   }, [chores, projectItems, today]);
 
+  const handleSnooze = (kind) => {
+    if (!topPick) return;
+    const target = snoozeTarget(kind);
+    if (topPick.kind === "chore") onSetTaskDueDate(topPick.item.id, target);
+    else onSetActionDueDate(topPick.item.task.id, topPick.item.action.id, target);
+  };
+
   if (overwhelmed) {
     return (
-      <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
-        <button onClick={() => setOverwhelmed(false)} style={{ border: "none", background: "none", color: C.inkSoft, fontSize: 12, cursor: "pointer", marginBottom: 16, textDecoration: "underline" }}>← back to the full list</button>
-        <div style={{ fontFamily: "Fraunces, serif", fontSize: 19, color: C.ink, marginBottom: 4 }}>Just this one.</div>
-        <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 18 }}>Everything else can wait.</div>
-        {!topPick && <div style={{ color: C.inkSoft, fontSize: 13 }}>Nothing urgent — you're clear.</div>}
-        {topPick && topPick.kind === "chore" && <TaskRow task={topPick.item} {...rowProps} />}
-        {topPick && topPick.kind === "project" && <ActionAsRow task={topPick.item.task} action={topPick.item.action} onToggleAction={onToggleAction} onEdit={onEdit} />}
+      <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "18px 16px 90px" }}>
+        <button onClick={() => setOverwhelmed(false)} style={{ border: "none", background: "none", color: C.inkSoft, fontSize: 12, cursor: "pointer", marginBottom: 18, textDecoration: "underline" }}>← back to the full list</button>
+        {!topPick && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing urgent — you're clear.</div>}
+        {topPick && <HeroCard pick={topPick} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={handleSnooze} />}
       </div>
     );
   }
@@ -687,19 +738,18 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
         </div>
       )}
 
-      {stale.length > 0 && (
-        <div style={{ marginTop: 18 }}>
-          <button onClick={() => setShowStale((s) => !s)} style={{ width: "100%", border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }}>
-            {showStale ? "Hide" : "Show"} stale tasks ({stale.length})
-          </button>
-          {showStale && (
-            <div style={{ marginTop: 8 }}>
-              <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Has a due date, low or no importance, untouched for {STALE_DAYS}+ days.</div>
-              {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
-            </div>
-          )}
-        </div>
-      )}
+      <div style={{ marginTop: 18 }}>
+        <button onClick={() => setShowStale((s) => !s)} style={{ width: "100%", border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }}>
+          {showStale ? "Hide" : "Show"} stale tasks ({stale.length})
+        </button>
+        {showStale && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Has a due date, low or no importance, untouched for {STALE_DAYS}+ days.</div>
+            {stale.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing stale right now.</div>}
+            {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
