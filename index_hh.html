@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>The Ledger</title>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+
+<!-- React (no build step needed) -->
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- Firebase (compat SDK — simplest for a no-build static page) -->
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #EDE7D8; font-family: 'Inter', sans-serif; }
+  button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 0; height: 0; }
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+  1) PASTE YOUR FIREBASE CONFIG BELOW (from Firebase console →
+     Project settings → your web app → SDK setup and config)
+============================================================= -->
+<script>
+  const firebaseConfig = {
+    apiKey: "AIzaSyBsM3CqDoT9Jyg4tppwkP3HD0AJild2Usc",
+    authDomain: "household-36194.firebaseapp.com",
+    projectId: "household-36194",
+    storageBucket: "household-36194.firebasestorage.app",
+    messagingSenderId: "245332186854",
+    appId: "1:245332186854:web:0d08cfdead1147360dcd27",
+  };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.firestore();
+  const auth = firebase.auth();
+</script>
+
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+/* ---------- design tokens (unchanged from the Claude version) ---------- */
+const C = {
+  ink: "#2B2A28", inkSoft: "#5C574C", parchment: "#EDE7D8", card: "#F8F5EC",
+  rule: "#D9D0BC", sage: "#6E7B5E", sageDeep: "#4F5A43", plum: "#7A3B45",
+  mustard: "#B5842A", white: "#FFFDF8",
+};
+const PEOPLE = { jade: "Jade", john: "John" };
+const BUCKETS = [{ key: "quick", label: "Quick" }, { key: "mid", label: "Mid" }, { key: "long", label: "Long-term" }];
+const ROOMS = ["Kitchen", "Bathroom", "Living", "Bedroom", "Laundry", "General"];
+const RECUR = [
+  { key: "none", label: "One-off" }, { key: "daily", label: "Daily" }, { key: "weekly", label: "Weekly" },
+  { key: "fortnightly", label: "Fortnightly" }, { key: "monthly", label: "Monthly" },
+];
+const PRIORITY = [
+  { key: "high", label: "High", color: C.plum }, { key: "med", label: "Med", color: C.mustard }, { key: "low", label: "Low", color: C.sage },
+];
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+const nextAction = (task) => (task.actions || []).find((a) => !a.completed) || null;
+const actionsProgress = (task) => {
+  const acts = task.actions || [];
+  if (!acts.length) return null;
+  return `${acts.filter((a) => a.completed).length}/${acts.length} actions`;
+};
+function addInterval(dateStr, recurrence) {
+  const d = new Date(dateStr + "T00:00:00");
+  if (recurrence === "daily") d.setDate(d.getDate() + 1);
+  else if (recurrence === "weekly") d.setDate(d.getDate() + 7);
+  else if (recurrence === "fortnightly") d.setDate(d.getDate() + 14);
+  else if (recurrence === "monthly") d.setMonth(d.getMonth() + 1);
+  return d.toISOString().slice(0, 10);
+}
+function fmtDate(dateStr) {
+  if (!dateStr) return "No date";
+  const d = new Date(dateStr + "T00:00:00");
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const diff = Math.round((d - today) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  if (diff < 0) return `${-diff}d overdue`;
+  return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+}
+
+/* tiny inline icon glyphs, replacing lucide (no reliable CDN build for it) */
+const Icon = ({ ch, size = 14, style }) => <span style={{ fontSize: size, lineHeight: 1, display: "inline-block", ...style }}>{ch}</span>;
+
+const TASKS_COLLECTION = "tasks";
+
+function App() {
+  const [authReady, setAuthReady] = useState(false);
+  const [me, setMe] = useState(null);
+  const [tasks, setTasks] = useState(null); // null = loading
+  const [view, setView] = useState("grid");
+  const [filter, setFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [pickerFor, setPickerFor] = useState(null);
+
+  /* identity from URL: index.html?user=jade or ?user=john */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const u = params.get("user");
+    if (u && PEOPLE[u]) setMe(u);
+  }, []);
+
+  /* anonymous auth, required by the Firestore security rules below */
+  useEffect(() => {
+    auth.signInAnonymously().catch((e) => console.error("auth failed", e));
+    const unsub = auth.onAuthStateChanged((user) => { if (user) setAuthReady(true); });
+    return unsub;
+  }, []);
+
+  /* live sync — every write from either of you appears for both, instantly */
+  useEffect(() => {
+    if (!authReady) return;
+    const unsub = db.collection(TASKS_COLLECTION).onSnapshot(
+      (snap) => setTasks(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+      (err) => { console.error("sync error", err); setTasks([]); }
+    );
+    return unsub;
+  }, [authReady]);
+
+  const upsertTask = (task) => {
+    const { id, ...data } = task;
+    db.collection(TASKS_COLLECTION).doc(id).set(data).catch((e) => console.error("save failed", e));
+  };
+  const deleteTask = (id) => db.collection(TASKS_COLLECTION).doc(id).delete().catch((e) => console.error(e));
+
+  const toggleComplete = (task) => {
+    const ref = db.collection(TASKS_COLLECTION).doc(task.id);
+    if (!task.completed && task.recurrence !== "none" && task.dueDate) {
+      ref.update({ dueDate: addInterval(task.dueDate, task.recurrence), completed: false }).catch(console.error);
+    } else {
+      ref.update({ completed: !task.completed }).catch(console.error);
+    }
+  };
+
+  const updateActions = (taskId, actions) => db.collection(TASKS_COLLECTION).doc(taskId).update({ actions }).catch(console.error);
+  const toggleAction = (taskId, actionId) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    updateActions(taskId, (task.actions || []).map((a) => (a.id === actionId ? { ...a, completed: !a.completed } : a)));
+  };
+  const addAction = (taskId, title) => {
+    if (!title.trim()) return;
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    updateActions(taskId, [...(task.actions || []), { id: uid(), title: title.trim(), completed: false }]);
+  };
+  const deleteAction = (taskId, actionId) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    updateActions(taskId, (task.actions || []).filter((a) => a.id !== actionId));
+  };
+
+  const setBucket = (taskId, person, bucket) => {
+    const ref = db.collection(TASKS_COLLECTION).doc(taskId);
+    ref.update({ [`gridBucket.${person}`]: bucket }).catch(console.error);
+    // clear the same slot from whichever task previously held it
+    tasks.forEach((t) => {
+      if (t.id !== taskId && t.gridBucket && t.gridBucket[person] === bucket) {
+        db.collection(TASKS_COLLECTION).doc(t.id).update({ [`gridBucket.${person}`]: firebase.firestore.FieldValue.delete() }).catch(console.error);
+      }
+    });
+  };
+  const clearBucket = (taskId, person) => {
+    db.collection(TASKS_COLLECTION).doc(taskId).update({ [`gridBucket.${person}`]: firebase.firestore.FieldValue.delete() }).catch(console.error);
+  };
+
+  const visibleTasks = useMemo(() => (tasks || []).filter((t) => t.scope === "shared" || t.owner === me), [tasks, me]);
+
+  if (!me) {
+    return (
+      <Shell>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 18, padding: 24 }}>
+          <div style={{ fontFamily: "Fraunces, serif", fontSize: 26, color: C.ink, textAlign: "center" }}>Who's checking in?</div>
+          <div style={{ fontSize: 13, color: C.inkSoft, textAlign: "center", maxWidth: 260 }}>
+            Bookmark this page with <code>?user=jade</code> or <code>?user=john</code> on the end of the URL to always land on your view.
+          </div>
+          <div style={{ display: "flex", gap: 12 }}>
+            {Object.entries(PEOPLE).map(([key, label]) => (
+              <button key={key} onClick={() => setMe(key)} style={btnStyle(key === "jade" ? C.sage : C.plum)}>{label}</button>
+            ))}
+          </div>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (tasks === null) {
+    return <Shell><div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: C.inkSoft, fontFamily: "Fraunces, serif" }}>Loading the ledger…</div></Shell>;
+  }
+
+  return (
+    <Shell>
+      <Header me={me} view={view} setView={setView} />
+      {view === "grid" ? (
+        <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} />
+      ) : (
+        <QueueView
+          tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} typeFilter={typeFilter} setTypeFilter={setTypeFilter}
+          onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
+          onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction}
+        />
+      )}
+
+      <button
+        onClick={() => { setEditing(null); setShowForm(true); }}
+        style={{ position: "absolute", right: 18, bottom: 22, width: 52, height: 52, borderRadius: "50%", background: C.ink, color: C.white, border: "none", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 6px 16px rgba(43,42,40,0.28)", cursor: "pointer", fontSize: 24 }}
+        aria-label="Add task"
+      >+</button>
+
+      {showForm && <TaskForm me={me} initial={editing} onClose={() => setShowForm(false)} onSave={(t) => { upsertTask(t); setShowForm(false); }} />}
+      {pickerFor && (
+        <BucketPicker
+          tasks={tasks.filter((t) => (pickerFor.scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === pickerFor.person) && !t.completed)}
+          onPick={(taskId) => { setBucket(taskId, pickerFor.person, pickerFor.bucket); setPickerFor(null); }}
+          onClose={() => setPickerFor(null)}
+        />
+      )}
+    </Shell>
+  );
+}
+
+/* ---------- shell ---------- */
+function Shell({ children }) {
+  return <div style={{ position: "relative", width: "100%", maxWidth: 480, margin: "0 auto", height: "100vh", background: C.parchment, fontFamily: "Inter, sans-serif", overflow: "hidden" }}>{children}</div>;
+}
+function btnStyle(bg) { return { padding: "12px 22px", borderRadius: 10, border: "none", background: bg, color: C.white, fontSize: 15, fontWeight: 600, cursor: "pointer" }; }
+
+function Header({ me, view, setView }) {
+  return (
+    <div style={{ padding: "18px 18px 10px", borderBottom: `1px solid ${C.rule}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, color: C.ink }}>The Ledger</div>
+        <div style={{ fontSize: 11, color: C.inkSoft }}>viewing as {PEOPLE[me]}</div>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        <TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" />
+        <TabButton active={view === "queue"} onClick={() => setView("queue")} label="Queue" />
+      </div>
+    </div>
+  );
+}
+function TabButton({ active, onClick, label }) {
+  return (
+    <button onClick={onClick} style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: `1px solid ${active ? C.ink : C.rule}`, background: active ? C.ink : "transparent", color: active ? C.white : C.inkSoft, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{label}</button>
+  );
+}
+
+/* ---------- priority grid ---------- */
+function PriorityGrid({ tasks, me, onOpenPicker, onClearBucket, onToggleAction }) {
+  return (
+    <div style={{ padding: 16, overflowY: "auto", height: "calc(100% - 96px)" }}>
+      {Object.keys(PEOPLE).map((person) => (
+        <div key={person} style={{ marginBottom: 22 }}>
+          <div style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600, color: C.ink, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+            {PEOPLE[person]}{person === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
+          </div>
+          <GridBlock label="Personal" scope="personal" person={person} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} />
+          <GridBlock label="Shared" scope="shared" person={person} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} />
+        </div>
+      ))}
+    </div>
+  );
+}
+function GridBlock({ label, scope, person, tasks, onOpenPicker, onClearBucket, onToggleAction }) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ fontSize: 11, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{label}</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        {BUCKETS.map((b) => {
+          const pinned = tasks.find((t) => t.gridBucket && t.gridBucket[person] === b.key && (scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === person));
+          return (
+            <div key={b.key} style={{ flex: 1, minHeight: 74, background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: 8, position: "relative" }}>
+              <div style={{ fontSize: 9, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{b.label}</div>
+              {pinned ? (
+                <div>
+                  <div style={{ fontSize: 12.5, color: C.ink, fontWeight: 600, lineHeight: 1.25 }}>{pinned.title}</div>
+                  {(() => {
+                    const na = nextAction(pinned);
+                    return na ? (
+                      <button onClick={() => onToggleAction(pinned.id, na.id)} style={{ display: "flex", alignItems: "flex-start", gap: 4, marginTop: 4, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+                        <span style={{ width: 10, height: 10, borderRadius: "50%", border: `1.5px solid ${C.sageDeep}`, marginTop: 2, flexShrink: 0 }} />
+                        <span style={{ fontSize: 10.5, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}</span>
+                      </button>
+                    ) : (pinned.actions || []).length > 0 ? <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 4 }}>All actions done</div> : null;
+                  })()}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+                    <span style={{ fontSize: 10, color: C.inkSoft, fontFamily: "IBM Plex Mono, monospace" }}>{fmtDate(pinned.dueDate)}</span>
+                    <button onClick={() => onClearBucket(pinned.id, person)} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, padding: 0 }}><Icon ch="×" size={13} /></button>
+                  </div>
+                </div>
+              ) : (
+                <button onClick={() => onOpenPicker({ person, scope, bucket: b.key })} style={{ width: "100%", height: 34, border: `1px dashed ${C.rule}`, borderRadius: 6, background: "transparent", color: C.inkSoft, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Icon ch="📌" size={13} /></button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+function BucketPicker({ tasks, onPick, onClose }) {
+  return (
+    <Overlay title="Pin to this slot" onClose={onClose}>
+      {tasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, padding: "8px 0" }}>No open tasks in this list yet. Add one from the Queue tab first.</div>}
+      {tasks.map((t) => (
+        <button key={t.id} onClick={() => onPick(t.id)} style={{ width: "100%", textAlign: "left", padding: "11px 12px", marginBottom: 6, borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, cursor: "pointer", fontSize: 13.5, color: C.ink }}>
+          {t.title}
+          <div style={{ fontSize: 10.5, color: C.inkSoft, marginTop: 2, fontFamily: "IBM Plex Mono, monospace" }}>{fmtDate(t.dueDate)}</div>
+        </button>
+      ))}
+    </Overlay>
+  );
+}
+
+/* ---------- queue view ---------- */
+function QueueView({ tasks, me, filter, setFilter, typeFilter, setTypeFilter, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction }) {
+  const scoped = useMemo(() => {
+    let f = tasks;
+    if (filter === "mine") f = f.filter((t) => t.owner === me || (t.scope === "shared" && (t.assignee === me || !t.assignee)));
+    if (filter === "shared") f = f.filter((t) => t.scope === "shared");
+    return f;
+  }, [tasks, filter, me]);
+  const typed = useMemo(() => (typeFilter === "all" ? scoped : scoped.filter((t) => t.listType === typeFilter)), [scoped, typeFilter]);
+  const sorted = useMemo(() => typed.slice().sort((a, b) => {
+    const ac = a.completed ? 1 : 0, bc = b.completed ? 1 : 0;
+    if (ac !== bc) return ac - bc;
+    return (a.dueDate || "9999").localeCompare(b.dueDate || "9999");
+  }), [typed]);
+  const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction };
+
+  return (
+    <div style={{ height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
+      <div style={{ display: "flex", gap: 6, padding: "10px 16px 0" }}>
+        {[["all", "Chores + Projects"], ["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => (
+          <button key={k} onClick={() => setTypeFilter(k)} style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${typeFilter === k ? C.ink : C.rule}`, background: typeFilter === k ? C.ink : C.card, color: typeFilter === k ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer", flex: 1 }}>{l}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
+        {[["all", "All"], ["mine", "Mine"], ["shared", "Shared"]].map(([k, l]) => (
+          <button key={k} onClick={() => setFilter(k)} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${filter === k ? C.ink : C.rule}`, background: filter === k ? C.ink : "transparent", color: filter === k ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{l}</button>
+        ))}
+      </div>
+      {typeFilter === "chore" ? <RoomBoard tasks={sorted} rowProps={rowProps} /> : (
+        <div style={{ flex: 1, overflowY: "auto", padding: "10px 16px 90px" }}>
+          {sorted.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing here. Tap + to add something.</div>}
+          {sorted.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+function RoomBoard({ tasks, rowProps }) {
+  return (
+    <div style={{ flex: 1, overflowX: "auto", overflowY: "hidden", padding: "12px 16px 90px", display: "flex", gap: 12 }}>
+      {ROOMS.map((room) => {
+        const roomTasks = tasks.filter((t) => (t.room || "General") === room);
+        return (
+          <div key={room} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
+            <div style={{ fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white, background: C.sageDeep, padding: "6px 12px", borderRadius: 8, marginBottom: 8, textAlign: "center" }}>
+              {room} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({roomTasks.length})</span>
+            </div>
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              {roomTasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", marginTop: 20 }}>No chores here</div>}
+              {roomTasks.map((t) => <TaskRow key={t.id} task={t} {...rowProps} compact />)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, compact }) {
+  const [open, setOpen] = useState(false);
+  const [newAction, setNewAction] = useState("");
+  const p = PRIORITY.find((x) => x.key === task.priority) || PRIORITY[1];
+  const overdue = task.dueDate && task.dueDate < new Date().toISOString().slice(0, 10) && !task.completed;
+  const na = nextAction(task);
+  const progress = actionsProgress(task);
+  const commit = () => { if (newAction.trim()) { onAddAction(task.id, newAction); setNewAction(""); } };
+
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: compact ? "9px 10px" : "11px 12px", marginBottom: 8, opacity: task.completed ? 0.55 : 1 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+        <button onClick={() => onToggle(task)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${p.color}`, background: task.completed ? p.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, marginTop: 1, color: C.white, fontSize: 11 }}>
+          {task.completed && "✓"}
+        </button>
+        <div style={{ flex: 1, minWidth: 0 }} onClick={() => onEdit(task)}>
+          <div style={{ fontSize: compact ? 13 : 14, color: C.ink, fontWeight: 600, textDecoration: task.completed ? "line-through" : "none" }}>{task.title}</div>
+          {!compact && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5, alignItems: "center" }}>
+              <Tag color={p.color}>{p.label}</Tag>
+              {task.scope === "shared" ? <Tag color={C.sageDeep}>{task.assignee ? PEOPLE[task.assignee] : "Anyone"}</Tag> : <Tag color={C.inkSoft}>Personal</Tag>}
+              {task.room && <Tag color={C.inkSoft}>{task.room}</Tag>}
+              {task.recurrence !== "none" && <Tag color={C.inkSoft}>↻ {task.recurrence}</Tag>}
+              <span style={{ fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, fontWeight: overdue ? 700 : 500 }}>{fmtDate(task.dueDate)}</span>
+            </div>
+          )}
+          {compact && <div style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, marginTop: 3 }}>{fmtDate(task.dueDate)}</div>}
+        </div>
+        {!compact && <button onClick={() => onDelete(task.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 2 }}><Icon ch="🗑" size={13} /></button>}
+      </div>
+
+      <div style={{ marginLeft: 30, marginTop: 6 }}>
+        {na ? (
+          <button onClick={() => onToggleAction(task.id, na.id)} style={{ display: "flex", alignItems: "flex-start", gap: 6, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+            <span style={{ width: 11, height: 11, borderRadius: "50%", border: `1.5px solid ${C.sageDeep}`, marginTop: 2, flexShrink: 0 }} />
+            <span style={{ fontSize: compact ? 11 : 12, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}</span>
+          </button>
+        ) : progress ? <span style={{ fontSize: 11, color: C.inkSoft }}>All actions done</span> : null}
+        {progress ? (
+          <button onClick={() => setOpen((o) => !o)} style={{ border: "none", background: "none", color: C.inkSoft, fontSize: 10.5, cursor: "pointer", padding: 0, marginLeft: na ? 8 : 0 }}>{progress} {open ? "▴" : "▾"}</button>
+        ) : (
+          <button onClick={() => setOpen((o) => !o)} style={{ border: "none", background: "none", color: C.inkSoft, fontSize: 10.5, cursor: "pointer", padding: 0 }}>+ action</button>
+        )}
+      </div>
+
+      {open && (
+        <div style={{ marginLeft: 30, marginTop: 8, borderTop: `1px dashed ${C.rule}`, paddingTop: 8 }}>
+          {(task.actions || []).map((a) => (
+            <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+              <button onClick={() => onToggleAction(task.id, a.id)} style={{ width: 15, height: 15, borderRadius: 4, border: `1.5px solid ${C.sageDeep}`, background: a.completed ? C.sageDeep : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, color: C.white, fontSize: 9 }}>{a.completed && "✓"}</button>
+              <span style={{ fontSize: 12, color: C.ink, textDecoration: a.completed ? "line-through" : "none", flex: 1 }}>{a.title}</span>
+              <button onClick={() => onDeleteAction(task.id, a.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 0 }}><Icon ch="×" size={12} /></button>
+            </div>
+          ))}
+          <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+            <input value={newAction} onChange={(e) => setNewAction(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} onBlur={commit} placeholder="Add an action…" style={{ ...inputStyle, padding: "6px 9px", fontSize: 12 }} />
+            <button onClick={commit} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 6, padding: "0 10px", cursor: "pointer" }}>+</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function Tag({ color, children }) { return <span style={{ fontSize: 10, color: C.white, background: color, padding: "2px 7px", borderRadius: 20, display: "inline-flex", alignItems: "center" }}>{children}</span>; }
+
+/* ---------- overlay + form ---------- */
+function Overlay({ title, onClose, children }) {
+  return (
+    <div style={{ position: "absolute", inset: 0, background: "rgba(43,42,40,0.4)", display: "flex", alignItems: "flex-end", zIndex: 10 }} onClick={onClose}>
+      <div style={{ background: C.parchment, width: "100%", maxHeight: "80%", borderRadius: "18px 18px 0 0", padding: 18, overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, fontWeight: 600, color: C.ink }}>{title}</div>
+          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, fontSize: 20 }}>×</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TaskForm({ me, initial, onClose, onSave }) {
+  const [t, setT] = useState(() => initial || {
+    id: uid(), title: "", listType: "chore", scope: "shared", owner: me,
+    room: ROOMS[0], category: "", assignee: null, priority: "med",
+    dueDate: new Date().toISOString().slice(0, 10), recurrence: "none",
+    completed: false, gridBucket: {}, actions: [],
+  });
+  const set = (k, v) => setT((p) => ({ ...p, [k]: v }));
+  const [newAction, setNewAction] = useState("");
+  const addFormAction = () => {
+    if (!newAction.trim()) return;
+    set("actions", [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false }]);
+    setNewAction("");
+  };
+  const removeFormAction = (id) => set("actions", (t.actions || []).filter((a) => a.id !== id));
+  const toggleFormAction = (id) => set("actions", (t.actions || []).map((a) => (a.id === id ? { ...a, completed: !a.completed } : a)));
+
+  const finishAndSave = () => {
+    const finalActions = newAction.trim() ? [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false }] : (t.actions || []);
+    if (t.title.trim()) onSave({ ...t, actions: finalActions, owner: t.scope === "personal" ? (t.owner || me) : null });
+    else onClose();
+  };
+
+  return (
+    <Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave}>
+      <Field label="Title"><input value={t.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
+      <Field label="Type"><SegRow options={[["chore", "Chore"], ["project", "Project"]]} value={t.listType} onChange={(v) => set("listType", v)} /></Field>
+      <Field label="Belongs to"><SegRow options={[["shared", "Shared"], ["personal", "Personal"]]} value={t.scope} onChange={(v) => set("scope", v)} /></Field>
+      {t.listType === "chore" ? (
+        <Field label="Room"><select value={t.room} onChange={(e) => set("room", e.target.value)} style={inputStyle}>{ROOMS.map((r) => <option key={r} value={r}>{r}</option>)}</select></Field>
+      ) : (
+        <Field label="Category (optional)"><input value={t.category} onChange={(e) => set("category", e.target.value)} placeholder="e.g. life admin" style={inputStyle} /></Field>
+      )}
+      {t.scope === "shared" && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
+      <Field label="Priority"><SegRow options={PRIORITY.map((p) => [p.key, p.label])} value={t.priority} onChange={(v) => set("priority", v)} /></Field>
+      <Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={(e) => set("dueDate", e.target.value)} style={inputStyle} /></Field>
+      <Field label="Repeats"><select value={t.recurrence} onChange={(e) => set("recurrence", e.target.value)} style={inputStyle}>{RECUR.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}</select></Field>
+
+      <Field label="Actions">
+        {(t.actions || []).map((a) => (
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+            <button onClick={() => toggleFormAction(a.id)} style={{ width: 15, height: 15, borderRadius: 4, border: `1.5px solid ${C.sageDeep}`, background: a.completed ? C.sageDeep : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, color: C.white, fontSize: 9 }}>{a.completed && "✓"}</button>
+            <span style={{ fontSize: 13, color: C.ink, flex: 1, textDecoration: a.completed ? "line-through" : "none" }}>{a.title}</span>
+            <button onClick={() => removeFormAction(a.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer" }}>×</button>
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 6 }}>
+          <input value={newAction} onChange={(e) => setNewAction(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFormAction(); } }} onBlur={addFormAction} placeholder="e.g. Buy grout" style={{ ...inputStyle, fontSize: 13 }} />
+          <button onClick={addFormAction} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 12px", cursor: "pointer" }}>+</button>
+        </div>
+      </Field>
+
+      <button disabled={!t.title.trim()} onClick={finishAndSave} style={{ ...btnStyle(C.ink), width: "100%", marginTop: 8, opacity: t.title.trim() ? 1 : 0.5 }}>Save</button>
+    </Overlay>
+  );
+}
+function Field({ label, children }) { return <div style={{ marginBottom: 13 }}><div style={{ fontSize: 11, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 5 }}>{label}</div>{children}</div>; }
+const inputStyle = { width: "100%", padding: "10px 11px", borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, fontSize: 14, color: C.ink, outline: "none" };
+function SegRow({ options, value, onChange }) {
+  return <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{options.map(([val, label]) => (
+    <button key={String(val)} onClick={() => onChange(val)} style={{ padding: "7px 13px", borderRadius: 8, border: `1px solid ${value === val ? C.ink : C.rule}`, background: value === val ? C.ink : C.white, color: value === val ? C.white : C.ink, fontSize: 12.5, cursor: "pointer" }}>{label}</button>
+  ))}</div>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
