@@ -144,6 +144,7 @@ function App() {
   const [config, setConfig] = useState({ rooms: DEFAULT_ROOMS, sharedCategories: DEFAULT_CATEGORIES, personalCategories: { jade: DEFAULT_CATEGORIES, john: DEFAULT_CATEGORIES } });
   const [view, setView] = useState("grid");
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
+  const [priorityViewPerson, setPriorityViewPerson] = useState(null);
   const [filter, setFilter] = useState("all");
   const [choreFilter, setChoreFilter] = useState("all");
   const [projectScope, setProjectScope] = useState("shared");
@@ -206,15 +207,18 @@ function App() {
     else CONFIG_DOC.set({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
   };
   const deleteRoom = (name) => {
-    CONFIG_DOC.update({ rooms: firebase.firestore.FieldValue.arrayRemove(name) }).catch((e) => console.error("delete room failed", e));
+    const next = config.rooms.filter((r) => r !== name);
+    CONFIG_DOC.update({ rooms: next }).catch((e) => console.error("delete room failed", e));
     (tasks || []).filter((t) => t.room === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ room: null }).catch(console.error));
   };
   const deleteCategory = (scope, owner, name) => {
     if (scope === "shared") {
-      CONFIG_DOC.update({ sharedCategories: firebase.firestore.FieldValue.arrayRemove(name) }).catch((e) => console.error("delete category failed", e));
+      const next = config.sharedCategories.filter((c) => c !== name);
+      CONFIG_DOC.update({ sharedCategories: next }).catch((e) => console.error("delete category failed", e));
       (tasks || []).filter((t) => t.scope === "shared" && t.category === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
     } else {
-      CONFIG_DOC.update({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayRemove(name) }).catch((e) => console.error("delete category failed", e));
+      const next = (config.personalCategories[owner] || []).filter((c) => c !== name);
+      CONFIG_DOC.update({ [`personalCategories.${owner}`]: next }).catch((e) => console.error("delete category failed", e));
       (tasks || []).filter((t) => t.scope === "personal" && t.owner === owner && t.category === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
     }
   };
@@ -381,7 +385,7 @@ function App() {
         </div>
       )}
       {view === "grid" ? (
-        <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
+        <PriorityGrid tasks={tasks} me={me} viewingPerson={priorityViewPerson || me} setViewingPerson={setPriorityViewPerson} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
       ) : view === "todo" ? (
         <ToDoList
           tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
@@ -512,56 +516,58 @@ function FilterChip({ active, onClick, label }) {
 }
 
 /* ---------- priority grid ---------- */
-function PriorityGrid({ tasks, me, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
-  const order = [me, ...Object.keys(PEOPLE).filter((p) => p !== me)];
+function PriorityGrid({ tasks, me, viewingPerson, setViewingPerson, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
+  const other = viewingPerson === "jade" ? "john" : "jade";
   return (
     <div style={{ padding: 16, overflowY: "auto", height: "calc(100% - 96px)" }}>
-      {order.map((person) => (
-        <div key={person} style={{ marginBottom: 22 }}>
-          <div style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600, color: C.ink, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
-            {PEOPLE[person]}{person === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
-          </div>
-          <GridBlock label="Personal" scope="personal" person={person} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
-          <GridBlock label="Shared" scope="shared" person={person} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
+      <button onClick={() => setViewingPerson(other)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "none", padding: 0, cursor: "pointer", marginBottom: 16 }}>
+        <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600, color: C.ink }}>{PEOPLE[viewingPerson]}</span>
+        {viewingPerson === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
+        <span style={{ fontSize: 11, color: C.inkSoft, textDecoration: "underline" }}>switch to {PEOPLE[other]}</span>
+      </button>
+
+      <div style={{ display: "grid", gridTemplateColumns: "56px repeat(3, 1fr)", gap: 8, marginBottom: 6 }}>
+        <div />
+        {BUCKETS.map((b) => (
+          <div key={b.key} style={{ fontSize: 9.5, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, textAlign: "center" }}>{b.label}</div>
+        ))}
+      </div>
+
+      {[["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => (
+        <div key={scope} style={{ display: "grid", gridTemplateColumns: "56px repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, display: "flex", alignItems: "center" }}>{label}</div>
+          {BUCKETS.map((b) => (
+            <GridCell key={b.key} bucket={b} scope={scope} person={viewingPerson} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
+          ))}
         </div>
       ))}
     </div>
   );
 }
-function GridBlock({ label, scope, person, tasks, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
+function GridCell({ bucket, scope, person, tasks, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
+  const pinned = tasks.find((t) => t.gridBucket && t.gridBucket[person] === bucket.key && (scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === person));
   return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ fontSize: 11, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{label}</div>
-      <div style={{ display: "flex", gap: 8 }}>
-        {BUCKETS.map((b) => {
-          const pinned = tasks.find((t) => t.gridBucket && t.gridBucket[person] === b.key && (scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === person));
-          return (
-            <div key={b.key} style={{ flex: 1, minHeight: 74, background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: 8, position: "relative" }}>
-              <div style={{ fontSize: 9, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{b.label}</div>
-              {pinned ? (
-                <div>
-                  <button onClick={() => onEditTask(pinned)} style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: C.ink, fontWeight: 600, lineHeight: 1.25 }}>{pinned.title}</button>
-                  {(() => {
-                    const na = nextAction(pinned);
-                    return na ? (
-                      <button onClick={() => onToggleAction(pinned.id, na.id)} style={{ display: "flex", alignItems: "flex-start", gap: 4, marginTop: 4, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
-                        <span style={{ width: 10, height: 10, borderRadius: "50%", border: `1.5px solid ${C.sageDeep}`, marginTop: 2, flexShrink: 0 }} />
-                        <span style={{ fontSize: 10.5, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span>
-                      </button>
-                    ) : (pinned.actions || []).length > 0 ? <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 4 }}>All actions done</div> : null;
-                  })()}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-                    <span style={{ fontSize: 10, color: C.inkSoft, fontFamily: "IBM Plex Mono, monospace" }}>{fmtDate(pinned.dueDate)}</span>
-                    <button onClick={() => onClearBucket(pinned.id, person)} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, padding: 0, fontSize: 13 }}>×</button>
-                  </div>
-                </div>
-              ) : (
-                <button onClick={() => onOpenPicker({ person, scope, bucket: b.key })} style={{ width: "100%", height: 34, border: `1px dashed ${C.rule}`, borderRadius: 6, background: "transparent", color: C.inkSoft, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>📌</button>
-              )}
-            </div>
-          );
-        })}
-      </div>
+    <div style={{ minHeight: 78, background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: 8, position: "relative" }}>
+      {pinned ? (
+        <div>
+          <button onClick={() => onEditTask(pinned)} style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: C.ink, fontWeight: 600, lineHeight: 1.25 }}>{pinned.title}</button>
+          {(() => {
+            const na = nextAction(pinned);
+            return na ? (
+              <button onClick={() => onToggleAction(pinned.id, na.id)} style={{ display: "flex", alignItems: "flex-start", gap: 4, marginTop: 4, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+                <span style={{ width: 10, height: 10, borderRadius: "50%", border: `1.5px solid ${C.sageDeep}`, marginTop: 2, flexShrink: 0 }} />
+                <span style={{ fontSize: 10.5, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span>
+              </button>
+            ) : (pinned.actions || []).length > 0 ? <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 4 }}>All actions done</div> : null;
+          })()}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+            <span style={{ fontSize: 10, color: C.inkSoft, fontFamily: "IBM Plex Mono, monospace" }}>{fmtDate(pinned.dueDate)}</span>
+            <button onClick={() => onClearBucket(pinned.id, person)} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, padding: 0, fontSize: 13 }}>×</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => onOpenPicker({ person, scope, bucket: bucket.key })} style={{ width: "100%", height: 34, border: `1px dashed ${C.rule}`, borderRadius: 6, background: "transparent", color: C.inkSoft, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>📌</button>
+      )}
     </div>
   );
 }
@@ -993,9 +999,10 @@ function QueueView(props) {
 
       {typeFilter === "project" && (
         <>
-          <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
-            <button onClick={() => setProjectScope("shared")} style={{ flex: 1, padding: "6px 12px", borderRadius: 8, border: `1px solid ${projectScope === "shared" ? C.ink : C.rule}`, background: projectScope === "shared" ? C.ink : C.card, color: projectScope === "shared" ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Shared Projects</button>
-            <button onClick={() => setProjectScope("personal")} style={{ flex: 1, padding: "6px 12px", borderRadius: 8, border: `1px solid ${projectScope === "personal" ? C.ink : C.rule}`, background: projectScope === "personal" ? C.ink : C.card, color: projectScope === "personal" ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Personal Projects</button>
+          <div style={{ padding: "8px 16px 0" }}>
+            <button onClick={() => setProjectScope(projectScope === "shared" ? "personal" : "shared")} style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.ink}`, background: C.ink, color: C.white, fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              {projectScope === "shared" ? "Shared Projects" : "Personal Projects"} <span style={{ opacity: 0.6, fontSize: 11 }}>⇄</span>
+            </button>
           </div>
           {projectScope === "shared" && (
             <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
@@ -1039,12 +1046,12 @@ function SectionDeleteButton({ onDelete }) {
   const [confirming, setConfirming] = useState(false);
   if (confirming) {
     return (
-      <button onClick={() => onDelete()} style={{ border: "none", background: "rgba(255,255,255,0.3)", color: C.white, borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+      <button onClick={(e) => { e.stopPropagation(); onDelete(); }} style={{ border: "none", background: "rgba(255,255,255,0.3)", color: C.white, borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
         Confirm?
       </button>
     );
   }
-  return <button onClick={() => setConfirming(true)} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>;
+  return <button onClick={(e) => { e.stopPropagation(); setConfirming(true); }} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>;
 }
 function SectionReorderButtons({ onLeft, onRight }) {
   return (
