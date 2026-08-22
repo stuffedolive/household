@@ -616,7 +616,7 @@ function tierFor(dueDate, priority, todayStr) {
 }
 
 /* a compact row representing a project's next action, standing in for the whole project */
-function ActionAsRow({ task, action, onToggleAction, onEdit, onSnooze }) {
+function ActionAsRow({ task, action, onToggleAction, onEdit, onSnooze, onAddToToday }) {
   const overdue = action.dueDate && action.dueDate < new Date().toISOString().slice(0, 10);
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
   return (
@@ -634,6 +634,7 @@ function ActionAsRow({ task, action, onToggleAction, onEdit, onSnooze }) {
           </div>
           {onSnooze && <div style={{ marginTop: 6 }}><SnoozeControl onSnooze={onSnooze} /></div>}
         </div>
+        {onAddToToday && <button onClick={() => onAddToToday(task.id)} style={{ border: `1px solid ${C.rule}`, background: C.white, color: C.sageDeep, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6, whiteSpace: "nowrap", alignSelf: "flex-start" }}>+ Today</button>}
       </div>
     </div>
   );
@@ -790,45 +791,33 @@ function ToDoList({
     ? projectItems.filter(({ task, action }) => !(task.id === topPick.item.task.id && action.id === topPick.item.action.id))
     : projectItems;
 
-  // for Today mode's browse list — always the viewer's own tasks, regardless of the viewAs toggle
-  const myOwnActive = useMemo(() => tasks.filter((t) =>
-    !t.completed && !notStartableYet(t, today) && (t.scope === "personal" ? t.owner === me : (t.assignee === me || !t.assignee))
-  ), [tasks, today, me]);
   const todaySelectedTaskIds = new Set(todayItems.filter((it) => it.type === "task").map((it) => it.id));
   const tasksById = useMemo(() => { const m = {}; tasks.forEach((t) => { m[t.id] = t; }); return m; }, [tasks]);
 
   return (
     <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
-      {mode !== "today" && (
-        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-          {Object.entries(PEOPLE).map(([key, label]) => (
-            <button key={key} onClick={() => setViewAs(key)} style={{ flex: 1, padding: "6px 0", borderRadius: 8, border: `1px solid ${viewAs === key ? C.ink : C.rule}`, background: viewAs === key ? C.ink : C.card, color: viewAs === key ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-              Viewing: {label}{key === me ? " (you)" : ""}
-            </button>
-          ))}
-        </div>
-      )}
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        {Object.entries(PEOPLE).map(([key, label]) => (
+          <button key={key} onClick={() => setViewAs(key)} style={{ flex: 1, padding: "6px 0", borderRadius: 8, border: `1px solid ${viewAs === key ? C.ink : C.rule}`, background: viewAs === key ? C.ink : C.card, color: viewAs === key ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            Viewing: {label}{key === me ? " (you)" : ""}
+          </button>
+        ))}
+      </div>
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
         {[["normal", "Normal"], ["overwhelmed", "Overwhelmed"], ["today", "Today"]].map(([k, l]) => (
           <button key={k} onClick={() => setMode(k)} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${mode === k ? C.ink : C.rule}`, background: mode === k ? C.ink : C.card, color: mode === k ? C.white : C.inkSoft, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{l}</button>
         ))}
       </div>
+      {viewAs !== me && <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10 }}>Only {PEOPLE[viewAs]}'s shared tasks — their personal list isn't visible to you.</div>}
 
-      {mode === "today" ? (
-        <TodayPlanner
-          items={todayItems} tasksById={tasksById} me={me}
+      {mode === "today" && (
+        <TodayPlanSection
+          items={todayItems} tasksById={tasksById}
           onAddSundry={onAddSundry} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry}
           onReorder={onReorderToday} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday}
-          onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} onToggleAction={onToggleAction}
-          onAddAction={onAddAction} onDeleteAction={onDeleteAction} onReorderAction={onReorderAction} onSetActionDueDate={onSetActionDueDate}
-          browseChores={myOwnActive.filter((t) => t.listType === "chore")}
-          browseProjects={myOwnActive.filter((t) => t.listType === "project")}
-          selectedIds={todaySelectedTaskIds}
-          onAddToToday={onAddTaskToToday}
+          onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit}
         />
-      ) : (
-        <>
-      {viewAs !== me && <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10 }}>Only {PEOPLE[viewAs]}'s shared tasks — their personal list isn't visible to you.</div>}
+      )}
 
       {overwhelmed && topPick && (
         <HeroCard pick={topPick} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={(kind) => (topPick.kind === "chore" ? snoozeChore(topPick.item, kind) : snoozeProjectAction(topPick.item.task, topPick.item.action, kind))} />
@@ -841,7 +830,9 @@ function ToDoList({
       {displayChores.length > 0 && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Chores</div>
-          {displayChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? (kind) => snoozeChore(t, kind) : undefined} />)}
+          {displayChores.map((t) => (
+            <TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? (kind) => snoozeChore(t, kind) : undefined} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />
+          ))}
         </div>
       )}
 
@@ -849,7 +840,7 @@ function ToDoList({
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Projects</div>
           {displayProjects.map(({ task, action }) => (
-            <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? (kind) => snoozeProjectAction(task, action, kind) : undefined} />
+            <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? (kind) => snoozeProjectAction(task, action, kind) : undefined} onAddToToday={todaySelectedTaskIds.has(task.id) ? undefined : onAddTaskToToday} />
           ))}
         </div>
       )}
@@ -872,74 +863,62 @@ function ToDoList({
           {justDone.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
         </div>
       )}
-      </>
-      )}
     </div>
   );
 }
 
 
-function TodayPlanner({
-  items, tasksById, me, onAddSundry, onToggleSundry, onDeleteSundry, onReorder, onRemoveTask, onReset,
-  onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate,
-  browseChores, browseProjects, selectedIds, onAddToToday,
-}) {
+/* compact "Today's plan" — just titles, sits at the top of the list like the hero card does for overwhelmed mode */
+function TodayPlanSection({ items, tasksById, onAddSundry, onToggleSundry, onDeleteSundry, onReorder, onRemoveTask, onReset, onToggle, onToggleAction, onEdit }) {
   const [newSundry, setNewSundry] = useState("");
   const [resetting, setResetting] = useState(false);
   const commitSundry = () => { if (newSundry.trim()) { onAddSundry(newSundry.trim()); setNewSundry(""); } };
-  const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate };
 
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, color: C.ink }}>Today's plan</div>
+    <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 12, padding: "14px 14px 10px", marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, color: C.ink }}>Today's plan</div>
         {!resetting ? (
-          <button onClick={() => setResetting(true)} style={{ border: `1px solid ${C.plum}`, color: C.plum, background: "none", borderRadius: 8, padding: "5px 11px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Reset</button>
+          <button onClick={() => setResetting(true)} style={{ border: `1px solid ${C.plum}`, color: C.plum, background: "none", borderRadius: 8, padding: "4px 10px", fontSize: 10.5, fontWeight: 600, cursor: "pointer" }}>Reset</button>
         ) : (
-          <button onClick={() => { onReset(); setResetting(false); }} style={{ border: "none", color: C.white, background: C.plum, borderRadius: 8, padding: "5px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Confirm reset?</button>
+          <button onClick={() => { onReset(); setResetting(false); }} style={{ border: "none", color: C.white, background: C.plum, borderRadius: 8, padding: "4px 10px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>Confirm?</button>
         )}
       </div>
-      <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 14 }}>Private to you — only visible in your own session. Sundries live only here; they're never added to Chores or Projects.</div>
 
-      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
-        <input value={newSundry} onChange={(e) => setNewSundry(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") commitSundry(); }} onBlur={commitSundry} placeholder="e.g. Gym, vacuum couch…" style={{ ...inputStyle, fontSize: 13 }} />
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        <input value={newSundry} onChange={(e) => setNewSundry(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") commitSundry(); }} onBlur={commitSundry} placeholder="Add a sundry…" style={{ ...inputStyle, fontSize: 13, background: C.white }} />
         <button onClick={commitSundry} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 14px", cursor: "pointer" }}>+</button>
       </div>
 
-      {items.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", padding: "10px 0 24px" }}>Nothing planned yet — add a sundry above, or pull something up from the list below.</div>}
+      {items.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12.5, textAlign: "center", padding: "6px 0 4px" }}>Nothing planned yet.</div>}
 
       {items.map((item, idx) => {
         const task = item.type === "task" ? tasksById[item.id] : null;
+        let title, completed, onCheck;
+        if (item.type === "sundry") {
+          title = item.title; completed = item.completed; onCheck = () => onToggleSundry(item.id);
+        } else if (task) {
+          if (task.listType === "project") {
+            const na = nextAction(task);
+            title = na ? na.title : task.title;
+            completed = !na && task.completed;
+            onCheck = na ? () => onToggleAction(task.id, na.id) : () => onToggle(task);
+          } else {
+            title = task.title; completed = task.completed; onCheck = () => onToggle(task);
+          }
+        } else {
+          title = "(removed)"; completed = false; onCheck = () => {};
+        }
         return (
-          <div key={item.type + item.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
-            <div style={{ display: "flex", flexDirection: "column" }}>
-              <button onClick={() => onReorder(idx, -1)} disabled={idx === 0} style={{ border: "none", background: "none", color: idx === 0 ? C.rule : C.inkSoft, cursor: idx === 0 ? "default" : "pointer", fontSize: 11, lineHeight: 1 }}>▲</button>
-              <button onClick={() => onReorder(idx, 1)} disabled={idx === items.length - 1} style={{ border: "none", background: "none", color: idx === items.length - 1 ? C.rule : C.inkSoft, cursor: idx === items.length - 1 ? "default" : "pointer", fontSize: 11, lineHeight: 1 }}>▼</button>
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              {item.type === "sundry" ? (
-                <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-                  <button onClick={() => onToggleSundry(item.id)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${C.sage}`, background: item.completed ? C.sage : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.white, fontSize: 11, flexShrink: 0 }}>{item.completed && "✓"}</button>
-                  <span style={{ flex: 1, fontSize: 14, color: C.ink, textDecoration: item.completed ? "line-through" : "none" }}>{item.title}</span>
-                  <button onClick={() => onDeleteSundry(item.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", fontSize: 13 }}>🗑</button>
-                </div>
-              ) : task ? (
-                <TaskRow task={task} {...rowProps} />
-              ) : (
-                <div style={{ fontSize: 12, color: C.inkSoft, fontStyle: "italic", padding: "8px 0" }}>(task no longer exists)</div>
-              )}
-            </div>
-            {item.type === "task" && <button onClick={() => onRemoveTask(item.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", fontSize: 13 }} title="Remove from today">×</button>}
+          <div key={item.type + item.id} style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 0", borderTop: idx > 0 ? `1px solid ${C.rule}` : "none" }}>
+            <button onClick={onCheck} style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${C.sage}`, background: completed ? C.sage : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.white, fontSize: 10, flexShrink: 0 }}>{completed && "✓"}</button>
+            <span onClick={task ? () => onEdit(task) : undefined} style={{ flex: 1, fontSize: 13.5, color: C.ink, textDecoration: completed ? "line-through" : "none", cursor: task ? "pointer" : "default" }}>{title}</span>
+            <button onClick={() => onReorder(idx, -1)} disabled={idx === 0} style={{ border: "none", background: "none", color: idx === 0 ? C.rule : C.inkSoft, cursor: idx === 0 ? "default" : "pointer", fontSize: 11, padding: "0 2px" }}>▲</button>
+            <button onClick={() => onReorder(idx, 1)} disabled={idx === items.length - 1} style={{ border: "none", background: "none", color: idx === items.length - 1 ? C.rule : C.inkSoft, cursor: idx === items.length - 1 ? "default" : "pointer", fontSize: 11, padding: "0 2px" }}>▼</button>
+            <button onClick={() => (item.type === "sundry" ? onDeleteSundry(item.id) : onRemoveTask(item.id))} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", fontSize: 12 }}>×</button>
           </div>
         );
       })}
-
-      <div style={{ marginTop: 26, borderTop: `1px dashed ${C.rule}`, paddingTop: 16 }}>
-        <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>All your tasks — tap + Today to add</div>
-        {browseChores.length === 0 && browseProjects.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing else open right now.</div>}
-        {browseChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={selectedIds.has(t.id) ? undefined : onAddToToday} />)}
-        {browseProjects.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={selectedIds.has(t.id) ? undefined : onAddToToday} />)}
-      </div>
     </div>
   );
 }
