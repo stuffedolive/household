@@ -104,7 +104,9 @@ function fmtDate(dateStr) {
   if (diff === 1) return "Tomorrow";
   if (diff === -1) return "Yesterday";
   if (diff < 0) return `${-diff}d overdue`;
-  return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+  const base = d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+  if (diff >= 2 && diff <= 14) return `${base} (${diff}d)`;
+  return base;
 }
 /* ensure every room/category actually in use gets a column, even if it's not in the saved sections list yet */
 function withOrphans(sections, tasks, field) {
@@ -116,6 +118,11 @@ function withOrphans(sections, tasks, field) {
 const TASKS_COLLECTION = "tasks";
 const CONFIG_DOC = db.collection("meta").doc("config");
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
+
+function sanitizeList(arr, fallback) {
+  const clean = [...new Set((arr || []).map((s) => String(s).trim()).filter(Boolean))];
+  return clean.length ? clean : fallback;
+}
 
 function App() {
   const [authReady, setAuthReady] = useState(null);
@@ -162,11 +169,11 @@ function App() {
     const unsub = CONFIG_DOC.onSnapshot((doc) => {
       const d = doc.data() || {};
       setConfig({
-        rooms: d.rooms && d.rooms.length ? d.rooms : DEFAULT_ROOMS,
-        sharedCategories: d.sharedCategories && d.sharedCategories.length ? d.sharedCategories : DEFAULT_CATEGORIES,
+        rooms: sanitizeList(d.rooms, DEFAULT_ROOMS),
+        sharedCategories: sanitizeList(d.sharedCategories, DEFAULT_CATEGORIES),
         personalCategories: {
-          jade: (d.personalCategories && d.personalCategories.jade && d.personalCategories.jade.length) ? d.personalCategories.jade : DEFAULT_CATEGORIES,
-          john: (d.personalCategories && d.personalCategories.john && d.personalCategories.john.length) ? d.personalCategories.john : DEFAULT_CATEGORIES,
+          jade: sanitizeList(d.personalCategories && d.personalCategories.jade, DEFAULT_CATEGORIES),
+          john: sanitizeList(d.personalCategories && d.personalCategories.john, DEFAULT_CATEGORIES),
         },
       });
     });
@@ -269,7 +276,7 @@ function App() {
     <Shell>
       <Header me={me} view={view} setView={setView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} />
       {view === "grid" ? (
-        <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} />
+        <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
       ) : view === "todo" ? (
         <ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetActionDueDate={setActionDueDate} me={me} />
       ) : (
@@ -310,7 +317,9 @@ function App() {
         <BucketPicker
           tasks={tasks.filter((t) =>
             t.listType === "project" && !t.completed &&
-            (pickerFor.scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === pickerFor.person) &&
+            (pickerFor.scope === "shared"
+              ? t.scope === "shared" && (t.assignee === pickerFor.person || !t.assignee)
+              : t.scope === "personal" && t.owner === pickerFor.person) &&
             (!t.priorityBucket || t.priorityBucket === pickerFor.bucket)
           )}
           onPick={(taskId) => { setBucket(taskId, pickerFor.person, pickerFor.bucket, pickerFor.scope); setPickerFor(null); }}
@@ -392,7 +401,7 @@ function FilterChip({ active, onClick, label }) {
 }
 
 /* ---------- priority grid ---------- */
-function PriorityGrid({ tasks, me, onOpenPicker, onClearBucket, onToggleAction }) {
+function PriorityGrid({ tasks, me, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
   return (
     <div style={{ padding: 16, overflowY: "auto", height: "calc(100% - 96px)" }}>
       {Object.keys(PEOPLE).map((person) => (
@@ -400,14 +409,14 @@ function PriorityGrid({ tasks, me, onOpenPicker, onClearBucket, onToggleAction }
           <div style={{ fontFamily: "Fraunces, serif", fontSize: 17, fontWeight: 600, color: C.ink, marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
             {PEOPLE[person]}{person === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
           </div>
-          <GridBlock label="Personal" scope="personal" person={person} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} />
-          <GridBlock label="Shared" scope="shared" person={person} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} />
+          <GridBlock label="Personal" scope="personal" person={person} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
+          <GridBlock label="Shared" scope="shared" person={person} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
         </div>
       ))}
     </div>
   );
 }
-function GridBlock({ label, scope, person, tasks, onOpenPicker, onClearBucket, onToggleAction }) {
+function GridBlock({ label, scope, person, tasks, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
   return (
     <div style={{ marginBottom: 10 }}>
       <div style={{ fontSize: 11, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{label}</div>
@@ -419,7 +428,7 @@ function GridBlock({ label, scope, person, tasks, onOpenPicker, onClearBucket, o
               <div style={{ fontSize: 9, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>{b.label}</div>
               {pinned ? (
                 <div>
-                  <div style={{ fontSize: 12.5, color: C.ink, fontWeight: 600, lineHeight: 1.25 }}>{pinned.title}</div>
+                  <button onClick={() => onEditTask(pinned)} style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: C.ink, fontWeight: 600, lineHeight: 1.25 }}>{pinned.title}</button>
                   {(() => {
                     const na = nextAction(pinned);
                     return na ? (
@@ -727,7 +736,7 @@ function SectionSelect({ value, onChange, options, onAddNew }) {
   if (adding) {
     return (
       <div style={{ display: "flex", gap: 6 }}>
-        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="New section name" style={inputStyle} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} onBlur={commit} />
+        <input autoFocus autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} placeholder="New section name" style={inputStyle} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} onBlur={commit} />
         <button onClick={commit} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 12px", cursor: "pointer" }}>Add</button>
       </div>
     );
@@ -786,13 +795,14 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
 
   return (
     <Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave}>
+      <Field label="Title *"><input value={t.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
+
       {!initial && (
         <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 15, padding: "9px 11px", background: C.card, borderRadius: 8, border: `1px solid ${C.rule}` }}>
           <input type="checkbox" id="defer-details" checked={deferDetails} onChange={(e) => setDeferDetails(e.target.checked)} style={{ marginTop: 2 }} />
-          <label htmlFor="defer-details" style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.4 }}>Add essential details later — just capture the title for now. It'll show up under "need details" until you finish it off.</label>
+          <label htmlFor="defer-details" style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.4 }}>Add details later — it'll show up under "need details" until you finish it off.</label>
         </div>
       )}
-      <Field label="Title *"><input value={t.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
 
       {!deferDetails && (
         <>
