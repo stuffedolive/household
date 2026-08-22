@@ -512,61 +512,70 @@ function PersonBadge({ person, size = 20 }) {
   );
 }
 function FilterChip({ active, onClick, label }) {
-  return <button onClick={onClick} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${active ? C.ink : C.rule}`, background: active ? C.ink : "transparent", color: active ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{label}</button>;
+  return <button onClick={onClick} style={{ flex: 1, padding: "6px 0", borderRadius: 20, border: `1px solid ${active ? C.ink : C.rule}`, background: active ? C.ink : "transparent", color: active ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{label}</button>;
 }
 
 /* ---------- priority grid ---------- */
 function PriorityGrid({ tasks, me, viewingPerson, setViewingPerson, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
   const other = viewingPerson === "jade" ? "john" : "jade";
   return (
-    <div style={{ padding: 16, overflowY: "auto", height: "calc(100% - 96px)" }}>
-      <button onClick={() => setViewingPerson(other)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "none", padding: 0, cursor: "pointer", marginBottom: 16 }}>
+    <div style={{ padding: "16px 16px 12px", height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
+      <button onClick={() => setViewingPerson(other)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "none", padding: 0, cursor: "pointer", marginBottom: 14, flexShrink: 0 }}>
         <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600, color: C.ink }}>{PEOPLE[viewingPerson]}</span>
         {viewingPerson === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
         <span style={{ fontSize: 11, color: C.inkSoft, textDecoration: "underline" }}>switch to {PEOPLE[other]}</span>
       </button>
 
-      <div style={{ display: "grid", gridTemplateColumns: "56px repeat(3, 1fr)", gap: 8, marginBottom: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "26px repeat(3, 1fr)", gap: 6, marginBottom: 6, flexShrink: 0 }}>
         <div />
         {BUCKETS.map((b) => (
           <div key={b.key} style={{ fontSize: 9.5, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, textAlign: "center" }}>{b.label}</div>
         ))}
       </div>
 
-      {[["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => (
-        <div key={scope} style={{ display: "grid", gridTemplateColumns: "56px repeat(3, 1fr)", gap: 8, marginBottom: 10 }}>
-          <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, display: "flex", alignItems: "center" }}>{label}</div>
-          {BUCKETS.map((b) => (
-            <GridCell key={b.key} bucket={b} scope={scope} person={viewingPerson} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
-          ))}
-        </div>
-      ))}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+        {[["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => (
+          <div key={scope} style={{ display: "grid", gridTemplateColumns: "26px repeat(3, 1fr)", gap: 6, flex: 1, minHeight: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ fontSize: 10.5, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, writingMode: "vertical-rl", transform: "rotate(180deg)" }}>{label}</span>
+            </div>
+            {BUCKETS.map((b) => (
+              <GridCell key={b.key} bucket={b} scope={scope} person={viewingPerson} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 function GridCell({ bucket, scope, person, tasks, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
   const pinned = tasks.find((t) => t.gridBucket && t.gridBucket[person] === bucket.key && (scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === person));
+  const incomplete = pinned ? (pinned.actions || []).filter((a) => !a.completed) : [];
   return (
-    <div style={{ minHeight: 78, background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: 8, position: "relative" }}>
+    <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: 8, position: "relative", display: "flex", flexDirection: "column", overflow: "hidden" }}>
       {pinned ? (
-        <div>
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
           <button onClick={() => onEditTask(pinned)} style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: C.ink, fontWeight: 600, lineHeight: 1.25 }}>{pinned.title}</button>
-          {(() => {
-            const na = nextAction(pinned);
-            return na ? (
-              <button onClick={() => onToggleAction(pinned.id, na.id)} style={{ display: "flex", alignItems: "flex-start", gap: 4, marginTop: 4, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+
+          {incomplete.length > 0 ? (
+            <div style={{ marginTop: 4, flex: 1, overflowY: "auto", minHeight: 0 }}>
+              <button onClick={() => onToggleAction(pinned.id, incomplete[0].id)} style={{ display: "flex", alignItems: "flex-start", gap: 4, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left", width: "100%" }}>
                 <span style={{ width: 10, height: 10, borderRadius: "50%", border: `1.5px solid ${C.sageDeep}`, marginTop: 2, flexShrink: 0 }} />
-                <span style={{ fontSize: 10.5, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span>
+                <span style={{ fontSize: 10.5, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {incomplete[0].title}{incomplete[0].dueDate ? ` · ${fmtDate(incomplete[0].dueDate)}` : ""}</span>
               </button>
-            ) : (pinned.actions || []).length > 0 ? <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 4 }}>All actions done</div> : null;
-          })()}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-            <span style={{ fontSize: 10, color: C.inkSoft, fontFamily: "IBM Plex Mono, monospace" }}>{fmtDate(pinned.dueDate)}</span>
+              {incomplete.slice(1).map((a) => (
+                <div key={a.id} onClick={() => onToggleAction(pinned.id, a.id)} style={{ fontSize: 9, color: C.inkSoft, opacity: 0.55, marginTop: 2, marginLeft: 14, cursor: "pointer", lineHeight: 1.3 }}>{a.title}</div>
+              ))}
+            </div>
+          ) : (pinned.actions || []).length > 0 ? <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 4 }}>All actions done</div> : <div style={{ flex: 1 }} />}
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, flexShrink: 0 }}>
+            <span style={{ fontSize: 10, color: C.inkSoft, fontFamily: "IBM Plex Mono, monospace", fontWeight: 600 }}>{fmtDate(pinned.dueDate)}</span>
             <button onClick={() => onClearBucket(pinned.id, person)} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, padding: 0, fontSize: 13 }}>×</button>
           </div>
         </div>
       ) : (
-        <button onClick={() => onOpenPicker({ person, scope, bucket: bucket.key })} style={{ width: "100%", height: 34, border: `1px dashed ${C.rule}`, borderRadius: 6, background: "transparent", color: C.inkSoft, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>📌</button>
+        <button onClick={() => onOpenPicker({ person, scope, bucket: bucket.key })} style={{ width: "100%", height: "100%", minHeight: 34, border: `1px dashed ${C.rule}`, borderRadius: 6, background: "transparent", color: C.inkSoft, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>📌</button>
       )}
     </div>
   );
@@ -1028,19 +1037,6 @@ function QueueView(props) {
 }
 
 /* horizontally scrolling row with tap-to-scroll arrows — helps when there are many sections */
-function ScrollableRow({ children }) {
-  const ref = useRef(null);
-  const scrollBy = (dir) => { if (ref.current) ref.current.scrollBy({ left: dir * 260, behavior: "smooth" }); };
-  return (
-    <div style={{ position: "relative", flex: 1, minHeight: 0 }}>
-      <div ref={ref} style={{ height: "100%", overflowX: "auto", overflowY: "hidden", padding: "12px 38px 90px", display: "flex", gap: 12 }}>
-        {children}
-      </div>
-      <button onClick={() => scrollBy(-1)} aria-label="Scroll left" style={{ position: "absolute", left: 2, top: "42%", transform: "translateY(-50%)", width: 28, height: 28, borderRadius: "50%", border: "none", background: "rgba(43,42,40,0.55)", color: C.white, fontSize: 15, cursor: "pointer", zIndex: 2 }}>‹</button>
-      <button onClick={() => scrollBy(1)} aria-label="Scroll right" style={{ position: "absolute", right: 2, top: "42%", transform: "translateY(-50%)", width: 28, height: 28, borderRadius: "50%", border: "none", background: "rgba(43,42,40,0.55)", color: C.white, fontSize: 15, cursor: "pointer", zIndex: 2 }}>›</button>
-    </div>
-  );
-}
 /* two-tap inline confirm — avoids relying on window.confirm(), which can be unreliable in installed PWAs */
 function SectionDeleteButton({ onDelete }) {
   const [confirming, setConfirming] = useState(false);
@@ -1053,76 +1049,94 @@ function SectionDeleteButton({ onDelete }) {
   }
   return <button onClick={(e) => { e.stopPropagation(); setConfirming(true); }} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>;
 }
-function SectionReorderButtons({ onLeft, onRight }) {
+
+const PREVIEW_COUNT = 3;
+
+function StackedSection({ name, idx, total, tasks, colorBg, rowProps, onDelete, onReorder, deletable, emptyLabel }) {
+  const [expandMode, setExpandMode] = useState("preview"); // preview | all | none
+  const visible = expandMode === "none" ? [] : expandMode === "all" ? tasks : tasks.slice(0, PREVIEW_COUNT);
+  const hiddenCount = tasks.length - visible.length;
+
   return (
-    <div style={{ display: "flex", gap: 2 }}>
-      <button onClick={onLeft} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 11, padding: 0 }}>‹</button>
-      <button onClick={onRight} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 11, padding: 0 }}>›</button>
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, background: colorBg, padding: "7px 10px", borderRadius: 8, marginBottom: 8 }}>
+        {deletable && (
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            <button onClick={() => onReorder(name, -1)} disabled={idx === 0} style={{ border: "none", background: "none", color: idx === 0 ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.85)", cursor: idx === 0 ? "default" : "pointer", fontSize: 10, padding: 0, lineHeight: 1 }}>▲</button>
+            <button onClick={() => onReorder(name, 1)} disabled={idx === total - 1} style={{ border: "none", background: "none", color: idx === total - 1 ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.85)", cursor: idx === total - 1 ? "default" : "pointer", fontSize: 10, padding: 0, lineHeight: 1 }}>▼</button>
+          </div>
+        )}
+        <button onClick={() => setExpandMode((m) => (m === "none" ? "preview" : "none"))} style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0, display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white }}>{name} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({tasks.length})</span></span>
+          <span style={{ marginLeft: "auto", color: "rgba(255,255,255,0.8)", fontSize: 11 }}>{expandMode === "none" ? "▸" : "▾"}</span>
+        </button>
+        {deletable && <SectionDeleteButton onDelete={() => onDelete(name)} />}
+      </div>
+
+      {expandMode !== "none" && (
+        <div>
+          {tasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>{emptyLabel}</div>}
+          {visible.map((t) => <TaskRow key={t.id} task={t} {...rowProps} compact />)}
+          {expandMode === "preview" && hiddenCount > 0 && (
+            <button onClick={() => setExpandMode("all")} style={{ width: "100%", border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "6px 0", fontSize: 11.5, cursor: "pointer" }}>
+              Show all {tasks.length} →
+            </button>
+          )}
+          {expandMode === "all" && tasks.length > PREVIEW_COUNT && (
+            <button onClick={() => setExpandMode("preview")} style={{ width: "100%", border: "none", background: "none", color: C.inkSoft, fontSize: 11.5, cursor: "pointer", padding: "4px 0" }}>
+              Show fewer ↑
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SectionStack({ sections, sectionTasksFn, colorBg, rowProps, onAdd, onDelete, onReorder, addLabel, emptyLabel }) {
+  return (
+    <div style={{ padding: "12px 16px 90px", overflowY: "auto", flex: 1 }}>
+      {sections.map((name, idx) => (
+        <StackedSection
+          key={name} name={name} idx={idx} total={sections.length} tasks={sectionTasksFn(name)}
+          colorBg={colorBg} rowProps={rowProps} onDelete={onDelete} onReorder={onReorder}
+          deletable={name !== "Unassigned"} emptyLabel={emptyLabel}
+        />
+      ))}
+      <AddSectionRow onAdd={onAdd} label={addLabel} />
     </div>
   );
 }
 
 function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom, onReorderRoom }) {
   return (
-    <ScrollableRow>
-      {rooms.map((room) => {
-        const roomTasks = tasks.filter((t) => (t.room || "Unassigned") === room);
-        const deletable = room !== "Unassigned";
-        return (
-          <div key={room} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.sageDeep, padding: "6px 10px", borderRadius: 8, marginBottom: 8 }}>
-              {deletable && <SectionReorderButtons onLeft={() => onReorderRoom(room, -1)} onRight={() => onReorderRoom(room, 1)} />}
-              <div style={{ flex: 1, textAlign: "center", fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white }}>
-                {room} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({roomTasks.length})</span>
-              </div>
-              {deletable && <SectionDeleteButton onDelete={() => onDeleteRoom(room)} />}
-            </div>
-            <div style={{ overflowY: "auto", flex: 1 }}>
-              {roomTasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", marginTop: 20 }}>No chores here</div>}
-              {roomTasks.map((t) => <TaskRow key={t.id} task={t} {...rowProps} compact />)}
-            </div>
-          </div>
-        );
-      })}
-      <AddSectionColumn onAdd={onAddRoom} label="room" />
-    </ScrollableRow>
+    <SectionStack
+      sections={rooms}
+      sectionTasksFn={(room) => tasks.filter((t) => (t.room || "Unassigned") === room)}
+      colorBg={C.sageDeep} rowProps={rowProps}
+      onAdd={onAddRoom} onDelete={onDeleteRoom} onReorder={onReorderRoom}
+      addLabel="room" emptyLabel="No chores here"
+    />
   );
 }
 function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCategory, onReorderCategory }) {
   return (
-    <ScrollableRow>
-      {categories.map((cat) => {
-        const catTasks = tasks.filter((t) => (t.category || "Unassigned") === cat);
-        const deletable = cat !== "Unassigned";
-        return (
-          <div key={cat} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.plum, padding: "6px 10px", borderRadius: 8, marginBottom: 8 }}>
-              {deletable && <SectionReorderButtons onLeft={() => onReorderCategory(cat, -1)} onRight={() => onReorderCategory(cat, 1)} />}
-              <div style={{ flex: 1, textAlign: "center", fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white }}>
-                {cat} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({catTasks.length})</span>
-              </div>
-              {deletable && <SectionDeleteButton onDelete={() => onDeleteCategory(cat)} />}
-            </div>
-            <div style={{ overflowY: "auto", flex: 1 }}>
-              {catTasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", marginTop: 20 }}>No projects here</div>}
-              {catTasks.map((t) => <TaskRow key={t.id} task={t} {...rowProps} compact />)}
-            </div>
-          </div>
-        );
-      })}
-      <AddSectionColumn onAdd={onAddCategory} label="category" />
-    </ScrollableRow>
+    <SectionStack
+      sections={categories}
+      sectionTasksFn={(cat) => tasks.filter((t) => (t.category || "Unassigned") === cat)}
+      colorBg={C.plum} rowProps={rowProps}
+      onAdd={onAddCategory} onDelete={onDeleteCategory} onReorder={onReorderCategory}
+      addLabel="category" emptyLabel="No projects here"
+    />
   );
 }
-function AddSectionColumn({ onAdd, label }) {
+function AddSectionRow({ onAdd, label }) {
   const add = () => {
     const name = window.prompt(`New ${label} name`);
     if (name && name.trim()) onAdd(name.trim());
   };
   return (
-    <div style={{ minWidth: 90, display: "flex", alignItems: "flex-start", paddingTop: 30 }}>
-      <button onClick={add} style={{ border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}>+ Add section</button>
-    </div>
+    <button onClick={add} style={{ width: "100%", border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "10px 0", cursor: "pointer", fontSize: 12.5 }}>+ Add section</button>
   );
 }
 
