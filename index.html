@@ -128,7 +128,7 @@ function App() {
   const [authReady, setAuthReady] = useState(null);
   const [me, setMe] = useState(null);
   const [tasks, setTasks] = useState(null);
-  const [config, setConfig] = useState({ rooms: DEFAULT_ROOMS, sharedCategories: DEFAULT_CATEGORIES, personalCategories: { jade: DEFAULT_CATEGORIES, john: DEFAULT_CATEGORIES } });
+  const [config, setConfig] = useState({ rooms: DEFAULT_ROOMS, categories: DEFAULT_CATEGORIES });
   const [view, setView] = useState("grid");
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [filter, setFilter] = useState("all");
@@ -168,23 +168,23 @@ function App() {
     if (authReady !== true) return;
     const unsub = CONFIG_DOC.onSnapshot((doc) => {
       const d = doc.data() || {};
+      // merge in anything from the old split shared/personal category lists so nothing already created gets lost
+      const merged = [
+        ...(d.categories || []),
+        ...(d.sharedCategories || []),
+        ...((d.personalCategories && d.personalCategories.jade) || []),
+        ...((d.personalCategories && d.personalCategories.john) || []),
+      ];
       setConfig({
         rooms: sanitizeList(d.rooms, DEFAULT_ROOMS),
-        sharedCategories: sanitizeList(d.sharedCategories, DEFAULT_CATEGORIES),
-        personalCategories: {
-          jade: sanitizeList(d.personalCategories && d.personalCategories.jade, DEFAULT_CATEGORIES),
-          john: sanitizeList(d.personalCategories && d.personalCategories.john, DEFAULT_CATEGORIES),
-        },
+        categories: sanitizeList(merged, DEFAULT_CATEGORIES),
       });
     });
     return unsub;
   }, [authReady]);
 
   const addRoom = (name) => CONFIG_DOC.set({ rooms: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
-  const addCategory = (scope, owner, name) => {
-    if (scope === "shared") CONFIG_DOC.set({ sharedCategories: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
-    else CONFIG_DOC.set({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
-  };
+  const addCategory = (name) => CONFIG_DOC.set({ categories: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
 
   const upsertTask = (task) => {
     const { id, ...data } = task;
@@ -572,8 +572,8 @@ function QueueView(props) {
       ) : (
         <CategoryBoard
           tasks={sorted} rowProps={rowProps}
-          categories={withOrphans(projectScope === "shared" ? config.sharedCategories : config.personalCategories[me], sorted, "category")}
-          onAddCategory={(name) => onAddCategory(projectScope, me, name)}
+          categories={withOrphans(config.categories, sorted, "category")}
+          onAddCategory={onAddCategory}
         />
       )}
     </div>
@@ -638,7 +638,9 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
-  const overdue = task.dueDate && task.dueDate < new Date().toISOString().slice(0, 10) && !task.completed;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const overdue = task.dueDate && task.dueDate < todayStr && !task.completed;
+  const notYetAvailable = task.startsOnDue && task.dueDate && task.dueDate > todayStr && !task.completed;
   const na = nextAction(task);
   const progress = actionsProgress(task);
   const badgePerson = task.scope === "personal" ? task.owner : task.assignee;
@@ -646,9 +648,9 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
   const del = (e) => { e.stopPropagation(); if (window.confirm(`Delete "${task.title}"?`)) onDelete(task.id); };
 
   return (
-    <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: compact ? "9px 10px" : "11px 12px", marginBottom: 8, opacity: task.completed ? 0.55 : 1 }}>
+    <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: compact ? "9px 10px" : "11px 12px", marginBottom: 8, opacity: task.completed ? 0.55 : (notYetAvailable ? 0.5 : 1) }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-        <button onClick={() => onToggle(task)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${imp ? imp.color : C.inkSoft}`, background: task.completed ? (imp ? imp.color : C.inkSoft) : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, marginTop: 1, color: C.white, fontSize: 11 }}>
+        <button onClick={() => onToggle(task)} disabled={notYetAvailable} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${imp ? imp.color : C.inkSoft}`, background: task.completed ? (imp ? imp.color : C.inkSoft) : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: notYetAvailable ? "default" : "pointer", flexShrink: 0, marginTop: 1, color: C.white, fontSize: 11 }}>
           {task.completed && "✓"}
         </button>
         <div style={{ flex: 1, minWidth: 0 }} onClick={() => onEdit(task)}>
@@ -658,15 +660,16 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
           </div>
           {!compact && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5, alignItems: "center" }}>
+              {notYetAvailable && <Tag color={C.inkSoft}>Not yet — {fmtDate(task.dueDate)}</Tag>}
               {imp && <Tag color={imp.color}>{imp.label}</Tag>}
               {task.priorityBucket && <Tag color={C.mustard}>{BUCKETS.find((b) => b.key === task.priorityBucket)?.label}</Tag>}
               {task.room && <Tag color={C.inkSoft}>{task.room}</Tag>}
               {task.category && <Tag color={C.inkSoft}>{task.category}</Tag>}
               {task.recurrence !== "none" && <Tag color={C.inkSoft}>↻ {task.recurrence}</Tag>}
-              {task.dueDate && <span style={{ fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, fontWeight: overdue ? 700 : 500 }}>{fmtDate(task.dueDate)}</span>}
+              {task.dueDate && !notYetAvailable && <span style={{ fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, fontWeight: overdue ? 700 : 500 }}>{fmtDate(task.dueDate)}</span>}
             </div>
           )}
-          {compact && task.dueDate && <div style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, marginTop: 3 }}>{fmtDate(task.dueDate)}</div>}
+          {compact && task.dueDate && <div style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, marginTop: 3 }}>{notYetAvailable ? `Not yet — ${fmtDate(task.dueDate)}` : fmtDate(task.dueDate)}</div>}
         </div>
         <button onClick={del} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 2, fontSize: compact ? 11 : 13 }}>🗑</button>
       </div>
@@ -756,7 +759,7 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
     priority: null, priorityBucket: null,
     dueDate: null, recurrence: "none", notes: "",
     completed: false, gridBucket: {}, actions: [],
-    needsDetails: false, createdBy: me,
+    needsDetails: false, createdBy: me, startsOnDue: false,
   });
   const [deferDetails, setDeferDetails] = useState(false);
   const set = (k, v) => setT((p) => ({ ...p, [k]: v }));
@@ -775,8 +778,8 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
   };
   const setFormActionDate = (id, date) => set("actions", (t.actions || []).map((a) => (a.id === id ? { ...a, dueDate: date || null } : a)));
 
-  const categoryOptions = t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me];
-  const showAssignee = t.scope === "shared" || t.listType === "project";
+  const categoryOptions = config.categories;
+  const showAssignee = t.scope === "shared";
   const isValid = t.title.trim() && (deferDetails || (t.listType === "chore" ? !!t.room : !!t.category));
 
   const finishAndSave = () => {
@@ -812,7 +815,7 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
           {t.listType === "chore" ? (
             <Field label="Room *"><SectionSelect value={t.room} onChange={(v) => set("room", v)} options={config.rooms} onAddNew={onAddRoom} /></Field>
           ) : (
-            <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={(name) => onAddCategory(t.scope, t.owner || me, name)} /></Field>
+            <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={onAddCategory} /></Field>
           )}
 
           {showAssignee && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
@@ -826,6 +829,12 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
       )}
 
       <Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={(e) => set("dueDate", e.target.value || null)} style={inputStyle} /></Field>
+      {t.dueDate && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 15, padding: "9px 11px", background: C.card, borderRadius: 8, border: `1px solid ${C.rule}` }}>
+          <input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={(e) => set("startsOnDue", e.target.checked)} style={{ marginTop: 2 }} />
+          <label htmlFor="starts-on-due" style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.4 }}>Can't actually be done until the due date itself (e.g. picking up an online order) — greyed out until then, rather than sitting there looking doable early.</label>
+        </div>
+      )}
       <Field label="Repeats"><select value={t.recurrence} onChange={(e) => set("recurrence", e.target.value)} style={inputStyle}>{RECUR.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}</select></Field>
       <Field label="Notes"><textarea value={t.notes || ""} onChange={(e) => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></Field>
 
