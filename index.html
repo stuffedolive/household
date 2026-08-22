@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
 <title>The Ledger</title>
 
 <!-- Fonts -->
@@ -99,9 +100,10 @@ function fmtDate(dateStr) {
 const Icon = ({ ch, size = 14, style }) => <span style={{ fontSize: size, lineHeight: 1, display: "inline-block", ...style }}>{ch}</span>;
 
 const TASKS_COLLECTION = "tasks";
+const HOUSEHOLD_EMAIL = "access@household-ledger.local"; // fixed hidden account — the PIN is its password
 
 function App() {
-  const [authReady, setAuthReady] = useState(false);
+  const [authReady, setAuthReady] = useState(null); // null = checking session, false = needs PIN, true = signed in
   const [me, setMe] = useState(null);
   const [tasks, setTasks] = useState(null); // null = loading
   const [view, setView] = useState("grid");
@@ -118,16 +120,15 @@ function App() {
     if (u && PEOPLE[u]) setMe(u);
   }, []);
 
-  /* anonymous auth, required by the Firestore security rules below */
+  /* PIN-gated auth — Firebase remembers this in the browser, so it's a one-time unlock per device */
   useEffect(() => {
-    auth.signInAnonymously().catch((e) => console.error("auth failed", e));
-    const unsub = auth.onAuthStateChanged((user) => { if (user) setAuthReady(true); });
+    const unsub = auth.onAuthStateChanged((user) => setAuthReady(!!user));
     return unsub;
   }, []);
 
   /* live sync — every write from either of you appears for both, instantly */
   useEffect(() => {
-    if (!authReady) return;
+    if (authReady !== true) return;
     const unsub = db.collection(TASKS_COLLECTION).onSnapshot(
       (snap) => setTasks(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
       (err) => { console.error("sync error", err); setTasks([]); }
@@ -184,6 +185,14 @@ function App() {
 
   const visibleTasks = useMemo(() => (tasks || []).filter((t) => t.scope === "shared" || t.owner === me), [tasks, me]);
 
+  if (authReady === null) {
+    return <Shell><div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: C.inkSoft, fontFamily: "Fraunces, serif" }}>Loading…</div></Shell>;
+  }
+
+  if (authReady === false) {
+    return <Shell><PinGate /></Shell>;
+  }
+
   if (!me) {
     return (
       <Shell>
@@ -238,6 +247,41 @@ function App() {
 }
 
 /* ---------- shell ---------- */
+/* ---------- PIN gate ---------- */
+function PinGate() {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = () => {
+    if (!pin.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    auth.signInWithEmailAndPassword(HOUSEHOLD_EMAIL, pin)
+      .catch(() => setError("Wrong PIN — try again."))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 14, padding: 24 }}>
+      <div style={{ fontFamily: "Fraunces, serif", fontSize: 24, color: C.ink, textAlign: "center" }}>Enter the household PIN</div>
+      <input
+        type="password"
+        inputMode="numeric"
+        autoFocus
+        value={pin}
+        onChange={(e) => setPin(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+        style={{ ...inputStyle, width: 200, textAlign: "center", letterSpacing: 4, fontSize: 18 }}
+      />
+      {error && <div style={{ color: C.plum, fontSize: 12.5 }}>{error}</div>}
+      <button onClick={submit} disabled={busy || !pin.trim()} style={{ ...btnStyle(C.ink), opacity: busy || !pin.trim() ? 0.5 : 1 }}>
+        {busy ? "Checking…" : "Unlock"}
+      </button>
+    </div>
+  );
+}
+
 function Shell({ children }) {
   return <div style={{ position: "relative", width: "100%", maxWidth: 480, margin: "0 auto", height: "100vh", background: C.parchment, fontFamily: "Inter, sans-serif", overflow: "hidden" }}>{children}</div>;
 }
