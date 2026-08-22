@@ -122,7 +122,17 @@ function App() {
 
   /* PIN-gated auth — Firebase remembers this in the browser, so it's a one-time unlock per device */
   useEffect(() => {
-    const unsub = auth.onAuthStateChanged((user) => setAuthReady(!!user));
+    const unsub = auth.onAuthStateChanged((user) => {
+      if (user && user.email === HOUSEHOLD_EMAIL) {
+        setAuthReady(true);
+      } else if (user) {
+        // leftover session from an earlier version of the app (e.g. anonymous auth) — clear it
+        auth.signOut();
+        setAuthReady(false);
+      } else {
+        setAuthReady(false);
+      }
+    });
     return unsub;
   }, []);
 
