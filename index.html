@@ -57,10 +57,17 @@ const C = {
   ink: "#2B2A28", inkSoft: "#5C574C", parchment: "#EDE7D8", card: "#F8F5EC",
   rule: "#D9D0BC", sage: "#6E7B5E", sageDeep: "#4F5A43", plum: "#7A3B45",
   mustard: "#B5842A", white: "#FFFDF8",
+  slate: "#5B6B78", slateDeep: "#44525C", taupe: "#8C8474",
 };
 const PEOPLE = { jade: "Jade", john: "John" };
 const PERSON_COLOR = { jade: C.sage, john: C.plum };
 const PERSON_CODE = { jade: "JC", john: "JE" };
+/* consistent colour-by-person across filter chips and section headers: jade=green, john=maroon, shared/all=slate, unassigned=taupe grey */
+function filterColor(key) {
+  if (key === "jade") return C.sage;
+  if (key === "john") return C.plum;
+  return C.slate;
+}
 
 const BUCKETS = [{ key: "quick", label: "Quick" }, { key: "mid", label: "Middle-term" }, { key: "long", label: "Long-term" }];
 const DEFAULT_ROOMS = ["Kitchen", "Bathroom", "Living", "Bedroom", "Laundry", "General"];
@@ -145,6 +152,7 @@ function App() {
   const [view, setView] = useState("grid");
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [priorityViewPerson, setPriorityViewPerson] = useState(null);
+  const [priorityScope, setPriorityScope] = useState("shared");
   const [filter, setFilter] = useState("all");
   const [choreFilter, setChoreFilter] = useState("all");
   const [projectScope, setProjectScope] = useState("shared");
@@ -385,7 +393,7 @@ function App() {
         </div>
       )}
       {view === "grid" ? (
-        <PriorityGrid tasks={tasks} me={me} viewingPerson={priorityViewPerson || me} setViewingPerson={setPriorityViewPerson} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
+        <PriorityGrid tasks={tasks} me={me} viewingPerson={priorityViewPerson || me} setViewingPerson={setPriorityViewPerson} scope={priorityScope} setScope={setPriorityScope} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
       ) : view === "todo" ? (
         <ToDoList
           tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
@@ -492,8 +500,8 @@ function Header({ me, view, setView, needsDetailsCount, onOpenNeedsDetails }) {
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-        <TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" />
         <TabButton active={view === "todo"} onClick={() => setView("todo")} label="To-do list" />
+        <TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" />
         <TabButton active={view === "queue"} onClick={() => setView("queue")} label="Tasks" />
       </div>
     </div>
@@ -511,38 +519,35 @@ function PersonBadge({ person, size = 20 }) {
     </span>
   );
 }
-function FilterChip({ active, onClick, label }) {
-  return <button onClick={onClick} style={{ flex: 1, padding: "6px 0", borderRadius: 20, border: `1px solid ${active ? C.ink : C.rule}`, background: active ? C.ink : "transparent", color: active ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{label}</button>;
+function FilterChip({ active, onClick, label, activeColor }) {
+  const bg = activeColor || C.ink;
+  return <button onClick={onClick} style={{ flex: 1, padding: "6px 0", borderRadius: 20, border: `1px solid ${active ? bg : C.rule}`, background: active ? bg : "transparent", color: active ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{label}</button>;
 }
 
 /* ---------- priority grid ---------- */
-function PriorityGrid({ tasks, me, viewingPerson, setViewingPerson, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
+function PriorityGrid({ tasks, me, viewingPerson, setViewingPerson, scope, setScope, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
   const other = viewingPerson === "jade" ? "john" : "jade";
   return (
     <div style={{ padding: "16px 16px 12px", height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
-      <button onClick={() => setViewingPerson(other)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "none", padding: 0, cursor: "pointer", marginBottom: 14, flexShrink: 0 }}>
+      <button onClick={() => setViewingPerson(other)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "none", padding: 0, cursor: "pointer", marginBottom: 12, flexShrink: 0 }}>
         <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600, color: C.ink }}>{PEOPLE[viewingPerson]}</span>
         {viewingPerson === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
         <span style={{ fontSize: 11, color: C.inkSoft, textDecoration: "underline" }}>switch to {PEOPLE[other]}</span>
       </button>
 
-      <div style={{ display: "grid", gridTemplateColumns: "26px repeat(3, 1fr)", gap: 6, marginBottom: 6, flexShrink: 0 }}>
-        <div />
+      <button onClick={() => setScope((s) => (s === "shared" ? "personal" : "shared"))} style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.ink}`, background: C.ink, color: C.white, fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 14, flexShrink: 0 }}>
+        {scope === "shared" ? "Shared" : "Personal"} <span style={{ opacity: 0.6, fontSize: 11 }}>⇄</span>
+      </button>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8, flexShrink: 0 }}>
         {BUCKETS.map((b) => (
-          <div key={b.key} style={{ fontSize: 9.5, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, textAlign: "center" }}>{b.label}</div>
+          <div key={b.key} style={{ fontSize: 10, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, textAlign: "center" }}>{b.label}</div>
         ))}
       </div>
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
-        {[["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => (
-          <div key={scope} style={{ display: "grid", gridTemplateColumns: "26px repeat(3, 1fr)", gap: 6, flex: 1, minHeight: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span style={{ fontSize: 10.5, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, writingMode: "vertical-rl", transform: "rotate(180deg)" }}>{label}</span>
-            </div>
-            {BUCKETS.map((b) => (
-              <GridCell key={b.key} bucket={b} scope={scope} person={viewingPerson} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
-            ))}
-          </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, flex: 1, minHeight: 0 }}>
+        {BUCKETS.map((b) => (
+          <GridCell key={b.key} bucket={b} scope={scope} person={viewingPerson} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
         ))}
       </div>
     </div>
@@ -558,13 +563,13 @@ function GridCell({ bucket, scope, person, tasks, onOpenPicker, onClearBucket, o
           <button onClick={() => onEditTask(pinned)} style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: 0, cursor: "pointer", fontSize: 12.5, color: C.ink, fontWeight: 600, lineHeight: 1.25 }}>{pinned.title}</button>
 
           {incomplete.length > 0 ? (
-            <div style={{ marginTop: 4, flex: 1, overflowY: "auto", minHeight: 0 }}>
-              <button onClick={() => onToggleAction(pinned.id, incomplete[0].id)} style={{ display: "flex", alignItems: "flex-start", gap: 4, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left", width: "100%" }}>
-                <span style={{ width: 10, height: 10, borderRadius: "50%", border: `1.5px solid ${C.sageDeep}`, marginTop: 2, flexShrink: 0 }} />
-                <span style={{ fontSize: 10.5, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {incomplete[0].title}{incomplete[0].dueDate ? ` · ${fmtDate(incomplete[0].dueDate)}` : ""}</span>
+            <div style={{ marginTop: 5, flex: 1, overflowY: "auto", minHeight: 0 }}>
+              <button onClick={() => onToggleAction(pinned.id, incomplete[0].id)} style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: C.sageDeep, borderRadius: 6, padding: "4px 6px", cursor: "pointer" }}>
+                <span style={{ fontSize: 10.5, color: C.white, fontWeight: 700, lineHeight: 1.3 }}>{incomplete[0].title}</span>
+                {incomplete[0].dueDate && <span style={{ fontSize: 9, color: "rgba(255,255,255,0.75)" }}> · {fmtDate(incomplete[0].dueDate)}</span>}
               </button>
               {incomplete.slice(1).map((a) => (
-                <div key={a.id} onClick={() => onToggleAction(pinned.id, a.id)} style={{ fontSize: 9, color: C.inkSoft, opacity: 0.55, marginTop: 2, marginLeft: 14, cursor: "pointer", lineHeight: 1.3 }}>{a.title}</div>
+                <div key={a.id} onClick={() => onToggleAction(pinned.id, a.id)} style={{ fontSize: 9, color: C.inkSoft, opacity: 0.55, marginTop: 3, cursor: "pointer", lineHeight: 1.3 }}>{a.title}</div>
               ))}
             </div>
           ) : (pinned.actions || []).length > 0 ? <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 4 }}>All actions done</div> : <div style={{ flex: 1 }} />}
@@ -1002,7 +1007,7 @@ function QueueView(props) {
 
       {typeFilter === "chore" && (
         <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
-          {[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => <FilterChip key={k} active={choreFilter === k} onClick={() => setChoreFilter(k)} label={l} />)}
+          {[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => <FilterChip key={k} active={choreFilter === k} onClick={() => setChoreFilter(k)} label={l} activeColor={filterColor(k)} />)}
         </div>
       )}
 
@@ -1015,14 +1020,14 @@ function QueueView(props) {
           </div>
           {projectScope === "shared" && (
             <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
-              {[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => <FilterChip key={k} active={projectFilter === k} onClick={() => setProjectFilter(k)} label={l} />)}
+              {[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => <FilterChip key={k} active={projectFilter === k} onClick={() => setProjectFilter(k)} label={l} activeColor={filterColor(k)} />)}
             </div>
           )}
         </>
       )}
 
       {typeFilter === "chore" ? (
-        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={withOrphans(config.rooms, sorted, "room")} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} onReorderRoom={onReorderRoom} />
+        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={withOrphans(config.rooms, sorted, "room")} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} onReorderRoom={onReorderRoom} colorBg={filterColor(choreFilter)} />
       ) : (
         <CategoryBoard
           tasks={sorted} rowProps={rowProps}
@@ -1030,6 +1035,7 @@ function QueueView(props) {
           onAddCategory={(name) => onAddCategory(projectScope, me, name)}
           onDeleteCategory={(name) => onDeleteCategory(projectScope, me, name)}
           onReorderCategory={(name, dir) => onReorderCategory(projectScope, me, name, dir)}
+          colorBg={projectScope === "shared" ? filterColor(projectFilter) : filterColor(me)}
         />
       )}
     </div>
@@ -1056,10 +1062,11 @@ function StackedSection({ name, idx, total, tasks, colorBg, rowProps, onDelete, 
   const [expandMode, setExpandMode] = useState("preview"); // preview | all | none
   const visible = expandMode === "none" ? [] : expandMode === "all" ? tasks : tasks.slice(0, PREVIEW_COUNT);
   const hiddenCount = tasks.length - visible.length;
+  const bg = name === "Unassigned" ? C.taupe : colorBg;
 
   return (
     <div style={{ marginBottom: 14 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, background: colorBg, padding: "7px 10px", borderRadius: 8, marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, background: bg, padding: "7px 10px", borderRadius: 8, marginBottom: 8 }}>
         {deletable && (
           <div style={{ display: "flex", flexDirection: "column" }}>
             <button onClick={() => onReorder(name, -1)} disabled={idx === 0} style={{ border: "none", background: "none", color: idx === 0 ? "rgba(255,255,255,0.35)" : "rgba(255,255,255,0.85)", cursor: idx === 0 ? "default" : "pointer", fontSize: 10, padding: 0, lineHeight: 1 }}>▲</button>
@@ -1108,23 +1115,23 @@ function SectionStack({ sections, sectionTasksFn, colorBg, rowProps, onAdd, onDe
   );
 }
 
-function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom, onReorderRoom }) {
+function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom, onReorderRoom, colorBg }) {
   return (
     <SectionStack
       sections={rooms}
       sectionTasksFn={(room) => tasks.filter((t) => (t.room || "Unassigned") === room)}
-      colorBg={C.sageDeep} rowProps={rowProps}
+      colorBg={colorBg} rowProps={rowProps}
       onAdd={onAddRoom} onDelete={onDeleteRoom} onReorder={onReorderRoom}
       addLabel="room" emptyLabel="No chores here"
     />
   );
 }
-function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCategory, onReorderCategory }) {
+function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCategory, onReorderCategory, colorBg }) {
   return (
     <SectionStack
       sections={categories}
       sectionTasksFn={(cat) => tasks.filter((t) => (t.category || "Unassigned") === cat)}
-      colorBg={C.plum} rowProps={rowProps}
+      colorBg={colorBg} rowProps={rowProps}
       onAdd={onAddCategory} onDelete={onDeleteCategory} onReorder={onReorderCategory}
       addLabel="category" emptyLabel="No projects here"
     />
