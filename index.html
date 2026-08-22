@@ -108,11 +108,11 @@ function fmtDate(dateStr) {
   if (diff >= 2 && diff <= 14) return `${base} (${diff}d)`;
   return base;
 }
-/* ensure every room/category actually in use gets a column, even if it's not in the saved sections list yet */
+/* ensure every room/category actually in use gets a column, and always include a permanent "Unassigned" catch-all */
 function withOrphans(sections, tasks, field) {
   const used = new Set(tasks.map((t) => t[field]).filter(Boolean));
-  const extra = [...used].filter((v) => !sections.includes(v));
-  return [...sections, ...extra];
+  const extra = [...used].filter((v) => !sections.includes(v) && v !== "Unassigned");
+  return [...sections, ...extra, "Unassigned"];
 }
 
 const TASKS_COLLECTION = "tasks";
@@ -164,27 +164,40 @@ function App() {
     return unsub;
   }, [authReady]);
 
+  const [configError, setConfigError] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
-    const unsub = CONFIG_DOC.onSnapshot((doc) => {
-      const d = doc.data() || {};
-      // merge in anything from the old split shared/personal category lists so nothing already created gets lost
-      const merged = [
-        ...(d.categories || []),
-        ...(d.sharedCategories || []),
-        ...((d.personalCategories && d.personalCategories.jade) || []),
-        ...((d.personalCategories && d.personalCategories.john) || []),
-      ];
-      setConfig({
-        rooms: sanitizeList(d.rooms, DEFAULT_ROOMS),
-        categories: sanitizeList(merged, DEFAULT_CATEGORIES),
-      });
-    });
+    const unsub = CONFIG_DOC.onSnapshot(
+      (doc) => {
+        setConfigError(false);
+        const d = doc.data() || {};
+        // merge in anything from the old split shared/personal category lists so nothing already created gets lost
+        const merged = [
+          ...(d.categories || []),
+          ...(d.sharedCategories || []),
+          ...((d.personalCategories && d.personalCategories.jade) || []),
+          ...((d.personalCategories && d.personalCategories.john) || []),
+        ];
+        setConfig({
+          rooms: sanitizeList(d.rooms, DEFAULT_ROOMS),
+          categories: sanitizeList(merged, DEFAULT_CATEGORIES),
+        });
+      },
+      (err) => { console.error("config sync error — likely a Firestore rules issue on /meta/config:", err); setConfigError(true); }
+    );
     return unsub;
   }, [authReady]);
 
   const addRoom = (name) => CONFIG_DOC.set({ rooms: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
   const addCategory = (name) => CONFIG_DOC.set({ categories: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
+  const deleteRoom = (name) => {
+    CONFIG_DOC.update({ rooms: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
+    (tasks || []).filter((t) => t.room === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ room: null }).catch(console.error));
+  };
+  const deleteCategory = (name) => {
+    CONFIG_DOC.update({ categories: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
+    (tasks || []).filter((t) => t.category === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
+  };
 
   const upsertTask = (task) => {
     const { id, ...data } = task;
@@ -195,9 +208,10 @@ function App() {
   const toggleComplete = (task) => {
     const ref = db.collection(TASKS_COLLECTION).doc(task.id);
     if (!task.completed && task.recurrence !== "none" && task.dueDate) {
-      ref.update({ dueDate: addInterval(task.dueDate, task.recurrence), completed: false }).catch(console.error);
+      ref.update({ dueDate: addInterval(task.dueDate, task.recurrence), completed: false, completedAt: null }).catch(console.error);
     } else {
-      ref.update({ completed: !task.completed }).catch(console.error);
+      const nowCompleting = !task.completed;
+      ref.update({ completed: nowCompleting, completedAt: nowCompleting ? Date.now() : null }).catch(console.error);
     }
   };
 
@@ -275,6 +289,11 @@ function App() {
   return (
     <Shell>
       <Header me={me} view={view} setView={setView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} />
+      {configError && (
+        <div style={{ background: C.plum, color: C.white, fontSize: 11, padding: "6px 16px", textAlign: "center" }}>
+          Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too.
+        </div>
+      )}
       {view === "grid" ? (
         <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
       ) : view === "todo" ? (
@@ -286,7 +305,7 @@ function App() {
           projectScope={projectScope} setProjectScope={setProjectScope}
           projectFilter={projectFilter} setProjectFilter={setProjectFilter}
           typeFilter={typeFilter} setTypeFilter={setTypeFilter}
-          config={config} onAddRoom={addRoom} onAddCategory={addCategory}
+          config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory}
           onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
           onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction}
           onReorderAction={reorderAction} onSetActionDueDate={setActionDueDate}
@@ -483,19 +502,112 @@ function NeedsDetailsList({ tasks, onPick, onClose }) {
 }
 
 /* ---------- to-do list: a simple first pass — urgent/pressing items across everything visible to me ---------- */
+const DAY_MS = 86400000;
+const SOON_DAYS = 3; // "due soon" window
+const STALE_DAYS = 14; // no due date + low/no importance + untouched this long = stale
+const LINGER_MS = 24 * 3600 * 1000; // how long a just-completed task stays visible
+
+function urgencyBand(task, todayStr) {
+  if (!task.dueDate) return "none";
+  if (task.dueDate < todayStr) return "overdue";
+  const diff = Math.round((new Date(task.dueDate + "T00:00:00") - new Date(todayStr + "T00:00:00")) / DAY_MS);
+  if (diff <= SOON_DAYS) return "soon";
+  return "later";
+}
+function importanceBand(task) { return task.priority || "none"; }
+
+/* explicit tier ladder — first match wins. Encodes: overdue+(high|med) is the top tier outright;
+   overdue+low is deliberately ranked below soon+high, not just below overdue+high/med. */
+const TIER_RULES = [
+  (u, i) => u === "overdue" && (i === "high" || i === "med"),
+  (u, i) => u === "soon" && i === "high",
+  (u, i) => u === "overdue" && i === "low",
+  (u, i) => u === "soon" && i === "med",
+  (u, i) => u === "soon" && i === "low",
+  (u, i) => (u === "later" || u === "none") && i === "high",
+  (u, i) => (u === "later" || u === "none") && i === "med",
+  (u, i) => (u === "later" || u === "none") && i === "low",
+];
+function tierOf(task, todayStr) {
+  const u = urgencyBand(task, todayStr), i = importanceBand(task);
+  const idx = TIER_RULES.findIndex((rule) => rule(u, i));
+  return idx === -1 ? TIER_RULES.length : idx; // no importance set at all → last
+}
+
 function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate }) {
+  const [viewAs, setViewAs] = useState(me);
+  const [showStale, setShowStale] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
-  const pressing = useMemo(() => tasks
-    .filter((t) => !t.completed && (t.priority === "high" || (t.dueDate && t.dueDate <= today)))
-    .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")),
-    [tasks, today]
+  const now = Date.now();
+
+  const forPerson = useMemo(() => {
+    if (viewAs === me) return tasks; // includes my own personal tasks + shared
+    // viewing as the other person: only shared tasks are visible to us at all — personal ones aren't ours to see
+    return tasks.filter((t) => t.scope === "shared");
+  }, [tasks, viewAs, me]);
+
+  const assignedToViewAs = useMemo(() => forPerson.filter((t) =>
+    t.scope === "personal" ? t.owner === viewAs : (t.assignee === viewAs || !t.assignee)
+  ), [forPerson, viewAs]);
+
+  const justDone = useMemo(() => assignedToViewAs
+    .filter((t) => t.completed && t.completedAt && (now - t.completedAt < LINGER_MS))
+    .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0)),
+    [assignedToViewAs, now]
   );
+
+  const active = useMemo(() => assignedToViewAs.filter((t) => !t.completed), [assignedToViewAs]);
+
+  const stale = useMemo(() => active.filter((t) =>
+    !t.dueDate && (t.priority === "low" || !t.priority) && (now - (t.createdAt || 0) > STALE_DAYS * DAY_MS)
+  ), [active, now]);
+  const staleIds = new Set(stale.map((t) => t.id));
+
+  const ranked = useMemo(() => active
+    .filter((t) => !staleIds.has(t.id))
+    .sort((a, b) => {
+      const ta = tierOf(a, today), tb = tierOf(b, today);
+      if (ta !== tb) return ta - tb;
+      return (a.dueDate || "9999").localeCompare(b.dueDate || "9999");
+    }), [active, today, staleIds]
+  );
+
   const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate };
+
   return (
     <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
-      <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 10 }}>Overdue, due today, or marked High importance. This view's still a rough first pass — more to come.</div>
-      {pressing.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing urgent right now.</div>}
-      {pressing.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {Object.entries(PEOPLE).map(([key, label]) => (
+          <button key={key} onClick={() => setViewAs(key)} style={{ flex: 1, padding: "6px 0", borderRadius: 8, border: `1px solid ${viewAs === key ? C.ink : C.rule}`, background: viewAs === key ? C.ink : C.card, color: viewAs === key ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+            Viewing: {label}{key === me ? " (you)" : ""}
+          </button>
+        ))}
+      </div>
+      {viewAs !== me && <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10 }}>Only {PEOPLE[viewAs]}'s shared tasks — their personal list isn't visible to you.</div>}
+
+      {justDone.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: C.sageDeep, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Just done ✓</div>
+          {justDone.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+        </div>
+      )}
+
+      {ranked.length === 0 && justDone.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing pressing right now.</div>}
+      {ranked.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+
+      {stale.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <button onClick={() => setShowStale((s) => !s)} style={{ width: "100%", border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }}>
+            {showStale ? "Hide" : "Show"} stale tasks ({stale.length})
+          </button>
+          {showStale && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Low importance, no due date, sitting untouched for {STALE_DAYS}+ days.</div>
+              {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -505,7 +617,7 @@ function QueueView(props) {
   const {
     tasks, me, filter, setFilter, choreFilter, setChoreFilter,
     projectScope, setProjectScope, projectFilter, setProjectFilter,
-    typeFilter, setTypeFilter, config, onAddRoom, onAddCategory,
+    typeFilter, setTypeFilter, config, onAddRoom, onAddCategory, onDeleteRoom, onDeleteCategory,
     onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate,
   } = props;
 
@@ -568,27 +680,33 @@ function QueueView(props) {
       )}
 
       {typeFilter === "chore" ? (
-        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={withOrphans(config.rooms, sorted, "room")} onAddRoom={onAddRoom} />
+        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={withOrphans(config.rooms, sorted, "room")} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} />
       ) : (
         <CategoryBoard
           tasks={sorted} rowProps={rowProps}
           categories={withOrphans(config.categories, sorted, "category")}
-          onAddCategory={onAddCategory}
+          onAddCategory={onAddCategory} onDeleteCategory={onDeleteCategory}
         />
       )}
     </div>
   );
 }
 
-function RoomBoard({ tasks, rowProps, rooms, onAddRoom }) {
+function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom }) {
   return (
     <div style={{ flex: 1, overflowX: "auto", overflowY: "hidden", padding: "12px 16px 90px", display: "flex", gap: 12 }}>
       {rooms.map((room) => {
-        const roomTasks = tasks.filter((t) => (t.room || "General") === room);
+        const roomTasks = tasks.filter((t) => (t.room || "Unassigned") === room);
+        const deletable = room !== "Unassigned";
         return (
           <div key={room} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
-            <div style={{ fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white, background: C.sageDeep, padding: "6px 12px", borderRadius: 8, marginBottom: 8, textAlign: "center" }}>
-              {room} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({roomTasks.length})</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.sageDeep, padding: "6px 10px", borderRadius: 8, marginBottom: 8 }}>
+              <div style={{ flex: 1, textAlign: "center", fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white }}>
+                {room} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({roomTasks.length})</span>
+              </div>
+              {deletable && (
+                <button onClick={() => { if (window.confirm(`Delete "${room}"? Its chores move to Unassigned.`)) onDeleteRoom(room); }} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>
+              )}
             </div>
             <div style={{ overflowY: "auto", flex: 1 }}>
               {roomTasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", marginTop: 20 }}>No chores here</div>}
@@ -601,15 +719,21 @@ function RoomBoard({ tasks, rowProps, rooms, onAddRoom }) {
     </div>
   );
 }
-function CategoryBoard({ tasks, rowProps, categories, onAddCategory }) {
+function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCategory }) {
   return (
     <div style={{ flex: 1, overflowX: "auto", overflowY: "hidden", padding: "12px 16px 90px", display: "flex", gap: 12 }}>
       {categories.map((cat) => {
-        const catTasks = tasks.filter((t) => (t.category || "General") === cat);
+        const catTasks = tasks.filter((t) => (t.category || "Unassigned") === cat);
+        const deletable = cat !== "Unassigned";
         return (
           <div key={cat} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
-            <div style={{ fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white, background: C.plum, padding: "6px 12px", borderRadius: 8, marginBottom: 8, textAlign: "center" }}>
-              {cat} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({catTasks.length})</span>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.plum, padding: "6px 10px", borderRadius: 8, marginBottom: 8 }}>
+              <div style={{ flex: 1, textAlign: "center", fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white }}>
+                {cat} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({catTasks.length})</span>
+              </div>
+              {deletable && (
+                <button onClick={() => { if (window.confirm(`Delete "${cat}"? Its projects move to Unassigned.`)) onDeleteCategory(cat); }} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>
+              )}
             </div>
             <div style={{ overflowY: "auto", flex: 1 }}>
               {catTasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", marginTop: 20 }}>No projects here</div>}
@@ -759,7 +883,7 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
     priority: null, priorityBucket: null,
     dueDate: null, recurrence: "none", notes: "",
     completed: false, gridBucket: {}, actions: [],
-    needsDetails: false, createdBy: me, startsOnDue: false,
+    needsDetails: false, createdBy: me, startsOnDue: false, createdAt: Date.now(), completedAt: null,
   });
   const [deferDetails, setDeferDetails] = useState(false);
   const set = (k, v) => setT((p) => ({ ...p, [k]: v }));
