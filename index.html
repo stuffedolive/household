@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
 <meta name="robots" content="noindex, nofollow" />
-<title>The Ledger</title>
+<title>Our Life List</title>
 
 <!-- Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -52,15 +52,20 @@
 <script type="text/plain" id="app-source">
 const { useState, useEffect, useMemo } = React;
 
-/* ---------- design tokens (unchanged from the Claude version) ---------- */
+/* ---------- design tokens ---------- */
 const C = {
   ink: "#2B2A28", inkSoft: "#5C574C", parchment: "#EDE7D8", card: "#F8F5EC",
   rule: "#D9D0BC", sage: "#6E7B5E", sageDeep: "#4F5A43", plum: "#7A3B45",
   mustard: "#B5842A", white: "#FFFDF8",
 };
 const PEOPLE = { jade: "Jade", john: "John" };
-const BUCKETS = [{ key: "quick", label: "Quick" }, { key: "mid", label: "Mid" }, { key: "long", label: "Long-term" }];
-const ROOMS = ["Kitchen", "Bathroom", "Living", "Bedroom", "Laundry", "General"];
+const PERSON_COLOR = { jade: C.sage, john: C.plum };
+const PERSON_CODE = { jade: "JC", john: "JE" };
+const otherPerson = (me) => (me === "jade" ? "john" : "jade");
+
+const BUCKETS = [{ key: "quick", label: "Quick" }, { key: "mid", label: "Middle-term" }, { key: "long", label: "Long-term" }];
+const DEFAULT_ROOMS = ["Kitchen", "Bathroom", "Living", "Bedroom", "Laundry", "General"];
+const DEFAULT_CATEGORIES = ["General"];
 const RECUR = [
   { key: "none", label: "One-off" }, { key: "daily", label: "Daily" }, { key: "weekly", label: "Weekly" },
   { key: "fortnightly", label: "Fortnightly" }, { key: "monthly", label: "Monthly" },
@@ -75,6 +80,13 @@ const actionsProgress = (task) => {
   const acts = task.actions || [];
   if (!acts.length) return null;
   return `${acts.filter((a) => a.completed).length}/${acts.length} actions`;
+};
+const moveAction = (actions, idx, dir) => {
+  const arr = actions.slice();
+  const j = idx + dir;
+  if (j < 0 || j >= arr.length) return arr;
+  [arr[idx], arr[j]] = [arr[j], arr[idx]];
+  return arr;
 };
 function addInterval(dateStr, recurrence) {
   const d = new Date(dateStr + "T00:00:00");
@@ -96,47 +108,39 @@ function fmtDate(dateStr) {
   return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
 }
 
-/* tiny inline icon glyphs, replacing lucide (no reliable CDN build for it) */
-const Icon = ({ ch, size = 14, style }) => <span style={{ fontSize: size, lineHeight: 1, display: "inline-block", ...style }}>{ch}</span>;
-
 const TASKS_COLLECTION = "tasks";
-const HOUSEHOLD_EMAIL = "access@household-ledger.local"; // fixed hidden account — the PIN is its password
+const CONFIG_DOC = db.collection("meta").doc("config");
+const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 
 function App() {
-  const [authReady, setAuthReady] = useState(null); // null = checking session, false = needs PIN, true = signed in
+  const [authReady, setAuthReady] = useState(null);
   const [me, setMe] = useState(null);
-  const [tasks, setTasks] = useState(null); // null = loading
+  const [tasks, setTasks] = useState(null);
+  const [config, setConfig] = useState({ rooms: DEFAULT_ROOMS, sharedCategories: DEFAULT_CATEGORIES, personalCategories: { jade: DEFAULT_CATEGORIES, john: DEFAULT_CATEGORIES } });
   const [view, setView] = useState("grid");
   const [filter, setFilter] = useState("all");
+  const [choreFilter, setChoreFilter] = useState("shared");
   const [typeFilter, setTypeFilter] = useState("all");
+  const [showAllPersonal, setShowAllPersonal] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pickerFor, setPickerFor] = useState(null);
 
-  /* identity from URL: index.html?user=jade or ?user=john */
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const u = params.get("user");
     if (u && PEOPLE[u]) setMe(u);
   }, []);
 
-  /* PIN-gated auth — Firebase remembers this in the browser, so it's a one-time unlock per device */
   useEffect(() => {
     const unsub = auth.onAuthStateChanged((user) => {
-      if (user && user.email === HOUSEHOLD_EMAIL) {
-        setAuthReady(true);
-      } else if (user) {
-        // leftover session from an earlier version of the app (e.g. anonymous auth) — clear it
-        auth.signOut();
-        setAuthReady(false);
-      } else {
-        setAuthReady(false);
-      }
+      if (user && user.email === HOUSEHOLD_EMAIL) setAuthReady(true);
+      else if (user) { auth.signOut(); setAuthReady(false); }
+      else setAuthReady(false);
     });
     return unsub;
   }, []);
 
-  /* live sync — every write from either of you appears for both, instantly */
   useEffect(() => {
     if (authReady !== true) return;
     const unsub = db.collection(TASKS_COLLECTION).onSnapshot(
@@ -145,6 +149,28 @@ function App() {
     );
     return unsub;
   }, [authReady]);
+
+  useEffect(() => {
+    if (authReady !== true) return;
+    const unsub = CONFIG_DOC.onSnapshot((doc) => {
+      const d = doc.data() || {};
+      setConfig({
+        rooms: d.rooms && d.rooms.length ? d.rooms : DEFAULT_ROOMS,
+        sharedCategories: d.sharedCategories && d.sharedCategories.length ? d.sharedCategories : DEFAULT_CATEGORIES,
+        personalCategories: {
+          jade: (d.personalCategories && d.personalCategories.jade && d.personalCategories.jade.length) ? d.personalCategories.jade : DEFAULT_CATEGORIES,
+          john: (d.personalCategories && d.personalCategories.john && d.personalCategories.john.length) ? d.personalCategories.john : DEFAULT_CATEGORIES,
+        },
+      });
+    });
+    return unsub;
+  }, [authReady]);
+
+  const addRoom = (name) => CONFIG_DOC.set({ rooms: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
+  const addCategory = (scope, owner, name) => {
+    if (scope === "shared") CONFIG_DOC.set({ sharedCategories: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
+    else CONFIG_DOC.set({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
+  };
 
   const upsertTask = (task) => {
     const { id, ...data } = task;
@@ -171,18 +197,28 @@ function App() {
     if (!title.trim()) return;
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
-    updateActions(taskId, [...(task.actions || []), { id: uid(), title: title.trim(), completed: false }]);
+    updateActions(taskId, [...(task.actions || []), { id: uid(), title: title.trim(), completed: false, dueDate: null }]);
   };
   const deleteAction = (taskId, actionId) => {
     const task = tasks.find((t) => t.id === taskId);
     if (!task) return;
     updateActions(taskId, (task.actions || []).filter((a) => a.id !== actionId));
   };
+  const reorderAction = (taskId, actionId, dir) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const idx = (task.actions || []).findIndex((a) => a.id === actionId);
+    if (idx < 0) return;
+    updateActions(taskId, moveAction(task.actions || [], idx, dir));
+  };
+  const setActionDueDate = (taskId, actionId, date) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    updateActions(taskId, (task.actions || []).map((a) => (a.id === actionId ? { ...a, dueDate: date || null } : a)));
+  };
 
   const setBucket = (taskId, person, bucket) => {
-    const ref = db.collection(TASKS_COLLECTION).doc(taskId);
-    ref.update({ [`gridBucket.${person}`]: bucket }).catch(console.error);
-    // clear the same slot from whichever task previously held it
+    db.collection(TASKS_COLLECTION).doc(taskId).update({ [`gridBucket.${person}`]: bucket }).catch(console.error);
     tasks.forEach((t) => {
       if (t.id !== taskId && t.gridBucket && t.gridBucket[person] === bucket) {
         db.collection(TASKS_COLLECTION).doc(t.id).update({ [`gridBucket.${person}`]: firebase.firestore.FieldValue.delete() }).catch(console.error);
@@ -193,15 +229,10 @@ function App() {
     db.collection(TASKS_COLLECTION).doc(taskId).update({ [`gridBucket.${person}`]: firebase.firestore.FieldValue.delete() }).catch(console.error);
   };
 
-  const visibleTasks = useMemo(() => (tasks || []).filter((t) => t.scope === "shared" || t.owner === me), [tasks, me]);
+  const visibleTasks = useMemo(() => (tasks || []).filter((t) => t.scope === "shared" || t.owner === me || showAllPersonal), [tasks, me, showAllPersonal]);
 
-  if (authReady === null) {
-    return <Shell><div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: C.inkSoft, fontFamily: "Fraunces, serif" }}>Loading…</div></Shell>;
-  }
-
-  if (authReady === false) {
-    return <Shell><PinGate /></Shell>;
-  }
+  if (authReady === null) return <Shell><div style={centerMsg}>Loading…</div></Shell>;
+  if (authReady === false) return <Shell><PinGate /></Shell>;
 
   if (!me) {
     return (
@@ -213,7 +244,7 @@ function App() {
           </div>
           <div style={{ display: "flex", gap: 12 }}>
             {Object.entries(PEOPLE).map(([key, label]) => (
-              <button key={key} onClick={() => setMe(key)} style={btnStyle(key === "jade" ? C.sage : C.plum)}>{label}</button>
+              <button key={key} onClick={() => setMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>
             ))}
           </div>
         </div>
@@ -221,9 +252,7 @@ function App() {
     );
   }
 
-  if (tasks === null) {
-    return <Shell><div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: C.inkSoft, fontFamily: "Fraunces, serif" }}>Loading the ledger…</div></Shell>;
-  }
+  if (tasks === null) return <Shell><div style={centerMsg}>Loading the list…</div></Shell>;
 
   return (
     <Shell>
@@ -232,9 +261,14 @@ function App() {
         <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} />
       ) : (
         <QueueView
-          tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} typeFilter={typeFilter} setTypeFilter={setTypeFilter}
+          tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter}
+          choreFilter={choreFilter} setChoreFilter={setChoreFilter}
+          typeFilter={typeFilter} setTypeFilter={setTypeFilter}
+          showAllPersonal={showAllPersonal} setShowAllPersonal={setShowAllPersonal}
+          config={config} onAddRoom={addRoom} onAddCategory={addCategory}
           onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
           onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction}
+          onReorderAction={reorderAction} onSetActionDueDate={setActionDueDate}
         />
       )}
 
@@ -244,10 +278,19 @@ function App() {
         aria-label="Add task"
       >+</button>
 
-      {showForm && <TaskForm me={me} initial={editing} onClose={() => setShowForm(false)} onSave={(t) => { upsertTask(t); setShowForm(false); }} />}
+      {showForm && (
+        <TaskForm
+          me={me} initial={editing} config={config} onAddRoom={addRoom} onAddCategory={addCategory}
+          onClose={() => setShowForm(false)} onSave={(t) => { upsertTask(t); setShowForm(false); }}
+        />
+      )}
       {pickerFor && (
         <BucketPicker
-          tasks={tasks.filter((t) => (pickerFor.scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === pickerFor.person) && !t.completed)}
+          tasks={tasks.filter((t) =>
+            t.listType === "project" && !t.completed &&
+            (pickerFor.scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === pickerFor.person) &&
+            (!t.priorityBucket || t.priorityBucket === pickerFor.bucket)
+          )}
           onPick={(taskId) => { setBucket(taskId, pickerFor.person, pickerFor.bucket); setPickerFor(null); }}
           onClose={() => setPickerFor(null)}
         />
@@ -256,42 +299,33 @@ function App() {
   );
 }
 
-/* ---------- shell ---------- */
+const centerMsg = { display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#5C574C", fontFamily: "Fraunces, serif" };
+
 /* ---------- PIN gate ---------- */
 function PinGate() {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-
   const submit = () => {
     if (!pin.trim() || busy) return;
-    setBusy(true);
-    setError("");
+    setBusy(true); setError("");
     auth.signInWithEmailAndPassword(HOUSEHOLD_EMAIL, pin)
       .catch(() => setError("Wrong PIN — try again."))
       .finally(() => setBusy(false));
   };
-
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 14, padding: 24 }}>
       <div style={{ fontFamily: "Fraunces, serif", fontSize: 24, color: C.ink, textAlign: "center" }}>Enter the household PIN</div>
-      <input
-        type="password"
-        inputMode="numeric"
-        autoFocus
-        value={pin}
-        onChange={(e) => setPin(e.target.value)}
+      <input type="password" inputMode="numeric" autoFocus value={pin} onChange={(e) => setPin(e.target.value)}
         onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
-        style={{ ...inputStyle, width: 200, textAlign: "center", letterSpacing: 4, fontSize: 18 }}
-      />
+        style={{ ...inputStyle, width: 200, textAlign: "center", letterSpacing: 4, fontSize: 18 }} />
       {error && <div style={{ color: C.plum, fontSize: 12.5 }}>{error}</div>}
-      <button onClick={submit} disabled={busy || !pin.trim()} style={{ ...btnStyle(C.ink), opacity: busy || !pin.trim() ? 0.5 : 1 }}>
-        {busy ? "Checking…" : "Unlock"}
-      </button>
+      <button onClick={submit} disabled={busy || !pin.trim()} style={{ ...btnStyle(C.ink), opacity: busy || !pin.trim() ? 0.5 : 1 }}>{busy ? "Checking…" : "Unlock"}</button>
     </div>
   );
 }
 
+/* ---------- shell ---------- */
 function Shell({ children }) {
   return <div style={{ position: "relative", width: "100%", maxWidth: 480, margin: "0 auto", height: "100vh", background: C.parchment, fontFamily: "Inter, sans-serif", overflow: "hidden" }}>{children}</div>;
 }
@@ -301,7 +335,7 @@ function Header({ me, view, setView }) {
   return (
     <div style={{ padding: "18px 18px 10px", borderBottom: `1px solid ${C.rule}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <div style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, color: C.ink }}>The Ledger</div>
+        <div style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, color: C.ink }}>Our Life List</div>
         <div style={{ fontSize: 11, color: C.inkSoft }}>viewing as {PEOPLE[me]}</div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
@@ -312,8 +346,15 @@ function Header({ me, view, setView }) {
   );
 }
 function TabButton({ active, onClick, label }) {
+  return <button onClick={onClick} style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: `1px solid ${active ? C.ink : C.rule}`, background: active ? C.ink : "transparent", color: active ? C.white : C.inkSoft, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{label}</button>;
+}
+
+function PersonBadge({ person, size = 20 }) {
+  if (!person) return <span style={{ fontSize: 9, color: C.inkSoft, border: `1px dashed ${C.rule}`, borderRadius: 20, padding: "2px 7px" }}>Anyone</span>;
   return (
-    <button onClick={onClick} style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: `1px solid ${active ? C.ink : C.rule}`, background: active ? C.ink : "transparent", color: active ? C.white : C.inkSoft, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>{label}</button>
+    <span style={{ fontSize: size <= 20 ? 9 : 10, fontWeight: 700, color: C.white, background: PERSON_COLOR[person], borderRadius: "50%", width: size, height: size, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
+      {PERSON_CODE[person]}
+    </span>
   );
 }
 
@@ -351,17 +392,17 @@ function GridBlock({ label, scope, person, tasks, onOpenPicker, onClearBucket, o
                     return na ? (
                       <button onClick={() => onToggleAction(pinned.id, na.id)} style={{ display: "flex", alignItems: "flex-start", gap: 4, marginTop: 4, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
                         <span style={{ width: 10, height: 10, borderRadius: "50%", border: `1.5px solid ${C.sageDeep}`, marginTop: 2, flexShrink: 0 }} />
-                        <span style={{ fontSize: 10.5, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}</span>
+                        <span style={{ fontSize: 10.5, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span>
                       </button>
                     ) : (pinned.actions || []).length > 0 ? <div style={{ fontSize: 10, color: C.inkSoft, marginTop: 4 }}>All actions done</div> : null;
                   })()}
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
                     <span style={{ fontSize: 10, color: C.inkSoft, fontFamily: "IBM Plex Mono, monospace" }}>{fmtDate(pinned.dueDate)}</span>
-                    <button onClick={() => onClearBucket(pinned.id, person)} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, padding: 0 }}><Icon ch="×" size={13} /></button>
+                    <button onClick={() => onClearBucket(pinned.id, person)} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, padding: 0, fontSize: 13 }}>×</button>
                   </div>
                 </div>
               ) : (
-                <button onClick={() => onOpenPicker({ person, scope, bucket: b.key })} style={{ width: "100%", height: 34, border: `1px dashed ${C.rule}`, borderRadius: 6, background: "transparent", color: C.inkSoft, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}><Icon ch="📌" size={13} /></button>
+                <button onClick={() => onOpenPicker({ person, scope, bucket: b.key })} style={{ width: "100%", height: 34, border: `1px dashed ${C.rule}`, borderRadius: 6, background: "transparent", color: C.inkSoft, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>📌</button>
               )}
             </div>
           );
@@ -373,7 +414,8 @@ function GridBlock({ label, scope, person, tasks, onOpenPicker, onClearBucket, o
 function BucketPicker({ tasks, onPick, onClose }) {
   return (
     <Overlay title="Pin to this slot" onClose={onClose}>
-      {tasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, padding: "8px 0" }}>No open tasks in this list yet. Add one from the Queue tab first.</div>}
+      <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 10 }}>Showing projects already tagged for this bucket, or untagged ones. Chores don't appear here.</div>
+      {tasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, padding: "8px 0" }}>Nothing matches yet. Add or tag a project first.</div>}
       {tasks.map((t) => (
         <button key={t.id} onClick={() => onPick(t.id)} style={{ width: "100%", textAlign: "left", padding: "11px 12px", marginBottom: 6, borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, cursor: "pointer", fontSize: 13.5, color: C.ink }}>
           {t.title}
@@ -385,34 +427,67 @@ function BucketPicker({ tasks, onPick, onClose }) {
 }
 
 /* ---------- queue view ---------- */
-function QueueView({ tasks, me, filter, setFilter, typeFilter, setTypeFilter, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction }) {
+function QueueView(props) {
+  const {
+    tasks, me, filter, setFilter, choreFilter, setChoreFilter, typeFilter, setTypeFilter,
+    showAllPersonal, setShowAllPersonal, config, onAddRoom, onAddCategory,
+    onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate,
+  } = props;
+
+  const typed = useMemo(() => (typeFilter === "all" ? tasks : tasks.filter((t) => t.listType === typeFilter)), [tasks, typeFilter]);
+
   const scoped = useMemo(() => {
-    let f = tasks;
+    if (typeFilter === "chore") {
+      if (choreFilter === "shared") return typed;
+      return typed.filter((t) => (t.scope === "personal" ? t.owner === choreFilter : (t.assignee === choreFilter || !t.assignee)));
+    }
+    let f = typed;
     if (filter === "mine") f = f.filter((t) => t.owner === me || (t.scope === "shared" && (t.assignee === me || !t.assignee)));
     if (filter === "shared") f = f.filter((t) => t.scope === "shared");
     return f;
-  }, [tasks, filter, me]);
-  const typed = useMemo(() => (typeFilter === "all" ? scoped : scoped.filter((t) => t.listType === typeFilter)), [scoped, typeFilter]);
-  const sorted = useMemo(() => typed.slice().sort((a, b) => {
+  }, [typed, typeFilter, choreFilter, filter, me]);
+
+  const sorted = useMemo(() => scoped.slice().sort((a, b) => {
     const ac = a.completed ? 1 : 0, bc = b.completed ? 1 : 0;
     if (ac !== bc) return ac - bc;
     return (a.dueDate || "9999").localeCompare(b.dueDate || "9999");
-  }), [typed]);
-  const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction };
+  }), [scoped]);
+
+  const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate };
+  const other = otherPerson(me);
 
   return (
     <div style={{ height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", gap: 6, padding: "10px 16px 0" }}>
-        {[["all", "Chores + Projects"], ["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => (
+        {[["all", "All tasks"], ["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => (
           <button key={k} onClick={() => setTypeFilter(k)} style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${typeFilter === k ? C.ink : C.rule}`, background: typeFilter === k ? C.ink : C.card, color: typeFilter === k ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer", flex: 1 }}>{l}</button>
         ))}
       </div>
-      <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
-        {[["all", "All"], ["mine", "Mine"], ["shared", "Shared"]].map(([k, l]) => (
-          <button key={k} onClick={() => setFilter(k)} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${filter === k ? C.ink : C.rule}`, background: filter === k ? C.ink : "transparent", color: filter === k ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{l}</button>
-        ))}
+
+      <div style={{ display: "flex", gap: 6, padding: "8px 16px 0", alignItems: "center", flexWrap: "wrap" }}>
+        {typeFilter === "chore" ? (
+          [["shared", "Shared"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => (
+            <button key={k} onClick={() => setChoreFilter(k)} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${choreFilter === k ? C.ink : C.rule}`, background: choreFilter === k ? C.ink : "transparent", color: choreFilter === k ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{l}</button>
+          ))
+        ) : (
+          [["all", "All"], ["mine", "Mine"], ["shared", "Shared"]].map(([k, l]) => (
+            <button key={k} onClick={() => setFilter(k)} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${filter === k ? C.ink : C.rule}`, background: filter === k ? C.ink : "transparent", color: filter === k ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{l}</button>
+          ))
+        )}
+        <button onClick={() => setShowAllPersonal((v) => !v)} style={{ marginLeft: "auto", border: "none", background: "none", color: C.inkSoft, fontSize: 11, textDecoration: "underline", cursor: "pointer" }}>
+          {showAllPersonal ? `Hide ${PEOPLE[other]}'s personal` : `Show ${PEOPLE[other]}'s personal too`}
+        </button>
       </div>
-      {typeFilter === "chore" ? <RoomBoard tasks={sorted} rowProps={rowProps} /> : (
+
+      {typeFilter === "chore" ? (
+        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={config.rooms} onAddRoom={onAddRoom} />
+      ) : typeFilter === "project" && filter !== "all" ? (
+        <CategoryBoard
+          tasks={sorted} rowProps={rowProps}
+          categories={filter === "shared" ? config.sharedCategories : config.personalCategories[me]}
+          onAddCategory={(name) => onAddCategory(filter === "shared" ? "shared" : "personal", me, name)}
+        />
+      ) : (
         <div style={{ flex: 1, overflowY: "auto", padding: "10px 16px 90px" }}>
           {sorted.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing here. Tap + to add something.</div>}
           {sorted.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
@@ -421,10 +496,11 @@ function QueueView({ tasks, me, filter, setFilter, typeFilter, setTypeFilter, on
     </div>
   );
 }
-function RoomBoard({ tasks, rowProps }) {
+
+function RoomBoard({ tasks, rowProps, rooms, onAddRoom }) {
   return (
     <div style={{ flex: 1, overflowX: "auto", overflowY: "hidden", padding: "12px 16px 90px", display: "flex", gap: 12 }}>
-      {ROOMS.map((room) => {
+      {rooms.map((room) => {
         const roomTasks = tasks.filter((t) => (t.room || "General") === room);
         return (
           <div key={room} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
@@ -438,46 +514,86 @@ function RoomBoard({ tasks, rowProps }) {
           </div>
         );
       })}
+      <AddSectionColumn onAdd={onAddRoom} label="room" />
+    </div>
+  );
+}
+function CategoryBoard({ tasks, rowProps, categories, onAddCategory }) {
+  return (
+    <div style={{ flex: 1, overflowX: "auto", overflowY: "hidden", padding: "12px 16px 90px", display: "flex", gap: 12 }}>
+      {categories.map((cat) => {
+        const catTasks = tasks.filter((t) => (t.category || "General") === cat);
+        return (
+          <div key={cat} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
+            <div style={{ fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white, background: C.plum, padding: "6px 12px", borderRadius: 8, marginBottom: 8, textAlign: "center" }}>
+              {cat} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({catTasks.length})</span>
+            </div>
+            <div style={{ overflowY: "auto", flex: 1 }}>
+              {catTasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", marginTop: 20 }}>No projects here</div>}
+              {catTasks.map((t) => <TaskRow key={t.id} task={t} {...rowProps} compact />)}
+            </div>
+          </div>
+        );
+      })}
+      <AddSectionColumn onAdd={onAddCategory} label="category" />
+    </div>
+  );
+}
+function AddSectionColumn({ onAdd, label }) {
+  const add = () => {
+    const name = window.prompt(`New ${label} name`);
+    if (name && name.trim()) onAdd(name.trim());
+  };
+  return (
+    <div style={{ minWidth: 90, display: "flex", alignItems: "flex-start", paddingTop: 30 }}>
+      <button onClick={add} style={{ border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}>+ Add section</button>
     </div>
   );
 }
 
-function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, compact }) {
+function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, compact }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
-  const p = PRIORITY.find((x) => x.key === task.priority) || PRIORITY[1];
+  const p = PRIORITY.find((x) => x.key === task.priority) || null;
   const overdue = task.dueDate && task.dueDate < new Date().toISOString().slice(0, 10) && !task.completed;
   const na = nextAction(task);
   const progress = actionsProgress(task);
+  const badgePerson = task.scope === "personal" ? task.owner : task.assignee;
   const commit = () => { if (newAction.trim()) { onAddAction(task.id, newAction); setNewAction(""); } };
 
   return (
     <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: compact ? "9px 10px" : "11px 12px", marginBottom: 8, opacity: task.completed ? 0.55 : 1 }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-        <button onClick={() => onToggle(task)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${p.color}`, background: task.completed ? p.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, marginTop: 1, color: C.white, fontSize: 11 }}>
+        <button onClick={() => onToggle(task)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${p ? p.color : C.inkSoft}`, background: task.completed ? (p ? p.color : C.inkSoft) : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, marginTop: 1, color: C.white, fontSize: 11 }}>
           {task.completed && "✓"}
         </button>
         <div style={{ flex: 1, minWidth: 0 }} onClick={() => onEdit(task)}>
-          <div style={{ fontSize: compact ? 13 : 14, color: C.ink, fontWeight: 600, textDecoration: task.completed ? "line-through" : "none" }}>{task.title}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <PersonBadge person={badgePerson} size={compact ? 16 : 18} />
+            <div style={{ fontSize: compact ? 13 : 14, color: C.ink, fontWeight: 600, textDecoration: task.completed ? "line-through" : "none" }}>{task.title}</div>
+          </div>
           {!compact && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5, alignItems: "center" }}>
-              <Tag color={p.color}>{p.label}</Tag>
-              {task.scope === "shared" ? <Tag color={C.sageDeep}>{task.assignee ? PEOPLE[task.assignee] : "Anyone"}</Tag> : <Tag color={C.inkSoft}>Personal</Tag>}
+              {p && <Tag color={p.color}>{p.label}</Tag>}
+              {task.priorityBucket && <Tag color={C.mustard}>{BUCKETS.find((b) => b.key === task.priorityBucket)?.label}</Tag>}
               {task.room && <Tag color={C.inkSoft}>{task.room}</Tag>}
+              {task.category && <Tag color={C.inkSoft}>{task.category}</Tag>}
               {task.recurrence !== "none" && <Tag color={C.inkSoft}>↻ {task.recurrence}</Tag>}
-              <span style={{ fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, fontWeight: overdue ? 700 : 500 }}>{fmtDate(task.dueDate)}</span>
+              {task.dueDate && <span style={{ fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, fontWeight: overdue ? 700 : 500 }}>{fmtDate(task.dueDate)}</span>}
             </div>
           )}
-          {compact && <div style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, marginTop: 3 }}>{fmtDate(task.dueDate)}</div>}
+          {compact && task.dueDate && <div style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, marginTop: 3 }}>{fmtDate(task.dueDate)}</div>}
         </div>
-        {!compact && <button onClick={() => onDelete(task.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 2 }}><Icon ch="🗑" size={13} /></button>}
+        {!compact && <button onClick={() => onDelete(task.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 2, fontSize: 13 }}>🗑</button>}
       </div>
+
+      {task.notes && !compact && <div style={{ marginLeft: 30, marginTop: 5, fontSize: 11.5, color: C.inkSoft, fontStyle: "italic" }}>{task.notes}</div>}
 
       <div style={{ marginLeft: 30, marginTop: 6 }}>
         {na ? (
           <button onClick={() => onToggleAction(task.id, na.id)} style={{ display: "flex", alignItems: "flex-start", gap: 6, border: "none", background: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
             <span style={{ width: 11, height: 11, borderRadius: "50%", border: `1.5px solid ${C.sageDeep}`, marginTop: 2, flexShrink: 0 }} />
-            <span style={{ fontSize: compact ? 11 : 12, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}</span>
+            <span style={{ fontSize: compact ? 11 : 12, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span>
           </button>
         ) : progress ? <span style={{ fontSize: 11, color: C.inkSoft }}>All actions done</span> : null}
         {progress ? (
@@ -489,11 +605,14 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
 
       {open && (
         <div style={{ marginLeft: 30, marginTop: 8, borderTop: `1px dashed ${C.rule}`, paddingTop: 8 }}>
-          {(task.actions || []).map((a) => (
-            <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+          {(task.actions || []).map((a, idx) => (
+            <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 6, flexWrap: "wrap" }}>
               <button onClick={() => onToggleAction(task.id, a.id)} style={{ width: 15, height: 15, borderRadius: 4, border: `1.5px solid ${C.sageDeep}`, background: a.completed ? C.sageDeep : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, color: C.white, fontSize: 9 }}>{a.completed && "✓"}</button>
-              <span style={{ fontSize: 12, color: C.ink, textDecoration: a.completed ? "line-through" : "none", flex: 1 }}>{a.title}</span>
-              <button onClick={() => onDeleteAction(task.id, a.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 0 }}><Icon ch="×" size={12} /></button>
+              <span style={{ fontSize: 12, color: C.ink, textDecoration: a.completed ? "line-through" : "none", flex: 1, minWidth: 60 }}>{a.title}</span>
+              <input type="date" value={a.dueDate || ""} onChange={(e) => onSetActionDueDate(task.id, a.id, e.target.value)} style={{ fontSize: 10, border: `1px solid ${C.rule}`, borderRadius: 5, padding: "2px 4px", color: C.inkSoft, width: 108 }} />
+              <button onClick={() => onReorderAction(task.id, a.id, -1)} disabled={idx === 0} style={{ border: "none", background: "none", color: idx === 0 ? C.rule : C.inkSoft, cursor: idx === 0 ? "default" : "pointer", padding: "0 2px", fontSize: 11 }}>▲</button>
+              <button onClick={() => onReorderAction(task.id, a.id, 1)} disabled={idx === (task.actions || []).length - 1} style={{ border: "none", background: "none", color: idx === (task.actions || []).length - 1 ? C.rule : C.inkSoft, cursor: "pointer", padding: "0 2px", fontSize: 11 }}>▼</button>
+              <button onClick={() => onDeleteAction(task.id, a.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 0, fontSize: 12 }}>×</button>
             </div>
           ))}
           <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
@@ -507,7 +626,7 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
 }
 function Tag({ color, children }) { return <span style={{ fontSize: 10, color: C.white, background: color, padding: "2px 7px", borderRadius: 20, display: "inline-flex", alignItems: "center" }}>{children}</span>; }
 
-/* ---------- overlay + form ---------- */
+/* ---------- overlay ---------- */
 function Overlay({ title, onClose, children }) {
   return (
     <div style={{ position: "absolute", inset: 0, background: "rgba(43,42,40,0.4)", display: "flex", alignItems: "flex-end", zIndex: 10 }} onClick={onClose}>
@@ -522,49 +641,100 @@ function Overlay({ title, onClose, children }) {
   );
 }
 
-function TaskForm({ me, initial, onClose, onSave }) {
+/* ---------- reusable section (room/category) picker with inline "add new" ---------- */
+function SectionSelect({ value, onChange, options, onAddNew }) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const commit = () => {
+    if (name.trim()) { onAddNew(name.trim()); onChange(name.trim()); }
+    setAdding(false); setName("");
+  };
+  if (adding) {
+    return (
+      <div style={{ display: "flex", gap: 6 }}>
+        <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="New section name" style={inputStyle} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} onBlur={commit} />
+        <button onClick={commit} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 12px", cursor: "pointer" }}>Add</button>
+      </div>
+    );
+  }
+  return (
+    <select value={options.includes(value) ? value : options[0]} onChange={(e) => { if (e.target.value === "__new__") setAdding(true); else onChange(e.target.value); }} style={inputStyle}>
+      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      <option value="__new__">+ Add new…</option>
+    </select>
+  );
+}
+
+function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSave }) {
   const [t, setT] = useState(() => initial || {
     id: uid(), title: "", listType: "chore", scope: "shared", owner: me,
-    room: ROOMS[0], category: "", assignee: null, priority: "med",
-    dueDate: new Date().toISOString().slice(0, 10), recurrence: "none",
+    room: DEFAULT_ROOMS[0], category: DEFAULT_CATEGORIES[0], assignee: null,
+    priority: null, priorityBucket: null,
+    dueDate: null, recurrence: "none", notes: "",
     completed: false, gridBucket: {}, actions: [],
   });
   const set = (k, v) => setT((p) => ({ ...p, [k]: v }));
   const [newAction, setNewAction] = useState("");
   const addFormAction = () => {
     if (!newAction.trim()) return;
-    set("actions", [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false }]);
+    set("actions", [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false, dueDate: null }]);
     setNewAction("");
   };
   const removeFormAction = (id) => set("actions", (t.actions || []).filter((a) => a.id !== id));
   const toggleFormAction = (id) => set("actions", (t.actions || []).map((a) => (a.id === id ? { ...a, completed: !a.completed } : a)));
+  const reorderFormAction = (id, dir) => {
+    const idx = (t.actions || []).findIndex((a) => a.id === id);
+    if (idx < 0) return;
+    set("actions", moveAction(t.actions || [], idx, dir));
+  };
+  const setFormActionDate = (id, date) => set("actions", (t.actions || []).map((a) => (a.id === id ? { ...a, dueDate: date || null } : a)));
+
+  const categoryOptions = t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me];
+
+  const isValid = t.title.trim() && (t.listType === "chore" ? !!t.room : !!t.category);
 
   const finishAndSave = () => {
-    const finalActions = newAction.trim() ? [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false }] : (t.actions || []);
-    if (t.title.trim()) onSave({ ...t, actions: finalActions, owner: t.scope === "personal" ? (t.owner || me) : null });
-    else onClose();
+    const finalActions = newAction.trim() ? [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false, dueDate: null }] : (t.actions || []);
+    const finalTitle = t.title.trim();
+    if (finalTitle && (t.listType === "chore" ? t.room : t.category)) {
+      onSave({ ...t, actions: finalActions, owner: t.scope === "personal" ? (t.owner || me) : null });
+    } else {
+      onClose();
+    }
   };
 
   return (
     <Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave}>
-      <Field label="Title"><input value={t.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
-      <Field label="Type"><SegRow options={[["chore", "Chore"], ["project", "Project"]]} value={t.listType} onChange={(v) => set("listType", v)} /></Field>
-      <Field label="Belongs to"><SegRow options={[["shared", "Shared"], ["personal", "Personal"]]} value={t.scope} onChange={(v) => set("scope", v)} /></Field>
+      <Field label="Title *"><input value={t.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
+      <Field label="Type *"><SegRow options={[["chore", "Chore"], ["project", "Project"]]} value={t.listType} onChange={(v) => set("listType", v)} /></Field>
+      <Field label="Belongs to *"><SegRow options={[["shared", "Shared"], ["personal", "Personal"]]} value={t.scope} onChange={(v) => set("scope", v)} /></Field>
+
       {t.listType === "chore" ? (
-        <Field label="Room"><select value={t.room} onChange={(e) => set("room", e.target.value)} style={inputStyle}>{ROOMS.map((r) => <option key={r} value={r}>{r}</option>)}</select></Field>
+        <Field label="Room *"><SectionSelect value={t.room} onChange={(v) => set("room", v)} options={config.rooms} onAddNew={onAddRoom} /></Field>
       ) : (
-        <Field label="Category (optional)"><input value={t.category} onChange={(e) => set("category", e.target.value)} placeholder="e.g. life admin" style={inputStyle} /></Field>
+        <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={(name) => onAddCategory(t.scope, t.owner || me, name)} /></Field>
       )}
+
       {t.scope === "shared" && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
-      <Field label="Priority"><SegRow options={PRIORITY.map((p) => [p.key, p.label])} value={t.priority} onChange={(v) => set("priority", v)} /></Field>
-      <Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={(e) => set("dueDate", e.target.value)} style={inputStyle} /></Field>
+
+      <Field label="Priority"><SegRow options={[[null, "None"], ...PRIORITY.map((p) => [p.key, p.label])]} value={t.priority} onChange={(v) => set("priority", v)} /></Field>
+
+      {t.listType === "project" && (
+        <Field label="Priorities (doesn't pin automatically)"><SegRow options={[[null, "None"], ...BUCKETS.map((b) => [b.key, b.label])]} value={t.priorityBucket} onChange={(v) => set("priorityBucket", v)} /></Field>
+      )}
+
+      <Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={(e) => set("dueDate", e.target.value || null)} style={inputStyle} /></Field>
       <Field label="Repeats"><select value={t.recurrence} onChange={(e) => set("recurrence", e.target.value)} style={inputStyle}>{RECUR.map((r) => <option key={r.key} value={r.key}>{r.label}</option>)}</select></Field>
+      <Field label="Notes"><textarea value={t.notes || ""} onChange={(e) => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></Field>
 
       <Field label="Actions">
-        {(t.actions || []).map((a) => (
-          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 6 }}>
+        {(t.actions || []).map((a, idx) => (
+          <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 7, flexWrap: "wrap" }}>
             <button onClick={() => toggleFormAction(a.id)} style={{ width: 15, height: 15, borderRadius: 4, border: `1.5px solid ${C.sageDeep}`, background: a.completed ? C.sageDeep : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, color: C.white, fontSize: 9 }}>{a.completed && "✓"}</button>
-            <span style={{ fontSize: 13, color: C.ink, flex: 1, textDecoration: a.completed ? "line-through" : "none" }}>{a.title}</span>
+            <span style={{ fontSize: 13, color: C.ink, flex: 1, minWidth: 60, textDecoration: a.completed ? "line-through" : "none" }}>{a.title}</span>
+            <input type="date" value={a.dueDate || ""} onChange={(e) => setFormActionDate(a.id, e.target.value)} style={{ fontSize: 10, border: `1px solid ${C.rule}`, borderRadius: 5, padding: "3px 5px", color: C.inkSoft, width: 112 }} />
+            <button onClick={() => reorderFormAction(a.id, -1)} disabled={idx === 0} style={{ border: "none", background: "none", color: idx === 0 ? C.rule : C.inkSoft, cursor: "pointer", fontSize: 11 }}>▲</button>
+            <button onClick={() => reorderFormAction(a.id, 1)} disabled={idx === (t.actions || []).length - 1} style={{ border: "none", background: "none", color: idx === (t.actions || []).length - 1 ? C.rule : C.inkSoft, cursor: "pointer", fontSize: 11 }}>▼</button>
             <button onClick={() => removeFormAction(a.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer" }}>×</button>
           </div>
         ))}
@@ -574,7 +744,7 @@ function TaskForm({ me, initial, onClose, onSave }) {
         </div>
       </Field>
 
-      <button disabled={!t.title.trim()} onClick={finishAndSave} style={{ ...btnStyle(C.ink), width: "100%", marginTop: 8, opacity: t.title.trim() ? 1 : 0.5 }}>Save</button>
+      <button disabled={!isValid} onClick={finishAndSave} style={{ ...btnStyle(C.ink), width: "100%", marginTop: 8, opacity: isValid ? 1 : 0.5 }}>Save</button>
     </Overlay>
   );
 }
@@ -590,9 +760,6 @@ ReactDOM.createRoot(document.getElementById("root")).render(<App />);
 </script>
 
 <script>
-  // Manually transform the JSX above with the "classic" runtime (React.createElement calls),
-  // instead of Babel's newer default "automatic" runtime, which emits `import` statements
-  // that don't work in a plain (non-module) script.
   const sourceCode = document.getElementById("app-source").textContent;
   const compiled = Babel.transform(sourceCode, { presets: [["react", { runtime: "classic" }]] }).code;
   const runnable = document.createElement("script");
