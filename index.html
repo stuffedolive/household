@@ -129,6 +129,7 @@ function withOrphans(sections, tasks, field) {
 
 const TASKS_COLLECTION = "tasks";
 const CONFIG_DOC = db.collection("meta").doc("config");
+const TODAY_COLLECTION = "today";
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 
 function sanitizeList(arr, fallback) {
@@ -205,18 +206,67 @@ function App() {
     else CONFIG_DOC.set({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayUnion(name) }, { merge: true }).catch(console.error);
   };
   const deleteRoom = (name) => {
-    CONFIG_DOC.update({ rooms: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
+    CONFIG_DOC.update({ rooms: firebase.firestore.FieldValue.arrayRemove(name) }).catch((e) => console.error("delete room failed", e));
     (tasks || []).filter((t) => t.room === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ room: null }).catch(console.error));
   };
   const deleteCategory = (scope, owner, name) => {
     if (scope === "shared") {
-      CONFIG_DOC.update({ sharedCategories: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
+      CONFIG_DOC.update({ sharedCategories: firebase.firestore.FieldValue.arrayRemove(name) }).catch((e) => console.error("delete category failed", e));
       (tasks || []).filter((t) => t.scope === "shared" && t.category === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
     } else {
-      CONFIG_DOC.update({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayRemove(name) }).catch(console.error);
+      CONFIG_DOC.update({ [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayRemove(name) }).catch((e) => console.error("delete category failed", e));
       (tasks || []).filter((t) => t.scope === "personal" && t.owner === owner && t.category === name).forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
     }
   };
+  const reorderList = (list, name, dir) => {
+    const idx = list.indexOf(name);
+    if (idx < 0) return null;
+    const j = idx + dir;
+    if (j < 0 || j >= list.length) return null;
+    const arr = list.slice();
+    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+    return arr;
+  };
+  const reorderRoom = (name, dir) => {
+    const arr = reorderList(config.rooms, name, dir);
+    if (arr) CONFIG_DOC.update({ rooms: arr }).catch(console.error);
+  };
+  const reorderCategory = (scope, owner, name, dir) => {
+    const list = scope === "shared" ? config.sharedCategories : config.personalCategories[owner];
+    const arr = reorderList(list, name, dir);
+    if (!arr) return;
+    if (scope === "shared") CONFIG_DOC.update({ sharedCategories: arr }).catch(console.error);
+    else CONFIG_DOC.update({ [`personalCategories.${owner}`]: arr }).catch(console.error);
+  };
+
+  /* Today's plan — private per person: sundry one-off items + references to real tasks, one combined
+     reorderable list. Lives in its own doc per person so it never becomes visible to the other partner. */
+  const [todayItems, setTodayItems] = useState([]);
+  useEffect(() => {
+    if (authReady !== true || !me) return;
+    const unsub = db.collection(TODAY_COLLECTION).doc(me).onSnapshot(
+      (doc) => setTodayItems((doc.data() && doc.data().items) || []),
+      (err) => console.error("today sync error — check Firestore rules cover /today/{docId}:", err)
+    );
+    return unsub;
+  }, [authReady, me]);
+  const saveToday = (items) => db.collection(TODAY_COLLECTION).doc(me).set({ items }, { merge: true }).catch(console.error);
+  const addSundry = (title) => saveToday([...todayItems, { type: "sundry", id: uid(), title: title.trim(), completed: false }]);
+  const toggleSundry = (id) => saveToday(todayItems.map((it) => (it.id === id ? { ...it, completed: !it.completed } : it)));
+  const deleteSundry = (id) => saveToday(todayItems.filter((it) => it.id !== id));
+  const addTaskToToday = (taskId) => {
+    if (todayItems.some((it) => it.type === "task" && it.id === taskId)) return;
+    saveToday([...todayItems, { type: "task", id: taskId }]);
+  };
+  const removeTaskFromToday = (taskId) => saveToday(todayItems.filter((it) => !(it.type === "task" && it.id === taskId)));
+  const reorderToday = (idx, dir) => {
+    const j = idx + dir;
+    if (j < 0 || j >= todayItems.length) return;
+    const arr = todayItems.slice();
+    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+    saveToday(arr);
+  };
+  const resetToday = () => saveToday([]);
 
   const upsertTask = (task) => {
     const { id, ...data } = task;
@@ -321,7 +371,13 @@ function App() {
       {view === "grid" ? (
         <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
       ) : view === "todo" ? (
-        <ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} me={me} />
+        <ToDoList
+          tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
+          onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction}
+          onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} me={me}
+          todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry}
+          onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onResetToday={resetToday}
+        />
       ) : (
         <QueueView
           tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter}
@@ -329,7 +385,7 @@ function App() {
           projectScope={projectScope} setProjectScope={setProjectScope}
           projectFilter={projectFilter} setProjectFilter={setProjectFilter}
           typeFilter={typeFilter} setTypeFilter={setTypeFilter}
-          config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory}
+          config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoom={reorderRoom} onReorderCategory={reorderCategory}
           onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
           onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction}
           onReorderAction={reorderAction} onSetActionDueDate={setActionDueDate}
@@ -642,11 +698,13 @@ function upcomingLeadDays(periodDays) {
   return 1;                          // more frequent than weekly
 }
 
-function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, onSetTaskDueDate }) {
+function ToDoList({
+  tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, onSetTaskDueDate,
+  todayItems, onAddSundry, onToggleSundry, onDeleteSundry, onAddTaskToToday, onRemoveTaskFromToday, onReorderToday, onResetToday,
+}) {
   const [viewAs, setViewAs] = useState(me);
-  const [showStale, setShowStale] = useState(false);
-  const [showUpcoming, setShowUpcoming] = useState(false);
-  const [overwhelmed, setOverwhelmed] = useState(false);
+  const [mode, setMode] = useState("normal"); // normal | overwhelmed | today
+  const overwhelmed = mode === "overwhelmed";
   const today = new Date().toISOString().slice(0, 10);
   const now = Date.now();
 
@@ -732,18 +790,44 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
     ? projectItems.filter(({ task, action }) => !(task.id === topPick.item.task.id && action.id === topPick.item.action.id))
     : projectItems;
 
+  // for Today mode's browse list — always the viewer's own tasks, regardless of the viewAs toggle
+  const myOwnActive = useMemo(() => tasks.filter((t) =>
+    !t.completed && !notStartableYet(t, today) && (t.scope === "personal" ? t.owner === me : (t.assignee === me || !t.assignee))
+  ), [tasks, today, me]);
+  const todaySelectedTaskIds = new Set(todayItems.filter((it) => it.type === "task").map((it) => it.id));
+  const tasksById = useMemo(() => { const m = {}; tasks.forEach((t) => { m[t.id] = t; }); return m; }, [tasks]);
+
   return (
     <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-        {Object.entries(PEOPLE).map(([key, label]) => (
-          <button key={key} onClick={() => setViewAs(key)} style={{ flex: 1, padding: "6px 0", borderRadius: 8, border: `1px solid ${viewAs === key ? C.ink : C.rule}`, background: viewAs === key ? C.ink : C.card, color: viewAs === key ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-            Viewing: {label}{key === me ? " (you)" : ""}
-          </button>
+      {mode !== "today" && (
+        <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+          {Object.entries(PEOPLE).map(([key, label]) => (
+            <button key={key} onClick={() => setViewAs(key)} style={{ flex: 1, padding: "6px 0", borderRadius: 8, border: `1px solid ${viewAs === key ? C.ink : C.rule}`, background: viewAs === key ? C.ink : C.card, color: viewAs === key ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              Viewing: {label}{key === me ? " (you)" : ""}
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        {[["normal", "Normal"], ["overwhelmed", "Overwhelmed"], ["today", "Today"]].map(([k, l]) => (
+          <button key={k} onClick={() => setMode(k)} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${mode === k ? C.ink : C.rule}`, background: mode === k ? C.ink : C.card, color: mode === k ? C.white : C.inkSoft, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{l}</button>
         ))}
       </div>
-      <button onClick={() => setOverwhelmed((o) => !o)} style={{ width: "100%", border: `1px solid ${C.rule}`, background: overwhelmed ? C.ink : C.card, color: overwhelmed ? C.white : C.inkSoft, borderRadius: 8, padding: "7px 0", fontSize: 12, cursor: "pointer", marginBottom: 10 }}>
-        {overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — highlight the top thing"}
-      </button>
+
+      {mode === "today" ? (
+        <TodayPlanner
+          items={todayItems} tasksById={tasksById} me={me}
+          onAddSundry={onAddSundry} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry}
+          onReorder={onReorderToday} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday}
+          onToggle={onToggle} onEdit={onEdit} onDelete={onDelete} onToggleAction={onToggleAction}
+          onAddAction={onAddAction} onDeleteAction={onDeleteAction} onReorderAction={onReorderAction} onSetActionDueDate={onSetActionDueDate}
+          browseChores={myOwnActive.filter((t) => t.listType === "chore")}
+          browseProjects={myOwnActive.filter((t) => t.listType === "project")}
+          selectedIds={todaySelectedTaskIds}
+          onAddToToday={onAddTaskToToday}
+        />
+      ) : (
+        <>
       {viewAs !== me && <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10 }}>Only {PEOPLE[viewAs]}'s shared tasks — their personal list isn't visible to you.</div>}
 
       {overwhelmed && topPick && (
@@ -770,31 +854,17 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
         </div>
       )}
 
-      <div style={{ marginTop: 18 }}>
-        <button onClick={() => setShowStale((s) => !s)} style={{ width: "100%", border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }}>
-          {showStale ? "Hide" : "Show"} stale tasks ({stale.length})
-        </button>
-        {showStale && (
-          <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Low or no importance, overdue by more than half its usual cycle (or 60+ days for one-off tasks).</div>
-            {stale.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing stale right now.</div>}
-            {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
-          </div>
-        )}
-      </div>
+      <CollapsibleSection title="Stale" count={stale.length} defaultOpen={false}>
+        <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Low or no importance, overdue by more than half its usual cycle (or 60+ days for one-off tasks).</div>
+        {stale.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing stale right now.</div>}
+        {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+      </CollapsibleSection>
 
-      <div style={{ marginTop: 10 }}>
-        <button onClick={() => setShowUpcoming((s) => !s)} style={{ width: "100%", border: `1px dashed ${C.rule}`, background: "transparent", color: C.inkSoft, borderRadius: 8, padding: "8px 0", fontSize: 12, cursor: "pointer" }}>
-          {showUpcoming ? "Hide" : "Show"} upcoming ({upcoming.length})
-        </button>
-        {showUpcoming && (
-          <div style={{ marginTop: 8 }}>
-            <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Recurring, can't-start-early tasks whose window is approaching.</div>
-            {upcoming.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing coming up yet.</div>}
-            {upcoming.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
-          </div>
-        )}
-      </div>
+      <CollapsibleSection title="Upcoming" count={upcoming.length} defaultOpen={false}>
+        <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Recurring, can't-start-early tasks whose window is approaching.</div>
+        {upcoming.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing coming up yet.</div>}
+        {upcoming.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+      </CollapsibleSection>
 
       {justDone.length > 0 && (
         <div style={{ marginTop: 18 }}>
@@ -802,16 +872,83 @@ function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAdd
           {justDone.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
         </div>
       )}
+      </>
+      )}
     </div>
   );
 }
 
 
+function TodayPlanner({
+  items, tasksById, me, onAddSundry, onToggleSundry, onDeleteSundry, onReorder, onRemoveTask, onReset,
+  onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate,
+  browseChores, browseProjects, selectedIds, onAddToToday,
+}) {
+  const [newSundry, setNewSundry] = useState("");
+  const [resetting, setResetting] = useState(false);
+  const commitSundry = () => { if (newSundry.trim()) { onAddSundry(newSundry.trim()); setNewSundry(""); } };
+  const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, color: C.ink }}>Today's plan</div>
+        {!resetting ? (
+          <button onClick={() => setResetting(true)} style={{ border: `1px solid ${C.plum}`, color: C.plum, background: "none", borderRadius: 8, padding: "5px 11px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Reset</button>
+        ) : (
+          <button onClick={() => { onReset(); setResetting(false); }} style={{ border: "none", color: C.white, background: C.plum, borderRadius: 8, padding: "5px 11px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Confirm reset?</button>
+        )}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 14 }}>Private to you — only visible in your own session. Sundries live only here; they're never added to Chores or Projects.</div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+        <input value={newSundry} onChange={(e) => setNewSundry(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") commitSundry(); }} onBlur={commitSundry} placeholder="e.g. Gym, vacuum couch…" style={{ ...inputStyle, fontSize: 13 }} />
+        <button onClick={commitSundry} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 14px", cursor: "pointer" }}>+</button>
+      </div>
+
+      {items.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", padding: "10px 0 24px" }}>Nothing planned yet — add a sundry above, or pull something up from the list below.</div>}
+
+      {items.map((item, idx) => {
+        const task = item.type === "task" ? tasksById[item.id] : null;
+        return (
+          <div key={item.type + item.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column" }}>
+              <button onClick={() => onReorder(idx, -1)} disabled={idx === 0} style={{ border: "none", background: "none", color: idx === 0 ? C.rule : C.inkSoft, cursor: idx === 0 ? "default" : "pointer", fontSize: 11, lineHeight: 1 }}>▲</button>
+              <button onClick={() => onReorder(idx, 1)} disabled={idx === items.length - 1} style={{ border: "none", background: "none", color: idx === items.length - 1 ? C.rule : C.inkSoft, cursor: idx === items.length - 1 ? "default" : "pointer", fontSize: 11, lineHeight: 1 }}>▼</button>
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              {item.type === "sundry" ? (
+                <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: "10px 12px", display: "flex", alignItems: "center", gap: 10 }}>
+                  <button onClick={() => onToggleSundry(item.id)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${C.sage}`, background: item.completed ? C.sage : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: C.white, fontSize: 11, flexShrink: 0 }}>{item.completed && "✓"}</button>
+                  <span style={{ flex: 1, fontSize: 14, color: C.ink, textDecoration: item.completed ? "line-through" : "none" }}>{item.title}</span>
+                  <button onClick={() => onDeleteSundry(item.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", fontSize: 13 }}>🗑</button>
+                </div>
+              ) : task ? (
+                <TaskRow task={task} {...rowProps} />
+              ) : (
+                <div style={{ fontSize: 12, color: C.inkSoft, fontStyle: "italic", padding: "8px 0" }}>(task no longer exists)</div>
+              )}
+            </div>
+            {item.type === "task" && <button onClick={() => onRemoveTask(item.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", fontSize: 13 }} title="Remove from today">×</button>}
+          </div>
+        );
+      })}
+
+      <div style={{ marginTop: 26, borderTop: `1px dashed ${C.rule}`, paddingTop: 16 }}>
+        <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>All your tasks — tap + Today to add</div>
+        {browseChores.length === 0 && browseProjects.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing else open right now.</div>}
+        {browseChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={selectedIds.has(t.id) ? undefined : onAddToToday} />)}
+        {browseProjects.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={selectedIds.has(t.id) ? undefined : onAddToToday} />)}
+      </div>
+    </div>
+  );
+}
+
 function QueueView(props) {
   const {
     tasks, me, filter, setFilter, choreFilter, setChoreFilter,
     projectScope, setProjectScope, projectFilter, setProjectFilter,
-    typeFilter, setTypeFilter, config, onAddRoom, onAddCategory, onDeleteRoom, onDeleteCategory,
+    typeFilter, setTypeFilter, config, onAddRoom, onAddCategory, onDeleteRoom, onDeleteCategory, onReorderRoom, onReorderCategory,
     onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate,
   } = props;
 
@@ -874,13 +1011,14 @@ function QueueView(props) {
       )}
 
       {typeFilter === "chore" ? (
-        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={withOrphans(config.rooms, sorted, "room")} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} />
+        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={withOrphans(config.rooms, sorted, "room")} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} onReorderRoom={onReorderRoom} />
       ) : (
         <CategoryBoard
           tasks={sorted} rowProps={rowProps}
           categories={withOrphans(projectScope === "shared" ? config.sharedCategories : config.personalCategories[me], sorted, "category")}
           onAddCategory={(name) => onAddCategory(projectScope, me, name)}
           onDeleteCategory={(name) => onDeleteCategory(projectScope, me, name)}
+          onReorderCategory={(name, dir) => onReorderCategory(projectScope, me, name, dir)}
         />
       )}
     </div>
@@ -901,7 +1039,28 @@ function ScrollableRow({ children }) {
     </div>
   );
 }
-function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom }) {
+/* two-tap inline confirm — avoids relying on window.confirm(), which can be unreliable in installed PWAs */
+function SectionDeleteButton({ onDelete }) {
+  const [confirming, setConfirming] = useState(false);
+  if (confirming) {
+    return (
+      <button onClick={() => onDelete()} style={{ border: "none", background: "rgba(255,255,255,0.3)", color: C.white, borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>
+        Confirm?
+      </button>
+    );
+  }
+  return <button onClick={() => setConfirming(true)} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>;
+}
+function SectionReorderButtons({ onLeft, onRight }) {
+  return (
+    <div style={{ display: "flex", gap: 2 }}>
+      <button onClick={onLeft} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 11, padding: 0 }}>‹</button>
+      <button onClick={onRight} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 11, padding: 0 }}>›</button>
+    </div>
+  );
+}
+
+function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom, onReorderRoom }) {
   return (
     <ScrollableRow>
       {rooms.map((room) => {
@@ -910,12 +1069,11 @@ function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom }) {
         return (
           <div key={room} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.sageDeep, padding: "6px 10px", borderRadius: 8, marginBottom: 8 }}>
+              {deletable && <SectionReorderButtons onLeft={() => onReorderRoom(room, -1)} onRight={() => onReorderRoom(room, 1)} />}
               <div style={{ flex: 1, textAlign: "center", fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white }}>
                 {room} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({roomTasks.length})</span>
               </div>
-              {deletable && (
-                <button onClick={() => { if (window.confirm(`Delete "${room}"? Its chores move to Unassigned.`)) onDeleteRoom(room); }} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>
-              )}
+              {deletable && <SectionDeleteButton onDelete={() => onDeleteRoom(room)} />}
             </div>
             <div style={{ overflowY: "auto", flex: 1 }}>
               {roomTasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", marginTop: 20 }}>No chores here</div>}
@@ -928,7 +1086,7 @@ function RoomBoard({ tasks, rowProps, rooms, onAddRoom, onDeleteRoom }) {
     </ScrollableRow>
   );
 }
-function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCategory }) {
+function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCategory, onReorderCategory }) {
   return (
     <ScrollableRow>
       {categories.map((cat) => {
@@ -937,12 +1095,11 @@ function CategoryBoard({ tasks, rowProps, categories, onAddCategory, onDeleteCat
         return (
           <div key={cat} style={{ minWidth: 240, maxWidth: 240, display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 6, background: C.plum, padding: "6px 10px", borderRadius: 8, marginBottom: 8 }}>
+              {deletable && <SectionReorderButtons onLeft={() => onReorderCategory(cat, -1)} onRight={() => onReorderCategory(cat, 1)} />}
               <div style={{ flex: 1, textAlign: "center", fontFamily: "Fraunces, serif", fontSize: 14, fontWeight: 600, color: C.white }}>
                 {cat} <span style={{ fontWeight: 400, opacity: 0.8, fontSize: 11 }}>({catTasks.length})</span>
               </div>
-              {deletable && (
-                <button onClick={() => { if (window.confirm(`Delete "${cat}"? Its projects move to Unassigned.`)) onDeleteCategory(cat); }} style={{ border: "none", background: "none", color: C.white, opacity: 0.7, cursor: "pointer", fontSize: 12, padding: 0 }}>×</button>
-              )}
+              {deletable && <SectionDeleteButton onDelete={() => onDeleteCategory(cat)} />}
             </div>
             <div style={{ overflowY: "auto", flex: 1 }}>
               {catTasks.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", marginTop: 20 }}>No projects here</div>}
@@ -967,7 +1124,7 @@ function AddSectionColumn({ onAdd, label }) {
   );
 }
 
-function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, compact, onSnooze }) {
+function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, compact, onSnooze, onAddToToday }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
@@ -1004,6 +1161,7 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
           )}
           {compact && task.dueDate && <div style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, marginTop: 3 }}>{notYetAvailable ? `Not yet — ${fmtDate(task.dueDate)}` : fmtDate(task.dueDate)}</div>}
         </div>
+        {onAddToToday && <button onClick={(e) => { e.stopPropagation(); onAddToToday(task.id); }} style={{ border: `1px solid ${C.rule}`, background: C.white, color: C.sageDeep, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6, whiteSpace: "nowrap" }}>+ Today</button>}
         <button onClick={del} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 2, fontSize: compact ? 11 : 13 }}>🗑</button>
       </div>
 
@@ -1046,6 +1204,20 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
   );
 }
 function Tag({ color, children }) { return <span style={{ fontSize: 10, color: C.white, background: color, padding: "2px 7px", borderRadius: 20, display: "inline-flex", alignItems: "center" }}>{children}</span>; }
+
+/* matches the plain Chores/Projects section heading style, but collapsible (closed by default) */
+function CollapsibleSection({ title, count, defaultOpen, children }) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", marginBottom: open ? 6 : 0 }}>
+        <span style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>{title}{count != null ? ` (${count})` : ""}</span>
+        <span style={{ color: C.inkSoft, fontSize: 10 }}>{open ? "▴" : "▾"}</span>
+      </button>
+      {open && children}
+    </div>
+  );
+}
 
 /* ---------- overlay ---------- */
 function Overlay({ title, onClose, children }) {
