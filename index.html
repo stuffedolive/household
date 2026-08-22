@@ -488,7 +488,7 @@ function TabButton({ active, onClick, label }) {
 }
 
 function PersonBadge({ person, size = 20 }) {
-  if (!person) return <span style={{ fontSize: 9, color: C.inkSoft, border: `1px dashed ${C.rule}`, borderRadius: 20, padding: "2px 7px" }}>Anyone</span>;
+  if (!person) return <span style={{ width: size, height: size, borderRadius: "50%", background: C.rule, flexShrink: 0, display: "inline-block" }} />;
   return (
     <span style={{ fontSize: size <= 20 ? 9 : 10, fontWeight: 700, color: C.white, background: PERSON_COLOR[person], borderRadius: "50%", width: size, height: size, flexShrink: 0, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
       {PERSON_CODE[person]}
@@ -703,38 +703,31 @@ function ToDoList({
   tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, onSetTaskDueDate,
   todayItems, onAddSundry, onToggleSundry, onDeleteSundry, onAddTaskToToday, onRemoveTaskFromToday, onReorderToday, onResetToday,
 }) {
-  const [viewAs, setViewAs] = useState(me);
-  const [mode, setMode] = useState("normal"); // normal | overwhelmed | today
-  const overwhelmed = mode === "overwhelmed";
+  const [overwhelmed, setOverwhelmed] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const now = Date.now();
 
-  const forPerson = useMemo(() => {
-    if (viewAs === me) return tasks;
-    return tasks.filter((t) => t.scope === "shared"); // other person's personal tasks aren't visible to us at all
-  }, [tasks, viewAs, me]);
+  const assignedToMe = useMemo(() => tasks.filter((t) =>
+    t.scope === "personal" ? t.owner === me : (t.assignee === me || !t.assignee)
+  ), [tasks, me]);
 
-  const assignedToViewAs = useMemo(() => forPerson.filter((t) =>
-    t.scope === "personal" ? t.owner === viewAs : (t.assignee === viewAs || !t.assignee)
-  ), [forPerson, viewAs]);
-
-  const justDone = useMemo(() => assignedToViewAs
+  const justDone = useMemo(() => assignedToMe
     .filter((t) => t.completed && t.completedAt && (now - t.completedAt < LINGER_MS))
     .sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0)),
-    [assignedToViewAs, now]
+    [assignedToMe, now]
   );
 
   // upcoming: recurring, "due date is start date" tasks approaching their window — computed before the
   // not-startable-yet exclusion below, since this IS how those tasks get any visibility before they're due
-  const upcoming = useMemo(() => assignedToViewAs.filter((t) => {
+  const upcoming = useMemo(() => assignedToMe.filter((t) => {
     if (t.completed || !t.startsOnDue || !t.dueDate || t.dueDate <= today) return false;
     const period = recurrencePeriodDays(t.recurrence);
     if (!period) return false;
     const daysUntil = Math.round((new Date(t.dueDate + "T00:00:00") - new Date(today + "T00:00:00")) / DAY_MS);
     return daysUntil <= upcomingLeadDays(period);
-  }).sort((a, b) => a.dueDate.localeCompare(b.dueDate)), [assignedToViewAs, today]);
+  }).sort((a, b) => a.dueDate.localeCompare(b.dueDate)), [assignedToMe, today]);
 
-  const active = useMemo(() => assignedToViewAs.filter((t) => !t.completed && !notStartableYet(t, today)), [assignedToViewAs, today]);
+  const active = useMemo(() => assignedToMe.filter((t) => !t.completed && !notStartableYet(t, today)), [assignedToMe, today]);
 
   // stale: low/no importance only, overdue by more than half its recurrence period (60 days for one-off tasks)
   const stale = useMemo(() => active.filter((t) => {
@@ -760,7 +753,7 @@ function ToDoList({
   // shows, even with no priority or due date of its own (falls back to the project's own date, or no date at all)
   const projectItems = useMemo(() => {
     const items = active
-      .filter((t) => t.listType === "project" && t.gridBucket && t.gridBucket[viewAs] && !staleIds.has(t.id))
+      .filter((t) => t.listType === "project" && t.gridBucket && t.gridBucket[me] && !staleIds.has(t.id))
       .map((t) => ({ task: t, action: nextAction(t) }))
       .filter(({ action }) => !!action);
     return items.sort((a, b) => {
@@ -769,7 +762,7 @@ function ToDoList({
       if (ta !== tb) return ta - tb;
       return (da || "9999").localeCompare(db || "9999");
     });
-  }, [active, viewAs, today, staleIds]);
+  }, [active, me, today, staleIds]);
 
   const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate };
 
@@ -796,28 +789,16 @@ function ToDoList({
 
   return (
     <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-        {Object.entries(PEOPLE).map(([key, label]) => (
-          <button key={key} onClick={() => setViewAs(key)} style={{ flex: 1, padding: "6px 0", borderRadius: 8, border: `1px solid ${viewAs === key ? C.ink : C.rule}`, background: viewAs === key ? C.ink : C.card, color: viewAs === key ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-            Viewing: {label}{key === me ? " (you)" : ""}
-          </button>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-        {[["normal", "Normal"], ["overwhelmed", "Overwhelmed"], ["today", "Today"]].map(([k, l]) => (
-          <button key={k} onClick={() => setMode(k)} style={{ flex: 1, padding: "7px 0", borderRadius: 8, border: `1px solid ${mode === k ? C.ink : C.rule}`, background: mode === k ? C.ink : C.card, color: mode === k ? C.white : C.inkSoft, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>{l}</button>
-        ))}
-      </div>
-      {viewAs !== me && <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10 }}>Only {PEOPLE[viewAs]}'s shared tasks — their personal list isn't visible to you.</div>}
+      <button onClick={() => setOverwhelmed((o) => !o)} style={{ width: "100%", border: `1px solid ${C.rule}`, background: overwhelmed ? C.ink : C.card, color: overwhelmed ? C.white : C.inkSoft, borderRadius: 8, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 12 }}>
+        {overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — highlight the top thing"}
+      </button>
 
-      {mode === "today" && (
-        <TodayPlanSection
-          items={todayItems} tasksById={tasksById}
-          onAddSundry={onAddSundry} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry}
-          onReorder={onReorderToday} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday}
-          onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit}
-        />
-      )}
+      <TodayPlanSection
+        items={todayItems} tasksById={tasksById}
+        onAddSundry={onAddSundry} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry}
+        onReorder={onReorderToday} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday}
+        onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit}
+      />
 
       {overwhelmed && topPick && (
         <HeroCard pick={topPick} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={(kind) => (topPick.kind === "chore" ? snoozeChore(topPick.item, kind) : snoozeProjectAction(topPick.item.task, topPick.item.action, kind))} />
@@ -875,7 +856,7 @@ function TodayPlanSection({ items, tasksById, onAddSundry, onToggleSundry, onDel
   const commitSundry = () => { if (newSundry.trim()) { onAddSundry(newSundry.trim()); setNewSundry(""); } };
 
   return (
-    <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 12, padding: "14px 14px 10px", marginBottom: 18 }}>
+    <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 12, padding: "14px 14px 10px", marginBottom: 18, minHeight: "calc(100vh - 260px)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
         <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, color: C.ink }}>Today's plan</div>
         {!resetting ? (
@@ -1132,9 +1113,9 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
               {notYetAvailable && <Tag color={C.inkSoft}>Not yet — {fmtDate(task.dueDate)}</Tag>}
               {imp && <Tag color={imp.color}>{imp.label}</Tag>}
               {task.priorityBucket && <Tag color={C.mustard}>{BUCKETS.find((b) => b.key === task.priorityBucket)?.label}</Tag>}
-              {task.room && <Tag color={C.inkSoft}>{task.room}</Tag>}
-              {task.category && <Tag color={C.inkSoft}>{task.category}</Tag>}
-              {recurrenceLabel(task.recurrence) && <Tag color={C.inkSoft}>↻ {recurrenceLabel(task.recurrence)}</Tag>}
+              {task.room && <MetaTag>{task.room}</MetaTag>}
+              {task.category && <MetaTag>{task.category}</MetaTag>}
+              {recurrenceLabel(task.recurrence) && <MetaTag>↻ {recurrenceLabel(task.recurrence)}</MetaTag>}
               {task.dueDate && !notYetAvailable && <span style={{ fontSize: 10.5, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, fontWeight: overdue ? 700 : 500 }}>{fmtDate(task.dueDate)}</span>}
             </div>
           )}
@@ -1154,10 +1135,8 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
             <span style={{ fontSize: compact ? 11 : 12, color: C.sageDeep, fontStyle: "italic", lineHeight: 1.3 }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span>
           </button>
         ) : progress ? <span style={{ fontSize: 11, color: C.inkSoft }}>All actions done</span> : null}
-        {progress ? (
+        {progress && (
           <button onClick={() => setOpen((o) => !o)} style={{ border: "none", background: "none", color: C.inkSoft, fontSize: 10.5, cursor: "pointer", padding: 0, marginLeft: na ? 8 : 0 }}>{progress} {open ? "▴" : "▾"}</button>
-        ) : (
-          <button onClick={() => setOpen((o) => !o)} style={{ border: "none", background: "none", color: C.inkSoft, fontSize: 10.5, cursor: "pointer", padding: 0 }}>+ action</button>
         )}
       </div>
 
@@ -1183,6 +1162,7 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
   );
 }
 function Tag({ color, children }) { return <span style={{ fontSize: 10, color: C.white, background: color, padding: "2px 7px", borderRadius: 20, display: "inline-flex", alignItems: "center" }}>{children}</span>; }
+function MetaTag({ children }) { return <span style={{ fontSize: 10, color: C.inkSoft, background: "#EAE4D6", padding: "2px 7px", borderRadius: 20, display: "inline-flex", alignItems: "center" }}>{children}</span>; }
 
 /* matches the plain Chores/Projects section heading style, but collapsible (closed by default) */
 function CollapsibleSection({ title, count, defaultOpen, children }) {
