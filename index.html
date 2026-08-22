@@ -123,11 +123,12 @@ function App() {
   const [tasks, setTasks] = useState(null);
   const [config, setConfig] = useState({ rooms: DEFAULT_ROOMS, sharedCategories: DEFAULT_CATEGORIES, personalCategories: { jade: DEFAULT_CATEGORIES, john: DEFAULT_CATEGORIES } });
   const [view, setView] = useState("grid");
+  const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [filter, setFilter] = useState("all");
   const [choreFilter, setChoreFilter] = useState("all");
   const [projectScope, setProjectScope] = useState("shared");
   const [projectFilter, setProjectFilter] = useState("all");
-  const [typeFilter, setTypeFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("chore");
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pickerFor, setPickerFor] = useState(null);
@@ -239,6 +240,7 @@ function App() {
   };
 
   const visibleTasks = useMemo(() => (tasks || []).filter((t) => t.scope === "shared" || t.owner === me), [tasks, me]);
+  const needsDetailsTasks = useMemo(() => (tasks || []).filter((t) => t.needsDetails && t.createdBy === me), [tasks, me]);
 
   if (authReady === null) return <Shell><div style={centerMsg}>Loading…</div></Shell>;
   if (authReady === false) return <Shell><PinGate /></Shell>;
@@ -265,9 +267,11 @@ function App() {
 
   return (
     <Shell>
-      <Header me={me} view={view} setView={setView} />
+      <Header me={me} view={view} setView={setView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} />
       {view === "grid" ? (
         <PriorityGrid tasks={tasks} me={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} />
+      ) : view === "todo" ? (
+        <ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetActionDueDate={setActionDueDate} me={me} />
       ) : (
         <QueueView
           tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter}
@@ -293,6 +297,13 @@ function App() {
           me={me} initial={editing} config={config} onAddRoom={addRoom} onAddCategory={addCategory}
           onClose={() => setShowForm(false)} onSave={(t) => { upsertTask(t); setShowForm(false); }}
           onDelete={(id) => { deleteTask(id); setShowForm(false); }}
+        />
+      )}
+      {showNeedsDetails && (
+        <NeedsDetailsList
+          tasks={needsDetailsTasks}
+          onClose={() => setShowNeedsDetails(false)}
+          onPick={(t) => { setEditing(t); setShowForm(true); setShowNeedsDetails(false); }}
         />
       )}
       {pickerFor && (
@@ -342,16 +353,24 @@ function Shell({ children }) {
 }
 function btnStyle(bg) { return { padding: "12px 22px", borderRadius: 10, border: "none", background: bg, color: C.white, fontSize: 15, fontWeight: 600, cursor: "pointer" }; }
 
-function Header({ me, view, setView }) {
+function Header({ me, view, setView, needsDetailsCount, onOpenNeedsDetails }) {
   return (
     <div style={{ padding: "18px 18px 10px", borderBottom: `1px solid ${C.rule}` }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, color: C.ink }}>Our Life List</div>
-        <div style={{ fontSize: 11, color: C.inkSoft }}>viewing as {PEOPLE[me]}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {needsDetailsCount > 0 && (
+            <button onClick={onOpenNeedsDetails} style={{ border: "none", background: C.mustard, color: C.white, borderRadius: 20, padding: "3px 9px", fontSize: 10.5, fontWeight: 700, cursor: "pointer" }}>
+              {needsDetailsCount} need details
+            </button>
+          )}
+          <div style={{ fontSize: 11, color: C.inkSoft }}>viewing as {PEOPLE[me]}</div>
+        </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
         <TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" />
-        <TabButton active={view === "queue"} onClick={() => setView("queue")} label="Queue" />
+        <TabButton active={view === "todo"} onClick={() => setView("todo")} label="To-do list" />
+        <TabButton active={view === "queue"} onClick={() => setView("queue")} label="Tasks" />
       </div>
     </div>
   );
@@ -440,7 +459,39 @@ function BucketPicker({ tasks, onPick, onClose }) {
   );
 }
 
-/* ---------- queue view ---------- */
+function NeedsDetailsList({ tasks, onPick, onClose }) {
+  return (
+    <Overlay title="Finish these off" onClose={onClose}>
+      <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 10 }}>Tasks you added without full details. Tap one to fill it in properly.</div>
+      {tasks.map((t) => (
+        <button key={t.id} onClick={() => onPick(t)} style={{ width: "100%", textAlign: "left", padding: "11px 12px", marginBottom: 6, borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, cursor: "pointer", fontSize: 13.5, color: C.ink }}>
+          {t.title}
+          <div style={{ fontSize: 10.5, color: C.inkSoft, marginTop: 2 }}>{t.listType === "chore" ? "Chore" : "Project"}</div>
+        </button>
+      ))}
+    </Overlay>
+  );
+}
+
+/* ---------- to-do list: a simple first pass — urgent/pressing items across everything visible to me ---------- */
+function ToDoList({ tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const pressing = useMemo(() => tasks
+    .filter((t) => !t.completed && (t.priority === "high" || (t.dueDate && t.dueDate <= today)))
+    .sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")),
+    [tasks, today]
+  );
+  const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate };
+  return (
+    <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
+      <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 10 }}>Overdue, due today, or marked High importance. This view's still a rough first pass — more to come.</div>
+      {pressing.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing urgent right now.</div>}
+      {pressing.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+    </div>
+  );
+}
+
+
 function QueueView(props) {
   const {
     tasks, me, filter, setFilter, choreFilter, setChoreFilter,
@@ -482,7 +533,7 @@ function QueueView(props) {
   return (
     <div style={{ height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", gap: 6, padding: "10px 16px 0" }}>
-        {[["all", "All tasks"], ["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => (
+        {[["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => (
           <button key={k} onClick={() => setTypeFilter(k)} style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${typeFilter === k ? C.ink : C.rule}`, background: typeFilter === k ? C.ink : C.card, color: typeFilter === k ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer", flex: 1 }}>{l}</button>
         ))}
       </div>
@@ -507,25 +558,14 @@ function QueueView(props) {
         </>
       )}
 
-      {typeFilter === "all" && (
-        <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
-          {[["all", "All"], ["mine", "Mine"], ["shared", "Shared"]].map(([k, l]) => <FilterChip key={k} active={filter === k} onClick={() => setFilter(k)} label={l} />)}
-        </div>
-      )}
-
       {typeFilter === "chore" ? (
         <RoomBoard tasks={sorted} rowProps={rowProps} rooms={withOrphans(config.rooms, sorted, "room")} onAddRoom={onAddRoom} />
-      ) : typeFilter === "project" ? (
+      ) : (
         <CategoryBoard
           tasks={sorted} rowProps={rowProps}
           categories={withOrphans(projectScope === "shared" ? config.sharedCategories : config.personalCategories[me], sorted, "category")}
           onAddCategory={(name) => onAddCategory(projectScope, me, name)}
         />
-      ) : (
-        <div style={{ flex: 1, overflowY: "auto", padding: "10px 16px 90px" }}>
-          {sorted.length === 0 && <div style={{ color: C.inkSoft, fontSize: 13, textAlign: "center", marginTop: 40 }}>Nothing here. Tap + to add something.</div>}
-          {sorted.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
-        </div>
       )}
     </div>
   );
@@ -693,8 +733,8 @@ function SectionSelect({ value, onChange, options, onAddNew }) {
     );
   }
   return (
-    <select value={options.includes(value) ? value : options[0]} onChange={(e) => { if (e.target.value === "__new__") setAdding(true); else onChange(e.target.value); }} style={inputStyle}>
-      {options.map((o) => <option key={o} value={o}>{o}</option>)}
+    <select value={value} onChange={(e) => { if (e.target.value === "__new__") setAdding(true); else onChange(e.target.value); }} style={inputStyle}>
+      {(value && !options.includes(value) ? [value, ...options] : options).map((o) => <option key={o} value={o}>{o}</option>)}
       <option value="__new__">+ Add new…</option>
     </select>
   );
@@ -707,7 +747,9 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
     priority: null, priorityBucket: null,
     dueDate: null, recurrence: "none", notes: "",
     completed: false, gridBucket: {}, actions: [],
+    needsDetails: false, createdBy: me,
   });
+  const [deferDetails, setDeferDetails] = useState(false);
   const set = (k, v) => setT((p) => ({ ...p, [k]: v }));
   const [newAction, setNewAction] = useState("");
   const addFormAction = () => {
@@ -726,12 +768,17 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
 
   const categoryOptions = t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me];
   const showAssignee = t.scope === "shared" || t.listType === "project";
-  const isValid = t.title.trim() && (t.listType === "chore" ? !!t.room : !!t.category);
+  const isValid = t.title.trim() && (deferDetails || (t.listType === "chore" ? !!t.room : !!t.category));
 
   const finishAndSave = () => {
     const finalActions = newAction.trim() ? [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false, dueDate: null }] : (t.actions || []);
-    if (t.title.trim() && (t.listType === "chore" ? t.room : t.category)) {
-      onSave({ ...t, actions: finalActions, owner: t.scope === "personal" ? (t.owner || me) : null });
+    const detailsOk = deferDetails || (t.listType === "chore" ? t.room : t.category);
+    if (t.title.trim() && detailsOk) {
+      onSave({
+        ...t, actions: finalActions,
+        owner: t.scope === "personal" ? (t.owner || me) : null,
+        needsDetails: deferDetails, createdBy: t.createdBy || me,
+      });
     } else {
       onClose();
     }
@@ -739,17 +786,28 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
 
   return (
     <Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave}>
-      <Field label="Title *"><input value={t.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
-      <Field label="Type *"><SegRow options={[["chore", "Chore"], ["project", "Project"]]} value={t.listType} onChange={(v) => set("listType", v)} /></Field>
-      <Field label="Belongs to *"><SegRow options={[["shared", "Shared"], ["personal", "Personal"]]} value={t.scope} onChange={(v) => set("scope", v)} /></Field>
-
-      {t.listType === "chore" ? (
-        <Field label="Room *"><SectionSelect value={t.room} onChange={(v) => set("room", v)} options={config.rooms} onAddNew={onAddRoom} /></Field>
-      ) : (
-        <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={(name) => onAddCategory(t.scope, t.owner || me, name)} /></Field>
+      {!initial && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 15, padding: "9px 11px", background: C.card, borderRadius: 8, border: `1px solid ${C.rule}` }}>
+          <input type="checkbox" id="defer-details" checked={deferDetails} onChange={(e) => setDeferDetails(e.target.checked)} style={{ marginTop: 2 }} />
+          <label htmlFor="defer-details" style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.4 }}>Add essential details later — just capture the title for now. It'll show up under "need details" until you finish it off.</label>
+        </div>
       )}
+      <Field label="Title *"><input value={t.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
 
-      {showAssignee && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
+      {!deferDetails && (
+        <>
+          <Field label="Type *"><SegRow options={[["chore", "Chore"], ["project", "Project"]]} value={t.listType} onChange={(v) => set("listType", v)} /></Field>
+          <Field label="Belongs to *"><SegRow options={[["shared", "Shared"], ["personal", "Personal"]]} value={t.scope} onChange={(v) => set("scope", v)} /></Field>
+
+          {t.listType === "chore" ? (
+            <Field label="Room *"><SectionSelect value={t.room} onChange={(v) => set("room", v)} options={config.rooms} onAddNew={onAddRoom} /></Field>
+          ) : (
+            <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={(name) => onAddCategory(t.scope, t.owner || me, name)} /></Field>
+          )}
+
+          {showAssignee && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
+        </>
+      )}
 
       <Field label="Importance"><SegRow options={[[null, "None"], ...IMPORTANCE.map((p) => [p.key, p.label])]} value={t.priority} onChange={(v) => set("priority", v)} /></Field>
 
