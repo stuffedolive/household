@@ -122,7 +122,7 @@ function fmtDate(dateStr) {
   if (diff === 0) return "Today";
   if (diff === 1) return "Tomorrow";
   if (diff === -1) return "Yesterday";
-  if (diff < 0) return `${-diff}d overdue`;
+  if (diff < 0) return `${-diff === 1 ? "1 day" : `${-diff} days`} ago`;
   const base = d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
   if (diff >= 2 && diff <= 14) return `${base} (${diff}d)`;
   return base;
@@ -152,7 +152,6 @@ function App() {
   const [view, setView] = useState("grid");
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [priorityViewPerson, setPriorityViewPerson] = useState(null);
-  const [priorityScope, setPriorityScope] = useState("shared");
   const [filter, setFilter] = useState("all");
   const [choreFilter, setChoreFilter] = useState("all");
   const [projectScope, setProjectScope] = useState("shared");
@@ -393,7 +392,7 @@ function App() {
         </div>
       )}
       {view === "grid" ? (
-        <PriorityGrid tasks={tasks} me={me} viewingPerson={priorityViewPerson || me} setViewingPerson={setPriorityViewPerson} scope={priorityScope} setScope={setPriorityScope} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
+        <PriorityGrid tasks={tasks} me={me} viewingPerson={priorityViewPerson || me} setViewingPerson={setPriorityViewPerson} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={(t) => { setEditing(t); setShowForm(true); }} />
       ) : view === "todo" ? (
         <ToDoList
           tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
@@ -525,29 +524,33 @@ function FilterChip({ active, onClick, label, activeColor }) {
 }
 
 /* ---------- priority grid ---------- */
-function PriorityGrid({ tasks, me, viewingPerson, setViewingPerson, scope, setScope, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
+function PriorityGrid({ tasks, me, viewingPerson, setViewingPerson, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
   const other = viewingPerson === "jade" ? "john" : "jade";
   return (
     <div style={{ padding: "16px 16px 12px", height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
-      <button onClick={() => setViewingPerson(other)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "none", padding: 0, cursor: "pointer", marginBottom: 12, flexShrink: 0 }}>
+      <button onClick={() => setViewingPerson(other)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "none", padding: 0, cursor: "pointer", marginBottom: 14, flexShrink: 0 }}>
         <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600, color: C.ink }}>{PEOPLE[viewingPerson]}</span>
         {viewingPerson === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
         <span style={{ fontSize: 11, color: C.inkSoft, textDecoration: "underline" }}>switch to {PEOPLE[other]}</span>
       </button>
 
-      <button onClick={() => setScope((s) => (s === "shared" ? "personal" : "shared"))} style={{ width: "100%", padding: "8px 12px", borderRadius: 8, border: `1px solid ${C.ink}`, background: C.ink, color: C.white, fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 14, flexShrink: 0 }}>
-        {scope === "shared" ? "Shared" : "Personal"} <span style={{ opacity: 0.6, fontSize: 11 }}>⇄</span>
-      </button>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8, flexShrink: 0 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "26px repeat(3, 1fr)", gap: 6, marginBottom: 6, flexShrink: 0 }}>
+        <div />
         {BUCKETS.map((b) => (
-          <div key={b.key} style={{ fontSize: 10, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, textAlign: "center" }}>{b.label}</div>
+          <div key={b.key} style={{ fontSize: 9.5, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, fontWeight: 700, textAlign: "center" }}>{b.label}</div>
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, flex: 1, minHeight: 0 }}>
-        {BUCKETS.map((b) => (
-          <GridCell key={b.key} bucket={b} scope={scope} person={viewingPerson} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8, minHeight: 0 }}>
+        {[["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => (
+          <div key={scope} style={{ display: "grid", gridTemplateColumns: "26px repeat(3, 1fr)", gap: 6, flex: 1, minHeight: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ fontSize: 10.5, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, writingMode: "vertical-rl", transform: "rotate(180deg)" }}>{label}</span>
+            </div>
+            {BUCKETS.map((b) => (
+              <GridCell key={b.key} bucket={b} scope={scope} person={viewingPerson} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />
+            ))}
+          </div>
         ))}
       </div>
     </div>
