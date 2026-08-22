@@ -61,7 +61,6 @@ const C = {
 const PEOPLE = { jade: "Jade", john: "John" };
 const PERSON_COLOR = { jade: C.sage, john: C.plum };
 const PERSON_CODE = { jade: "JC", john: "JE" };
-const otherPerson = (me) => (me === "jade" ? "john" : "jade");
 
 const BUCKETS = [{ key: "quick", label: "Quick" }, { key: "mid", label: "Middle-term" }, { key: "long", label: "Long-term" }];
 const DEFAULT_ROOMS = ["Kitchen", "Bathroom", "Living", "Bedroom", "Laundry", "General"];
@@ -70,7 +69,7 @@ const RECUR = [
   { key: "none", label: "One-off" }, { key: "daily", label: "Daily" }, { key: "weekly", label: "Weekly" },
   { key: "fortnightly", label: "Fortnightly" }, { key: "monthly", label: "Monthly" },
 ];
-const PRIORITY = [
+const IMPORTANCE = [
   { key: "high", label: "High", color: C.plum }, { key: "med", label: "Med", color: C.mustard }, { key: "low", label: "Low", color: C.sage },
 ];
 
@@ -107,6 +106,12 @@ function fmtDate(dateStr) {
   if (diff < 0) return `${-diff}d overdue`;
   return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
 }
+/* ensure every room/category actually in use gets a column, even if it's not in the saved sections list yet */
+function withOrphans(sections, tasks, field) {
+  const used = new Set(tasks.map((t) => t[field]).filter(Boolean));
+  const extra = [...used].filter((v) => !sections.includes(v));
+  return [...sections, ...extra];
+}
 
 const TASKS_COLLECTION = "tasks";
 const CONFIG_DOC = db.collection("meta").doc("config");
@@ -119,9 +124,10 @@ function App() {
   const [config, setConfig] = useState({ rooms: DEFAULT_ROOMS, sharedCategories: DEFAULT_CATEGORIES, personalCategories: { jade: DEFAULT_CATEGORIES, john: DEFAULT_CATEGORIES } });
   const [view, setView] = useState("grid");
   const [filter, setFilter] = useState("all");
-  const [choreFilter, setChoreFilter] = useState("shared");
+  const [choreFilter, setChoreFilter] = useState("all");
+  const [projectScope, setProjectScope] = useState("shared");
+  const [projectFilter, setProjectFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
-  const [showAllPersonal, setShowAllPersonal] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pickerFor, setPickerFor] = useState(null);
@@ -217,10 +223,13 @@ function App() {
     updateActions(taskId, (task.actions || []).map((a) => (a.id === actionId ? { ...a, dueDate: date || null } : a)));
   };
 
-  const setBucket = (taskId, person, bucket) => {
+  /* scope-aware: pinning a task only clears the previous occupant of that slot
+     if the previous occupant was pinned from the SAME scope (personal vs shared) — personal and
+     shared pins for the same person+bucket are independent of each other. */
+  const setBucket = (taskId, person, bucket, scope) => {
     db.collection(TASKS_COLLECTION).doc(taskId).update({ [`gridBucket.${person}`]: bucket }).catch(console.error);
     tasks.forEach((t) => {
-      if (t.id !== taskId && t.gridBucket && t.gridBucket[person] === bucket) {
+      if (t.id !== taskId && t.scope === scope && t.gridBucket && t.gridBucket[person] === bucket) {
         db.collection(TASKS_COLLECTION).doc(t.id).update({ [`gridBucket.${person}`]: firebase.firestore.FieldValue.delete() }).catch(console.error);
       }
     });
@@ -229,7 +238,7 @@ function App() {
     db.collection(TASKS_COLLECTION).doc(taskId).update({ [`gridBucket.${person}`]: firebase.firestore.FieldValue.delete() }).catch(console.error);
   };
 
-  const visibleTasks = useMemo(() => (tasks || []).filter((t) => t.scope === "shared" || t.owner === me || showAllPersonal), [tasks, me, showAllPersonal]);
+  const visibleTasks = useMemo(() => (tasks || []).filter((t) => t.scope === "shared" || t.owner === me), [tasks, me]);
 
   if (authReady === null) return <Shell><div style={centerMsg}>Loading…</div></Shell>;
   if (authReady === false) return <Shell><PinGate /></Shell>;
@@ -263,8 +272,9 @@ function App() {
         <QueueView
           tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter}
           choreFilter={choreFilter} setChoreFilter={setChoreFilter}
+          projectScope={projectScope} setProjectScope={setProjectScope}
+          projectFilter={projectFilter} setProjectFilter={setProjectFilter}
           typeFilter={typeFilter} setTypeFilter={setTypeFilter}
-          showAllPersonal={showAllPersonal} setShowAllPersonal={setShowAllPersonal}
           config={config} onAddRoom={addRoom} onAddCategory={addCategory}
           onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
           onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction}
@@ -282,6 +292,7 @@ function App() {
         <TaskForm
           me={me} initial={editing} config={config} onAddRoom={addRoom} onAddCategory={addCategory}
           onClose={() => setShowForm(false)} onSave={(t) => { upsertTask(t); setShowForm(false); }}
+          onDelete={(id) => { deleteTask(id); setShowForm(false); }}
         />
       )}
       {pickerFor && (
@@ -291,7 +302,7 @@ function App() {
             (pickerFor.scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === pickerFor.person) &&
             (!t.priorityBucket || t.priorityBucket === pickerFor.bucket)
           )}
-          onPick={(taskId) => { setBucket(taskId, pickerFor.person, pickerFor.bucket); setPickerFor(null); }}
+          onPick={(taskId) => { setBucket(taskId, pickerFor.person, pickerFor.bucket, pickerFor.scope); setPickerFor(null); }}
           onClose={() => setPickerFor(null)}
         />
       )}
@@ -356,6 +367,9 @@ function PersonBadge({ person, size = 20 }) {
       {PERSON_CODE[person]}
     </span>
   );
+}
+function FilterChip({ active, onClick, label }) {
+  return <button onClick={onClick} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${active ? C.ink : C.rule}`, background: active ? C.ink : "transparent", color: active ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{label}</button>;
 }
 
 /* ---------- priority grid ---------- */
@@ -429,8 +443,9 @@ function BucketPicker({ tasks, onPick, onClose }) {
 /* ---------- queue view ---------- */
 function QueueView(props) {
   const {
-    tasks, me, filter, setFilter, choreFilter, setChoreFilter, typeFilter, setTypeFilter,
-    showAllPersonal, setShowAllPersonal, config, onAddRoom, onAddCategory,
+    tasks, me, filter, setFilter, choreFilter, setChoreFilter,
+    projectScope, setProjectScope, projectFilter, setProjectFilter,
+    typeFilter, setTypeFilter, config, onAddRoom, onAddCategory,
     onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate,
   } = props;
 
@@ -438,14 +453,23 @@ function QueueView(props) {
 
   const scoped = useMemo(() => {
     if (typeFilter === "chore") {
-      if (choreFilter === "shared") return typed;
-      return typed.filter((t) => (t.scope === "personal" ? t.owner === choreFilter : (t.assignee === choreFilter || !t.assignee)));
+      if (choreFilter === "all") return typed;
+      return typed.filter((t) => (t.scope === "personal" ? t.owner === choreFilter : t.assignee === choreFilter));
+    }
+    if (typeFilter === "project") {
+      let f = typed.filter((t) => t.scope === projectScope);
+      if (projectScope === "shared") {
+        if (projectFilter !== "all") f = f.filter((t) => t.assignee === projectFilter);
+      } else {
+        f = f.filter((t) => t.owner === me);
+      }
+      return f;
     }
     let f = typed;
     if (filter === "mine") f = f.filter((t) => t.owner === me || (t.scope === "shared" && (t.assignee === me || !t.assignee)));
     if (filter === "shared") f = f.filter((t) => t.scope === "shared");
     return f;
-  }, [typed, typeFilter, choreFilter, filter, me]);
+  }, [typed, typeFilter, choreFilter, projectScope, projectFilter, filter, me]);
 
   const sorted = useMemo(() => scoped.slice().sort((a, b) => {
     const ac = a.completed ? 1 : 0, bc = b.completed ? 1 : 0;
@@ -454,7 +478,6 @@ function QueueView(props) {
   }), [scoped]);
 
   const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate };
-  const other = otherPerson(me);
 
   return (
     <div style={{ height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
@@ -464,28 +487,39 @@ function QueueView(props) {
         ))}
       </div>
 
-      <div style={{ display: "flex", gap: 6, padding: "8px 16px 0", alignItems: "center", flexWrap: "wrap" }}>
-        {typeFilter === "chore" ? (
-          [["shared", "Shared"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => (
-            <button key={k} onClick={() => setChoreFilter(k)} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${choreFilter === k ? C.ink : C.rule}`, background: choreFilter === k ? C.ink : "transparent", color: choreFilter === k ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{l}</button>
-          ))
-        ) : (
-          [["all", "All"], ["mine", "Mine"], ["shared", "Shared"]].map(([k, l]) => (
-            <button key={k} onClick={() => setFilter(k)} style={{ padding: "5px 12px", borderRadius: 20, border: `1px solid ${filter === k ? C.ink : C.rule}`, background: filter === k ? C.ink : "transparent", color: filter === k ? C.white : C.inkSoft, fontSize: 12, cursor: "pointer" }}>{l}</button>
-          ))
-        )}
-        <button onClick={() => setShowAllPersonal((v) => !v)} style={{ marginLeft: "auto", border: "none", background: "none", color: C.inkSoft, fontSize: 11, textDecoration: "underline", cursor: "pointer" }}>
-          {showAllPersonal ? `Hide ${PEOPLE[other]}'s personal` : `Show ${PEOPLE[other]}'s personal too`}
-        </button>
-      </div>
+      {typeFilter === "chore" && (
+        <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
+          {[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => <FilterChip key={k} active={choreFilter === k} onClick={() => setChoreFilter(k)} label={l} />)}
+        </div>
+      )}
+
+      {typeFilter === "project" && (
+        <>
+          <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
+            <button onClick={() => setProjectScope("shared")} style={{ flex: 1, padding: "6px 12px", borderRadius: 8, border: `1px solid ${projectScope === "shared" ? C.ink : C.rule}`, background: projectScope === "shared" ? C.ink : C.card, color: projectScope === "shared" ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Shared Projects</button>
+            <button onClick={() => setProjectScope("personal")} style={{ flex: 1, padding: "6px 12px", borderRadius: 8, border: `1px solid ${projectScope === "personal" ? C.ink : C.rule}`, background: projectScope === "personal" ? C.ink : C.card, color: projectScope === "personal" ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Personal Projects</button>
+          </div>
+          {projectScope === "shared" && (
+            <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
+              {[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => <FilterChip key={k} active={projectFilter === k} onClick={() => setProjectFilter(k)} label={l} />)}
+            </div>
+          )}
+        </>
+      )}
+
+      {typeFilter === "all" && (
+        <div style={{ display: "flex", gap: 6, padding: "8px 16px 0" }}>
+          {[["all", "All"], ["mine", "Mine"], ["shared", "Shared"]].map(([k, l]) => <FilterChip key={k} active={filter === k} onClick={() => setFilter(k)} label={l} />)}
+        </div>
+      )}
 
       {typeFilter === "chore" ? (
-        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={config.rooms} onAddRoom={onAddRoom} />
-      ) : typeFilter === "project" && filter !== "all" ? (
+        <RoomBoard tasks={sorted} rowProps={rowProps} rooms={withOrphans(config.rooms, sorted, "room")} onAddRoom={onAddRoom} />
+      ) : typeFilter === "project" ? (
         <CategoryBoard
           tasks={sorted} rowProps={rowProps}
-          categories={filter === "shared" ? config.sharedCategories : config.personalCategories[me]}
-          onAddCategory={(name) => onAddCategory(filter === "shared" ? "shared" : "personal", me, name)}
+          categories={withOrphans(projectScope === "shared" ? config.sharedCategories : config.personalCategories[me], sorted, "category")}
+          onAddCategory={(name) => onAddCategory(projectScope, me, name)}
         />
       ) : (
         <div style={{ flex: 1, overflowY: "auto", padding: "10px 16px 90px" }}>
@@ -554,17 +588,18 @@ function AddSectionColumn({ onAdd, label }) {
 function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetActionDueDate, compact }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
-  const p = PRIORITY.find((x) => x.key === task.priority) || null;
+  const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
   const overdue = task.dueDate && task.dueDate < new Date().toISOString().slice(0, 10) && !task.completed;
   const na = nextAction(task);
   const progress = actionsProgress(task);
   const badgePerson = task.scope === "personal" ? task.owner : task.assignee;
   const commit = () => { if (newAction.trim()) { onAddAction(task.id, newAction); setNewAction(""); } };
+  const del = (e) => { e.stopPropagation(); if (window.confirm(`Delete "${task.title}"?`)) onDelete(task.id); };
 
   return (
     <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 10, padding: compact ? "9px 10px" : "11px 12px", marginBottom: 8, opacity: task.completed ? 0.55 : 1 }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-        <button onClick={() => onToggle(task)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${p ? p.color : C.inkSoft}`, background: task.completed ? (p ? p.color : C.inkSoft) : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, marginTop: 1, color: C.white, fontSize: 11 }}>
+        <button onClick={() => onToggle(task)} style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${imp ? imp.color : C.inkSoft}`, background: task.completed ? (imp ? imp.color : C.inkSoft) : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, marginTop: 1, color: C.white, fontSize: 11 }}>
           {task.completed && "✓"}
         </button>
         <div style={{ flex: 1, minWidth: 0 }} onClick={() => onEdit(task)}>
@@ -574,7 +609,7 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
           </div>
           {!compact && (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 5, alignItems: "center" }}>
-              {p && <Tag color={p.color}>{p.label}</Tag>}
+              {imp && <Tag color={imp.color}>{imp.label}</Tag>}
               {task.priorityBucket && <Tag color={C.mustard}>{BUCKETS.find((b) => b.key === task.priorityBucket)?.label}</Tag>}
               {task.room && <Tag color={C.inkSoft}>{task.room}</Tag>}
               {task.category && <Tag color={C.inkSoft}>{task.category}</Tag>}
@@ -584,7 +619,7 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
           )}
           {compact && task.dueDate && <div style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, marginTop: 3 }}>{fmtDate(task.dueDate)}</div>}
         </div>
-        {!compact && <button onClick={() => onDelete(task.id)} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 2, fontSize: 13 }}>🗑</button>}
+        <button onClick={del} style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", padding: 2, fontSize: compact ? 11 : 13 }}>🗑</button>
       </div>
 
       {task.notes && !compact && <div style={{ marginLeft: 30, marginTop: 5, fontSize: 11.5, color: C.inkSoft, fontStyle: "italic" }}>{task.notes}</div>}
@@ -665,7 +700,7 @@ function SectionSelect({ value, onChange, options, onAddNew }) {
   );
 }
 
-function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSave }) {
+function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSave, onDelete }) {
   const [t, setT] = useState(() => initial || {
     id: uid(), title: "", listType: "chore", scope: "shared", owner: me,
     room: DEFAULT_ROOMS[0], category: DEFAULT_CATEGORIES[0], assignee: null,
@@ -690,13 +725,12 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
   const setFormActionDate = (id, date) => set("actions", (t.actions || []).map((a) => (a.id === id ? { ...a, dueDate: date || null } : a)));
 
   const categoryOptions = t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me];
-
+  const showAssignee = t.scope === "shared" || t.listType === "project";
   const isValid = t.title.trim() && (t.listType === "chore" ? !!t.room : !!t.category);
 
   const finishAndSave = () => {
     const finalActions = newAction.trim() ? [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false, dueDate: null }] : (t.actions || []);
-    const finalTitle = t.title.trim();
-    if (finalTitle && (t.listType === "chore" ? t.room : t.category)) {
+    if (t.title.trim() && (t.listType === "chore" ? t.room : t.category)) {
       onSave({ ...t, actions: finalActions, owner: t.scope === "personal" ? (t.owner || me) : null });
     } else {
       onClose();
@@ -715,9 +749,9 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
         <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={(name) => onAddCategory(t.scope, t.owner || me, name)} /></Field>
       )}
 
-      {t.scope === "shared" && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
+      {showAssignee && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
 
-      <Field label="Priority"><SegRow options={[[null, "None"], ...PRIORITY.map((p) => [p.key, p.label])]} value={t.priority} onChange={(v) => set("priority", v)} /></Field>
+      <Field label="Importance"><SegRow options={[[null, "None"], ...IMPORTANCE.map((p) => [p.key, p.label])]} value={t.priority} onChange={(v) => set("priority", v)} /></Field>
 
       {t.listType === "project" && (
         <Field label="Priorities (doesn't pin automatically)"><SegRow options={[[null, "None"], ...BUCKETS.map((b) => [b.key, b.label])]} value={t.priorityBucket} onChange={(v) => set("priorityBucket", v)} /></Field>
@@ -745,6 +779,14 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
       </Field>
 
       <button disabled={!isValid} onClick={finishAndSave} style={{ ...btnStyle(C.ink), width: "100%", marginTop: 8, opacity: isValid ? 1 : 0.5 }}>Save</button>
+      {initial && (
+        <button
+          onClick={() => { if (window.confirm(`Delete "${t.title}"? This can't be undone.`)) onDelete(t.id); }}
+          style={{ width: "100%", marginTop: 8, padding: "10px 0", borderRadius: 10, border: `1px solid ${C.plum}`, background: "transparent", color: C.plum, fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}
+        >
+          Delete task
+        </button>
+      )}
     </Overlay>
   );
 }
