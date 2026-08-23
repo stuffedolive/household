@@ -227,7 +227,7 @@ function App() {
       affectedTasks.forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).set(t).catch(console.error));
     });
     const next = config.rooms.filter((r) => r !== name);
-    CONFIG_DOC.update({ rooms: next }).catch((e) => console.error("delete room failed", e));
+    CONFIG_DOC.update({ rooms: next }).catch((e) => { console.error("delete room failed", e); window.alert("Delete failed: " + e.message); });
     affectedTasks.forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ room: null }).catch(console.error));
   };
   const deleteCategory = (scope, owner, name) => {
@@ -239,7 +239,7 @@ function App() {
         affectedTasks.forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).set(t).catch(console.error));
       });
       const next = prevList.filter((c) => c !== name);
-      CONFIG_DOC.update({ sharedCategories: next }).catch((e) => console.error("delete category failed", e));
+      CONFIG_DOC.update({ sharedCategories: next }).catch((e) => { console.error("delete category failed", e); window.alert("Delete failed: " + e.message); });
       affectedTasks.forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
     } else {
       const prevList = config.personalCategories[owner] || [];
@@ -249,7 +249,7 @@ function App() {
         affectedTasks.forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).set(t).catch(console.error));
       });
       const next = prevList.filter((c) => c !== name);
-      CONFIG_DOC.update({ [`personalCategories.${owner}`]: next }).catch((e) => console.error("delete category failed", e));
+      CONFIG_DOC.update({ [`personalCategories.${owner}`]: next }).catch((e) => { console.error("delete category failed", e); window.alert("Delete failed: " + e.message); });
       affectedTasks.forEach((t) => db.collection(TASKS_COLLECTION).doc(t.id).update({ category: null }).catch(console.error));
     }
   };
@@ -631,7 +631,7 @@ function FilterChip({ active, onClick, label, activeColor }) {
 function PriorityGrid({ tasks, me, viewingPerson, setViewingPerson, onOpenPicker, onClearBucket, onToggleAction, onEditTask }) {
   const other = viewingPerson === "jade" ? "john" : "jade";
   return (
-    <div style={{ padding: "16px 16px 12px", height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
+    <div style={{ padding: "16px 16px 12px", height: "calc(100% - 150px)", display: "flex", flexDirection: "column" }}>
       <button onClick={() => setViewingPerson(other)} style={{ display: "flex", alignItems: "center", gap: 8, border: "none", background: "none", padding: 0, cursor: "pointer", marginBottom: 14, flexShrink: 0 }}>
         <span style={{ fontFamily: "Fraunces, serif", fontSize: 20, fontWeight: 600, color: C.ink }}>{PEOPLE[viewingPerson]}</span>
         {viewingPerson === me && <span style={{ fontSize: 10, background: C.sage, color: C.white, padding: "2px 7px", borderRadius: 20 }}>you</span>}
@@ -946,7 +946,7 @@ function ToDoList({
   const tasksById = useMemo(() => { const m = {}; tasks.forEach((t) => { m[t.id] = t; }); return m; }, [tasks]);
 
   return (
-    <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
+    <div style={{ height: "calc(100% - 120px)", overflowY: "auto", padding: "14px 16px 90px" }}>
       <button onClick={() => setOverwhelmed((o) => !o)} style={{ width: "100%", border: `1px solid ${C.rule}`, background: overwhelmed ? C.ink : C.card, color: overwhelmed ? C.white : C.inkSoft, borderRadius: 8, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 12 }}>
         {overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}
       </button>
@@ -987,26 +987,26 @@ function ToDoList({
       <CollapsibleSection title="Stale" count={stale.length} defaultOpen={false}>
         <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Low or no importance, overdue by more than half its usual cycle (or 60+ days for one-off tasks).</div>
         {stale.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing stale right now.</div>}
-        {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+        {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />)}
       </CollapsibleSection>
 
       <CollapsibleSection title="Postponed" count={postponedChores.length + postponedProjectItems.length} defaultOpen={false}>
         <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Marked "not today" — still overdue if they were, just out of the way until the date you picked.</div>
         {postponedChores.length === 0 && postponedProjectItems.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing postponed right now.</div>}
-        {postponedChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
-        {postponedProjectItems.map(({ task, action }) => <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} />)}
+        {postponedChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />)}
+        {postponedProjectItems.map(({ task, action }) => <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onAddToToday={todaySelectedTaskIds.has(task.id) ? undefined : onAddTaskToToday} />)}
       </CollapsibleSection>
 
       <CollapsibleSection title="Upcoming" count={upcoming.length} defaultOpen={false}>
         <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Recurring, can't-start-early tasks whose window is approaching.</div>
         {upcoming.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing coming up yet.</div>}
-        {upcoming.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+        {upcoming.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />)}
       </CollapsibleSection>
 
       {justDone.length > 0 && (
         <div style={{ marginTop: 18 }}>
           <div style={{ fontSize: 11, color: C.sageDeep, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Just done ✓</div>
-          {justDone.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+          {justDone.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />)}
         </div>
       )}
     </div>
@@ -1149,7 +1149,7 @@ function QueueView(props) {
   const rowProps = { me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetTaskActions, onSetActionDueDate };
 
   return (
-    <div style={{ height: "calc(100% - 96px)", display: "flex", flexDirection: "column" }}>
+    <div style={{ height: "calc(100% - 150px)", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", gap: 6, padding: "10px 16px 0" }}>
         {[["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => (
           <button key={k} onClick={() => setTypeFilter(k)} style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${typeFilter === k ? C.ink : C.rule}`, background: typeFilter === k ? C.ink : C.card, color: typeFilter === k ? C.white : C.ink, fontSize: 12, fontWeight: 600, cursor: "pointer", flex: 1 }}>{l}</button>
@@ -1474,15 +1474,20 @@ function CollapsibleSection({ title, count, defaultOpen, children }) {
 }
 
 /* ---------- overlay ---------- */
-function Overlay({ title, onClose, children }) {
+function Overlay({ title, onClose, headerExtra, children }) {
   return (
     <div style={{ position: "absolute", inset: 0, background: "rgba(43,42,40,0.4)", display: "flex", alignItems: "flex-end", zIndex: 10 }} onClick={onClose}>
-      <div style={{ background: C.parchment, width: "100%", maxHeight: "80%", borderRadius: "18px 18px 0 0", padding: 18, overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+      <div style={{ background: C.parchment, width: "100%", maxHeight: "80%", borderRadius: "18px 18px 0 0", display: "flex", flexDirection: "column", overflow: "hidden" }} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 18px 14px", borderBottom: `1px solid ${C.rule}`, flexShrink: 0 }}>
           <div style={{ fontFamily: "Fraunces, serif", fontSize: 18, fontWeight: 600, color: C.ink }}>{title}</div>
-          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, fontSize: 20 }}>×</button>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            {headerExtra}
+            <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", color: C.inkSoft, fontSize: 20 }}>×</button>
+          </div>
         </div>
-        {children}
+        <div style={{ overflowY: "auto", overflowX: "hidden", padding: 18, flex: 1 }}>
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -1560,7 +1565,11 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
   };
 
   return (
-    <Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave}>
+    <Overlay
+      title={initial ? "Edit task" : "New task"}
+      onClose={finishAndSave}
+      headerExtra={<button disabled={!isValid} onClick={finishAndSave} style={{ background: isValid ? C.ink : C.rule, color: C.white, border: "none", borderRadius: 20, padding: "7px 16px", fontSize: 13, fontWeight: 700, cursor: isValid ? "pointer" : "default" }}>Save</button>}
+    >
       <FormSection first>
         <Field label="Title *"><input value={t.title} onChange={(e) => set("title", capFirst(e.target.value))} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
         {!initial && (
@@ -1614,7 +1623,7 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
           <Field label="Priorities (doesn't pin automatically)"><SegRow options={[[null, "None"], ...BUCKETS.map((b) => [b.key, b.label])]} value={t.priorityBucket} onChange={(v) => set("priorityBucket", v)} /></Field>
         )}
 
-        <Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={(e) => set("dueDate", e.target.value || null)} style={inputStyle} /></Field>
+        <Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={(e) => set("dueDate", e.target.value || null)} style={{ ...inputStyle, width: 170 }} /></Field>
         {t.dueDate && (
           <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 13, padding: "9px 11px", background: C.card, borderRadius: 8, border: `1px solid ${C.rule}` }}>
             <input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={(e) => set("startsOnDue", e.target.checked)} style={{ marginTop: 2 }} />
@@ -1638,7 +1647,6 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
         <Field label="Notes"><textarea value={t.notes || ""} onChange={(e) => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></Field>
       </FormSection>
 
-      <button disabled={!isValid} onClick={finishAndSave} style={{ ...btnStyle(C.ink), width: "100%", marginTop: 8, opacity: isValid ? 1 : 0.5 }}>Save</button>
       {initial && (
         <button
           onClick={() => { if (window.confirm(`Delete "${t.title}"? This can't be undone.`)) onDelete(t.id); }}
@@ -1659,7 +1667,7 @@ function FormSection({ title, first, children }) {
   );
 }
 function Field({ label, children }) { return <div style={{ marginBottom: 13 }}><div style={{ fontSize: 11, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 5 }}>{label}</div>{children}</div>; }
-const inputStyle = { width: "100%", padding: "10px 11px", borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, fontSize: 14, color: C.ink, outline: "none" };
+const inputStyle = { width: "100%", padding: "10px 11px", borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, fontSize: 14, color: C.ink, outline: "none", boxSizing: "border-box" };
 function SegRow({ options, value, onChange }) {
   return <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{options.map(([val, label]) => (
     <button key={String(val)} onClick={() => onChange(val)} style={{ padding: "7px 13px", borderRadius: 8, border: `1px solid ${value === val ? C.ink : C.rule}`, background: value === val ? C.ink : C.white, color: value === val ? C.white : C.ink, fontSize: 12.5, cursor: "pointer" }}>{label}</button>
