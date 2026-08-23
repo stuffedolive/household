@@ -89,6 +89,13 @@ function effectiveDueDate(task) {
   if (subDate && task.dueDate) return subDate < task.dueDate ? subDate : task.dueDate;
   return subDate || task.dueDate || null;
 }
+/* the specific subtask driving a chore's urgency, if it's an earlier date than the chore's own — null otherwise */
+function drivingSubtask(task) {
+  const na = nextAction(task);
+  if (!na || !na.dueDate) return null;
+  if (!task.dueDate) return na;
+  return na.dueDate < task.dueDate ? na : null;
+}
 const actionsProgress = (task) => {
   const acts = task.actions || [];
   if (!acts.length) return null;
@@ -841,21 +848,21 @@ function SnoozeControl({ onSnooze }) {
 
 /* prominent hero card for "overwhelmed" mode — visually set apart from everything else */
 function HeroCard({ pick, onToggle, onToggleAction, onEdit, onSnooze }) {
-  const isChore = pick.kind === "chore";
-  const task = isChore ? pick.item : pick.item.task;
-  const action = isChore ? null : pick.item.action;
-  const title = isChore ? task.title : action.title;
-  const dueDate = isChore ? effectiveDueDate(task) : (action.dueDate || task.dueDate);
+  const isProject = pick.kind === "project";
+  const task = isProject ? pick.item.task : pick.item;
+  const driving = isProject ? pick.item.action : drivingSubtask(task);
+  const title = driving ? driving.title : task.title;
+  const dueDate = driving ? (driving.dueDate || task.dueDate) : effectiveDueDate(task);
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
   return (
     <div style={{ background: C.ink, color: C.white, borderRadius: 20, padding: "30px 24px", textAlign: "center", boxShadow: "0 14px 34px rgba(43,42,40,0.3)", marginBottom: 18 }}>
       <div style={{ fontSize: 10, opacity: 0.55, marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>Most pressing right now</div>
-      {!isChore && <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>from {task.title}</div>}
+      {driving && <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>from {task.title}</div>}
       {imp && <div style={{ display: "inline-block", fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase", background: imp.color, color: C.white, padding: "3px 11px", borderRadius: 20, marginBottom: 14 }}>{imp.label} importance</div>}
       <div style={{ fontFamily: "Fraunces, serif", fontSize: 26, fontWeight: 600, lineHeight: 1.25, marginBottom: 12 }}>{title}</div>
       <div style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 13, opacity: 0.8, marginBottom: 22 }}>{fmtDate(dueDate)}</div>
       <div style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 18 }}>
-        <button onClick={() => (isChore ? onToggle(task) : onToggleAction(task.id, action.id))} style={{ background: C.white, color: C.ink, border: "none", borderRadius: 10, padding: "11px 22px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Done</button>
+        <button onClick={() => (driving ? onToggleAction(task.id, driving.id) : onToggle(task))} style={{ background: C.white, color: C.ink, border: "none", borderRadius: 10, padding: "11px 22px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Done</button>
         <button onClick={() => onEdit(task)} style={{ background: "transparent", color: C.white, border: "1px solid rgba(255,255,255,0.4)", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>Open</button>
       </div>
       <div style={{ display: "flex", justifyContent: "center" }}><SnoozeControl onSnooze={onSnooze} /></div>
@@ -980,7 +987,12 @@ function ToDoList({
       </button>
 
       {overwhelmed && topPick && (
-        <HeroCard pick={topPick} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={(kind) => (topPick.kind === "chore" ? snoozeChore(topPick.item, kind) : snoozeProjectAction(topPick.item.task, topPick.item.action, kind))} />
+        <HeroCard pick={topPick} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={(dateStr) => {
+          if (topPick.kind === "project") { snoozeProjectAction(topPick.item.task, topPick.item.action, dateStr); return; }
+          const driving = drivingSubtask(topPick.item);
+          if (driving) snoozeProjectAction(topPick.item, driving, dateStr);
+          else snoozeChore(topPick.item, dateStr);
+        }} />
       )}
 
       <TodayPlanSection
@@ -997,9 +1009,14 @@ function ToDoList({
       {displayChores.length > 0 && (
         <div style={{ marginBottom: 14 }}>
           <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>Chores</div>
-          {displayChores.map((t) => (
-            <TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? (kind) => snoozeChore(t, kind) : undefined} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />
-          ))}
+          {displayChores.map((t) => {
+            const driving = drivingSubtask(t);
+            return driving ? (
+              <ActionAsRow key={t.id} task={t} action={driving} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? (dateStr) => snoozeProjectAction(t, driving, dateStr) : undefined} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />
+            ) : (
+              <TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? (dateStr) => snoozeChore(t, dateStr) : undefined} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />
+            );
+          })}
         </div>
       )}
 
