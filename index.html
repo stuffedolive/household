@@ -79,6 +79,7 @@ const IMPORTANCE = [
 ];
 
 const uid = () => Math.random().toString(36).slice(2, 10);
+const capFirst = (s) => (s && s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const nextAction = (task) => (task.actions || []).find((a) => !a.completed) || null;
 const actionsProgress = (task) => {
   const acts = task.actions || [];
@@ -153,6 +154,7 @@ function App() {
   const [view, setView] = useState("grid");
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [lastUndo, setLastUndo] = useState(null); // { label, fn } | null — only ever the most recent action
+  const [searchQuery, setSearchQuery] = useState("");
   const setUndo = (label, fn) => setLastUndo({ label, fn });
   const handleUndo = () => { if (lastUndo) { lastUndo.fn(); setLastUndo(null); } };
   const [priorityViewPerson, setPriorityViewPerson] = useState(null);
@@ -394,6 +396,18 @@ function App() {
     captureUndo("Change due date", [taskId]);
     db.collection(TASKS_COLLECTION).doc(taskId).update({ dueDate: date }).catch(console.error);
   };
+  /* "Not today" postponement — hides from the to-do list without touching the real due date, so overdue/stale
+     status stays honest. Chores get it on the task itself; project subtasks get it on the specific subtask. */
+  const setTaskHiddenUntil = (taskId, date) => {
+    captureUndo("Postpone", [taskId]);
+    db.collection(TASKS_COLLECTION).doc(taskId).update({ hiddenUntil: date }).catch(console.error);
+  };
+  const setActionHiddenUntil = (taskId, actionId, date) => {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    captureUndo("Postpone", [taskId]);
+    updateActions(taskId, (task.actions || []).map((a) => (a.id === actionId ? { ...a, hiddenUntil: date } : a)));
+  };
 
   /* scope-aware: pinning a task only clears the previous occupant of that slot
      if the previous occupant was pinned from the SAME scope (personal vs shared) — personal and
@@ -414,6 +428,11 @@ function App() {
   };
 
   const visibleTasks = useMemo(() => (tasks || []).filter((t) => t.scope === "shared" || t.owner === me), [tasks, me]);
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return visibleTasks.filter((t) => t.title.toLowerCase().includes(q)).slice(0, 8);
+  }, [searchQuery, visibleTasks]);
   const needsDetailsTasks = useMemo(() => (tasks || []).filter((t) => t.needsDetails && t.createdBy === me), [tasks, me]);
 
   if (authReady === null) return <Shell><div style={centerMsg}>Loading…</div></Shell>;
@@ -441,7 +460,12 @@ function App() {
 
   return (
     <Shell>
-      <Header me={me} view={view} setView={setView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} />
+      <Header
+        me={me} view={view} setView={setView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)}
+        undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo}
+        searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults}
+        onSelectSearchResult={(t) => { setEditing(t); setShowForm(true); setSearchQuery(""); }}
+      />
       {configError && (
         <div style={{ background: C.plum, color: C.white, fontSize: 11, padding: "6px 16px", textAlign: "center" }}>
           Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too.
@@ -453,7 +477,7 @@ function App() {
         <ToDoList
           tasks={visibleTasks} onToggle={toggleComplete} onEdit={(t) => { setEditing(t); setShowForm(true); }} onDelete={deleteTask}
           onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions}
-          onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} me={me}
+          onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} me={me}
           todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry}
           onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday}
           onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone}
@@ -541,14 +565,9 @@ function Shell({ children }) {
 }
 function btnStyle(bg) { return { padding: "12px 22px", borderRadius: 10, border: "none", background: bg, color: C.white, fontSize: 15, fontWeight: 600, cursor: "pointer" }; }
 
-function Header({ me, view, setView, needsDetailsCount, onOpenNeedsDetails, undoLabel, onUndo }) {
+function Header({ me, view, setView, needsDetailsCount, onOpenNeedsDetails, undoLabel, onUndo, searchQuery, setSearchQuery, searchResults, onSelectSearchResult }) {
   return (
-    <div style={{ padding: "18px 18px 10px", borderBottom: `1px solid ${C.rule}` }}>
-      {undoLabel && (
-        <button onClick={onUndo} style={{ display: "flex", alignItems: "center", gap: 5, border: `1px solid ${C.rule}`, background: C.card, color: C.inkSoft, borderRadius: 20, padding: "4px 11px", fontSize: 11, fontWeight: 600, cursor: "pointer", marginBottom: 10 }}>
-          ↺ Undo {undoLabel}
-        </button>
-      )}
+    <div style={{ padding: "18px 18px 10px", borderBottom: `1px solid ${C.rule}`, position: "relative" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
         <div style={{ fontFamily: "Fraunces, serif", fontSize: 22, fontWeight: 600, color: C.ink }}>Our Life List</div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -560,6 +579,29 @@ function Header({ me, view, setView, needsDetailsCount, onOpenNeedsDetails, undo
           <div style={{ fontSize: 11, color: C.inkSoft }}>viewing as {PEOPLE[me]}</div>
         </div>
       </div>
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
+        <button onClick={onUndo} disabled={!undoLabel} style={{ display: "flex", alignItems: "center", gap: 4, border: `1px solid ${C.rule}`, background: undoLabel ? C.card : "transparent", color: undoLabel ? C.inkSoft : C.rule, borderRadius: 20, padding: "6px 12px", fontSize: 11, fontWeight: 600, cursor: undoLabel ? "pointer" : "default", whiteSpace: "nowrap", flexShrink: 0 }}>
+          ↺ {undoLabel ? `Undo ${undoLabel}` : "Undo"}
+        </button>
+        <input
+          value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search tasks…"
+          style={{ flex: 1, minWidth: 0, padding: "6px 12px", borderRadius: 20, border: `1px solid ${C.rule}`, background: C.white, fontSize: 12, color: C.ink, outline: "none", boxSizing: "border-box" }}
+        />
+      </div>
+
+      {searchQuery.trim() && (
+        <div style={{ position: "absolute", left: 18, right: 18, top: "100%", background: C.white, border: `1px solid ${C.rule}`, borderRadius: 10, marginTop: 4, boxShadow: "0 8px 20px rgba(43,42,40,0.18)", zIndex: 20, maxHeight: 260, overflowY: "auto" }}>
+          {searchResults.length === 0 && <div style={{ padding: "12px", fontSize: 12.5, color: C.inkSoft, textAlign: "center" }}>No matches.</div>}
+          {searchResults.map((t) => (
+            <button key={t.id} onClick={() => onSelectSearchResult(t)} style={{ display: "block", width: "100%", textAlign: "left", border: "none", borderBottom: `1px solid ${C.rule}`, background: "none", padding: "10px 12px", cursor: "pointer" }}>
+              <span style={{ fontSize: 13, color: C.ink, fontWeight: 600 }}>{t.title}</span>
+              <span style={{ fontSize: 10.5, color: C.inkSoft, marginLeft: 6 }}>{t.listType === "chore" ? "Chore" : "Project"}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
         <TabButton active={view === "todo"} onClick={() => setView("todo")} label="To-do list" />
         <TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" />
@@ -752,16 +794,19 @@ function snoozeTarget(kind) {
 const notStartableYet = (t, todayStr) => t.startsOnDue && t.dueDate && t.dueDate > todayStr;
 
 /* shared "not today" control — used on the hero card and, in overwhelmed mode, on every row */
-function SnoozeControl({ onSnooze, light }) {
+function SnoozeControl({ onSnooze }) {
   const [open, setOpen] = useState(false);
-  const textColor = light ? "rgba(255,255,255,0.65)" : C.inkSoft;
   if (!open) {
-    return <button onClick={() => setOpen(true)} style={{ background: "none", border: "none", color: textColor, fontSize: 11.5, textDecoration: "underline", cursor: "pointer", padding: 0 }}>Not today</button>;
+    return (
+      <button onClick={() => setOpen(true)} style={{ background: C.ink, color: C.white, border: "1px solid rgba(255,255,255,0.25)", borderRadius: 20, padding: "5px 14px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
+        Not today
+      </button>
+    );
   }
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
       {[["tomorrow", "Tomorrow"], ["next-weekend", "Next weekend"], ["next-month", "Next month"]].map(([k, l]) => (
-        <button key={k} onClick={() => { onSnooze(k); setOpen(false); }} style={{ background: light ? "rgba(255,255,255,0.14)" : C.card, color: light ? C.white : C.ink, border: light ? "none" : `1px solid ${C.rule}`, borderRadius: 6, padding: "4px 9px", fontSize: 11, cursor: "pointer" }}>{l}</button>
+        <button key={k} onClick={() => { onSnooze(k); setOpen(false); }} style={{ background: C.ink, color: C.white, border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, padding: "5px 11px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{l}</button>
       ))}
     </div>
   );
@@ -786,7 +831,7 @@ function HeroCard({ pick, onToggle, onToggleAction, onEdit, onSnooze }) {
         <button onClick={() => (isChore ? onToggle(task) : onToggleAction(task.id, action.id))} style={{ background: C.white, color: C.ink, border: "none", borderRadius: 10, padding: "11px 22px", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>Done</button>
         <button onClick={() => onEdit(task)} style={{ background: "transparent", color: C.white, border: "1px solid rgba(255,255,255,0.4)", borderRadius: 10, padding: "11px 18px", fontSize: 14, cursor: "pointer" }}>Open</button>
       </div>
-      <div style={{ display: "flex", justifyContent: "center" }}><SnoozeControl onSnooze={onSnooze} light /></div>
+      <div style={{ display: "flex", justifyContent: "center" }}><SnoozeControl onSnooze={onSnooze} /></div>
     </div>
   );
 }
@@ -800,6 +845,7 @@ function upcomingLeadDays(periodDays) {
 
 function ToDoList({
   tasks, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetTaskActions, onSetActionDueDate, onSetTaskDueDate,
+  onSetTaskHiddenUntil, onSetActionHiddenUntil,
   todayItems, onAddSundry, onToggleSundry, onDeleteSundry, onAddTaskToToday, onRemoveTaskFromToday, onReorderToday, onReorderTodayBucketFull, onResetToday, onSetTodayBucket, onToggleTodayTaskDone,
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
@@ -826,7 +872,16 @@ function ToDoList({
     return daysUntil <= upcomingLeadDays(period);
   }).sort((a, b) => a.dueDate.localeCompare(b.dueDate)), [assignedToMe, today]);
 
-  const active = useMemo(() => assignedToMe.filter((t) => !t.completed && !notStartableYet(t, today)), [assignedToMe, today]);
+  const isHidden = (t) => t.hiddenUntil && t.hiddenUntil > today;
+  const active = useMemo(() => assignedToMe.filter((t) => !t.completed && !notStartableYet(t, today) && !isHidden(t)), [assignedToMe, today]);
+
+  // postponed ("not today"): due date untouched, so these still show their true overdue state wherever displayed —
+  // only hidden from the ranked to-do list until hiddenUntil passes, then they quietly reappear on their own.
+  const postponedChores = useMemo(() => assignedToMe.filter((t) => !t.completed && t.listType === "chore" && isHidden(t)), [assignedToMe, today]);
+  const postponedProjectItems = useMemo(() => assignedToMe
+    .filter((t) => !t.completed && t.listType === "project")
+    .map((t) => ({ task: t, action: (t.actions || []).find((a) => !a.completed && a.hiddenUntil && a.hiddenUntil > today) }))
+    .filter(({ action }) => !!action), [assignedToMe, today]);
 
   // stale: low/no importance only, overdue by more than half its recurrence period (60 days for one-off tasks)
   const stale = useMemo(() => active.filter((t) => {
@@ -849,12 +904,14 @@ function ToDoList({
   );
 
   // projects: only ones pinned in the Priorities grid for the viewed person — their first/next action always
-  // shows, even with no priority or due date of its own (falls back to the project's own date, or no date at all)
+  // shows, even with no priority or due date of its own (falls back to the project's own date, or no date at all).
+  // if that next action was postponed, the project sits out of the to-do list until it passes.
   const projectItems = useMemo(() => {
     const items = active
       .filter((t) => t.listType === "project" && t.gridBucket && t.gridBucket[me] && !staleIds.has(t.id))
       .map((t) => ({ task: t, action: nextAction(t) }))
-      .filter(({ action }) => !!action);
+      .filter(({ action }) => !!action)
+      .filter(({ action }) => !(action.hiddenUntil && action.hiddenUntil > today));
     return items.sort((a, b) => {
       const da = a.action.dueDate || a.task.dueDate, db = b.action.dueDate || b.task.dueDate;
       const ta = tierFor(da, a.task.priority, today), tb = tierFor(db, b.task.priority, today);
@@ -875,8 +932,10 @@ function ToDoList({
     return candidates[0];
   }, [chores, projectItems, today]);
 
-  const snoozeChore = (task, kind) => onSetTaskDueDate(task.id, snoozeTarget(kind));
-  const snoozeProjectAction = (task, action, kind) => onSetActionDueDate(task.id, action.id, snoozeTarget(kind));
+  // "Not today" postpones — real due date is left alone, so overdue/stale status stays honest; the item just
+  // moves into the Postponed section until the chosen date, then quietly reappears in normal rank.
+  const snoozeChore = (task, kind) => onSetTaskHiddenUntil(task.id, snoozeTarget(kind));
+  const snoozeProjectAction = (task, action, kind) => onSetActionHiddenUntil(task.id, action.id, snoozeTarget(kind));
 
   const displayChores = overwhelmed && topPick && topPick.kind === "chore" ? chores.filter((t) => t.id !== topPick.item.id) : chores;
   const displayProjects = overwhelmed && topPick && topPick.kind === "project"
@@ -889,7 +948,7 @@ function ToDoList({
   return (
     <div style={{ height: "calc(100% - 64px)", overflowY: "auto", padding: "14px 16px 90px" }}>
       <button onClick={() => setOverwhelmed((o) => !o)} style={{ width: "100%", border: `1px solid ${C.rule}`, background: overwhelmed ? C.ink : C.card, color: overwhelmed ? C.white : C.inkSoft, borderRadius: 8, padding: "7px 0", fontSize: 12, fontWeight: 600, cursor: "pointer", marginBottom: 12 }}>
-        {overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — highlight the top thing"}
+        {overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}
       </button>
 
       {overwhelmed && topPick && (
@@ -929,6 +988,13 @@ function ToDoList({
         <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Low or no importance, overdue by more than half its usual cycle (or 60+ days for one-off tasks).</div>
         {stale.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing stale right now.</div>}
         {stale.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+      </CollapsibleSection>
+
+      <CollapsibleSection title="Postponed" count={postponedChores.length + postponedProjectItems.length} defaultOpen={false}>
+        <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Marked "not today" — still overdue if they were, just out of the way until the date you picked.</div>
+        {postponedChores.length === 0 && postponedProjectItems.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing postponed right now.</div>}
+        {postponedChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} />)}
+        {postponedProjectItems.map(({ task, action }) => <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} />)}
       </CollapsibleSection>
 
       <CollapsibleSection title="Upcoming" count={upcoming.length} defaultOpen={false}>
@@ -1037,7 +1103,7 @@ function TodayPlanSection({ items, tasksById, onAddSundry, onToggleSundry, onDel
       </div>
 
       <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
-        <input value={newSundry} onChange={(e) => setNewSundry(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") commitSundry(); }} onBlur={commitSundry} placeholder="Add a sundry…" style={{ ...inputStyle, fontSize: 13, background: C.white }} />
+        <input value={newSundry} onChange={(e) => setNewSundry(capFirst(e.target.value))} onKeyDown={(e) => { if (e.key === "Enter") commitSundry(); }} onBlur={commitSundry} placeholder="Add a sundry…" style={{ ...inputStyle, fontSize: 13, background: C.white }} />
         <button onClick={commitSundry} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 14px", cursor: "pointer" }}>+</button>
       </div>
     </div>
@@ -1314,7 +1380,7 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
             )}
           />
           <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
-            <input value={newAction} onChange={(e) => setNewAction(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} onBlur={commit} placeholder="Add a subtask…" style={{ ...inputStyle, padding: "6px 9px", fontSize: 12 }} />
+            <input value={newAction} onChange={(e) => setNewAction(capFirst(e.target.value))} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} onBlur={commit} placeholder="Add a subtask…" style={{ ...inputStyle, padding: "6px 9px", fontSize: 12 }} />
             <button onClick={commit} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 6, padding: "0 10px", cursor: "pointer" }}>+</button>
           </div>
         </div>
@@ -1433,7 +1499,7 @@ function SectionSelect({ value, onChange, options, onAddNew }) {
   if (adding) {
     return (
       <div style={{ display: "flex", gap: 6 }}>
-        <input autoFocus autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} placeholder="New section name" style={inputStyle} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} onBlur={commit} />
+        <input autoFocus autoComplete="off" value={name} onChange={(e) => setName(capFirst(e.target.value))} placeholder="New section name" style={inputStyle} onKeyDown={(e) => { if (e.key === "Enter") commit(); }} onBlur={commit} />
         <button onClick={commit} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 12px", cursor: "pointer" }}>Add</button>
       </div>
     );
@@ -1496,7 +1562,7 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
   return (
     <Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave}>
       <FormSection first>
-        <Field label="Title *"><input value={t.title} onChange={(e) => set("title", e.target.value)} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
+        <Field label="Title *"><input value={t.title} onChange={(e) => set("title", capFirst(e.target.value))} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
         {!initial && (
           <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 15, padding: "9px 11px", background: C.card, borderRadius: 8, border: `1px solid ${C.rule}` }}>
             <input type="checkbox" id="defer-details" checked={deferDetails} onChange={(e) => setDeferDetails(e.target.checked)} style={{ marginTop: 2 }} />
@@ -1520,7 +1586,7 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
             )}
           />
           <div style={{ display: "flex", gap: 6 }}>
-            <input value={newAction} onChange={(e) => setNewAction(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFormAction(); } }} onBlur={addFormAction} placeholder="e.g. Buy grout" style={{ ...inputStyle, fontSize: 13 }} />
+            <input value={newAction} onChange={(e) => setNewAction(capFirst(e.target.value))} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFormAction(); } }} onBlur={addFormAction} placeholder="e.g. Buy grout" style={{ ...inputStyle, fontSize: 13 }} />
             <button onClick={addFormAction} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 12px", cursor: "pointer" }}>+</button>
           </div>
         </Field>
