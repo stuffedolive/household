@@ -81,6 +81,14 @@ const IMPORTANCE = [
 const uid = () => Math.random().toString(36).slice(2, 10);
 const capFirst = (s) => (s && s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s);
 const nextAction = (task) => (task.actions || []).find((a) => !a.completed) || null;
+/* a chore's true urgency for to-do-list purposes is the EARLIER of its own due date and its next incomplete
+   subtask's due date — a subtask due sooner than the parent should surface the parent sooner too. */
+function effectiveDueDate(task) {
+  const na = nextAction(task);
+  const subDate = na ? na.dueDate : null;
+  if (subDate && task.dueDate) return subDate < task.dueDate ? subDate : task.dueDate;
+  return subDate || task.dueDate || null;
+}
 const actionsProgress = (task) => {
   const acts = task.actions || [];
   if (!acts.length) return null;
@@ -795,19 +803,38 @@ const notStartableYet = (t, todayStr) => t.startsOnDue && t.dueDate && t.dueDate
 
 /* shared "not today" control — used on the hero card and, in overwhelmed mode, on every row */
 function SnoozeControl({ onSnooze }) {
-  const [open, setOpen] = useState(false);
-  if (!open) {
+  const [mode, setMode] = useState("closed"); // closed | options | custom
+  const [customDate, setCustomDate] = useState("");
+  const pillStyle = { background: C.ink, color: C.white, border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, padding: "5px 11px", fontSize: 11, fontWeight: 600, cursor: "pointer" };
+  const closeBtn = (onClick) => (
+    <button onClick={onClick} style={{ background: C.ink, color: C.white, border: "1px solid rgba(255,255,255,0.25)", borderRadius: "50%", width: 24, height: 24, fontSize: 13, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>×</button>
+  );
+
+  if (mode === "closed") {
     return (
-      <button onClick={() => setOpen(true)} style={{ background: C.ink, color: C.white, border: "1px solid rgba(255,255,255,0.25)", borderRadius: 20, padding: "5px 14px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
+      <button onClick={() => setMode("options")} style={{ background: C.ink, color: C.white, border: "1px solid rgba(255,255,255,0.25)", borderRadius: 20, padding: "5px 14px", fontSize: 11.5, fontWeight: 700, cursor: "pointer" }}>
         Not today
       </button>
     );
   }
+
+  if (mode === "custom") {
+    return (
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <input type="date" value={customDate} onChange={(e) => setCustomDate(e.target.value)} style={{ fontSize: 12, padding: "5px 8px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.3)", background: C.ink, color: C.white }} />
+        <button onClick={() => { if (customDate) { onSnooze(customDate); setMode("closed"); } }} disabled={!customDate} style={{ ...pillStyle, opacity: customDate ? 1 : 0.5 }}>Set</button>
+        {closeBtn(() => setMode("closed"))}
+      </div>
+    );
+  }
+
   return (
-    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
       {[["tomorrow", "Tomorrow"], ["next-weekend", "Next weekend"], ["next-month", "Next month"]].map(([k, l]) => (
-        <button key={k} onClick={() => { onSnooze(k); setOpen(false); }} style={{ background: C.ink, color: C.white, border: "1px solid rgba(255,255,255,0.25)", borderRadius: 8, padding: "5px 11px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{l}</button>
+        <button key={k} onClick={() => { onSnooze(snoozeTarget(k)); setMode("closed"); }} style={pillStyle}>{l}</button>
       ))}
+      <button onClick={() => setMode("custom")} style={pillStyle}>Custom date</button>
+      {closeBtn(() => setMode("closed"))}
     </div>
   );
 }
@@ -818,7 +845,7 @@ function HeroCard({ pick, onToggle, onToggleAction, onEdit, onSnooze }) {
   const task = isChore ? pick.item : pick.item.task;
   const action = isChore ? null : pick.item.action;
   const title = isChore ? task.title : action.title;
-  const dueDate = isChore ? task.dueDate : (action.dueDate || task.dueDate);
+  const dueDate = isChore ? effectiveDueDate(task) : (action.dueDate || task.dueDate);
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
   return (
     <div style={{ background: C.ink, color: C.white, borderRadius: 20, padding: "30px 24px", textAlign: "center", boxShadow: "0 14px 34px rgba(43,42,40,0.3)", marginBottom: 18 }}>
@@ -893,13 +920,14 @@ function ToDoList({
   }), [active, today]);
   const staleIds = new Set(stale.map((t) => t.id));
 
-  // chores: dated, not stale, ranked by tier
+  // chores: dated (own date or a nearer subtask date), not stale, ranked by tier on that effective date
   const chores = useMemo(() => active
-    .filter((t) => t.listType === "chore" && t.dueDate && !staleIds.has(t.id))
+    .filter((t) => t.listType === "chore" && !staleIds.has(t.id) && !!effectiveDueDate(t))
     .sort((a, b) => {
-      const ta = tierFor(a.dueDate, a.priority, today), tb = tierFor(b.dueDate, b.priority, today);
+      const da = effectiveDueDate(a), db = effectiveDueDate(b);
+      const ta = tierFor(da, a.priority, today), tb = tierFor(db, b.priority, today);
       if (ta !== tb) return ta - tb;
-      return a.dueDate.localeCompare(b.dueDate);
+      return da.localeCompare(db);
     }), [active, today, staleIds]
   );
 
@@ -924,7 +952,7 @@ function ToDoList({
 
   // the single most urgent thing across chores + project actions, for the overwhelmed spotlight
   const topPick = useMemo(() => {
-    const choreTop = chores[0] ? { kind: "chore", tier: tierFor(chores[0].dueDate, chores[0].priority, today), item: chores[0] } : null;
+    const choreTop = chores[0] ? { kind: "chore", tier: tierFor(effectiveDueDate(chores[0]), chores[0].priority, today), item: chores[0] } : null;
     const projTop = projectItems[0] ? { kind: "project", tier: tierFor(projectItems[0].action.dueDate || projectItems[0].task.dueDate, projectItems[0].task.priority, today), item: projectItems[0] } : null;
     const candidates = [choreTop, projTop].filter(Boolean);
     if (!candidates.length) return null;
@@ -934,8 +962,8 @@ function ToDoList({
 
   // "Not today" postpones — real due date is left alone, so overdue/stale status stays honest; the item just
   // moves into the Postponed section until the chosen date, then quietly reappears in normal rank.
-  const snoozeChore = (task, kind) => onSetTaskHiddenUntil(task.id, snoozeTarget(kind));
-  const snoozeProjectAction = (task, action, kind) => onSetActionHiddenUntil(task.id, action.id, snoozeTarget(kind));
+  const snoozeChore = (task, dateStr) => onSetTaskHiddenUntil(task.id, dateStr);
+  const snoozeProjectAction = (task, action, dateStr) => onSetActionHiddenUntil(task.id, action.id, dateStr);
 
   const displayChores = overwhelmed && topPick && topPick.kind === "chore" ? chores.filter((t) => t.id !== topPick.item.id) : chores;
   const displayProjects = overwhelmed && topPick && topPick.kind === "project"
