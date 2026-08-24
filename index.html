@@ -1658,8 +1658,8 @@ function ActionAsRow({
     onClick: () => onToggleManualTodo(task.id),
     style: {
       border: `1px solid ${C.rule}`,
-      background: task.manualTodo ? C.sageDeep : C.white,
-      color: task.manualTodo ? C.white : C.sageDeep,
+      background: C.white,
+      color: C.sageDeep,
       cursor: "pointer",
       padding: "2px 8px",
       fontSize: 11,
@@ -1997,18 +1997,17 @@ function ToDoList({
   // Priority Projects: pinned in the Priorities grid for the viewed person — their first/next action always
   // shows, even with no priority or due date of its own (falls back to the project's own date, or no date at all).
   // if that next action was postponed, the project sits out of the to-do list until it passes.
+  // Projects with no incomplete subtask at all just display as themselves (no action to show instead).
   const priorityProjectItems = useMemo(() => {
     const items = active.filter(t => t.listType === "project" && t.gridBucket && t.gridBucket[me] && !staleIds.has(t.id)).map(t => ({
       task: t,
       action: nextAction(t)
     })).filter(({
       action
-    }) => !!action).filter(({
-      action
-    }) => !(action.hiddenUntil && action.hiddenUntil > today));
+    }) => !(action && action.hiddenUntil && action.hiddenUntil > today));
     return items.sort((a, b) => {
-      const da = a.action.dueDate || a.task.dueDate,
-        db = b.action.dueDate || b.task.dueDate;
+      const da = a.action && a.action.dueDate || a.task.dueDate,
+        db = b.action && b.action.dueDate || b.task.dueDate;
       const ta = tierFor(da, a.task.priority, today),
         tb = tierFor(db, b.task.priority, today);
       if (ta !== tb) return ta - tb;
@@ -2023,12 +2022,10 @@ function ToDoList({
       action: nextAction(t)
     })).filter(({
       action
-    }) => !!action).filter(({
-      action
-    }) => !(action.hiddenUntil && action.hiddenUntil > today));
+    }) => !(action && action.hiddenUntil && action.hiddenUntil > today));
     return items.sort((a, b) => {
-      const da = a.action.dueDate || a.task.dueDate,
-        db = b.action.dueDate || b.task.dueDate;
+      const da = a.action && a.action.dueDate || a.task.dueDate,
+        db = b.action && b.action.dueDate || b.task.dueDate;
       const ta = tierFor(da, a.task.priority, today),
         tb = tierFor(db, b.task.priority, today);
       if (ta !== tb) return ta - tb;
@@ -2047,8 +2044,7 @@ function ToDoList({
     onDeleteAction,
     onReorderAction,
     onSetTaskActions,
-    onSetActionDueDate,
-    onToggleManualTodo
+    onSetActionDueDate
   };
 
   // the single most urgent thing across chores + project actions, for the overwhelmed spotlight
@@ -2060,7 +2056,7 @@ function ToDoList({
     } : null;
     const projTop = projectItems[0] ? {
       kind: "project",
-      tier: tierFor(projectItems[0].action.dueDate || projectItems[0].task.dueDate, projectItems[0].task.priority, today),
+      tier: tierFor(projectItems[0].action && projectItems[0].action.dueDate || projectItems[0].task.dueDate, projectItems[0].task.priority, today),
       item: projectItems[0]
     } : null;
     const candidates = [choreTop, projTop].filter(Boolean);
@@ -2077,7 +2073,7 @@ function ToDoList({
   const displayProjects = overwhelmed && topPick && topPick.kind === "project" ? projectItems.filter(({
     task,
     action
-  }) => !(task.id === topPick.item.task.id && action.id === topPick.item.action.id)) : projectItems;
+  }) => !(task.id === topPick.item.task.id && (action ? action.id : null) === (topPick.item.action ? topPick.item.action.id : null))) : projectItems;
   const inPlan = (taskId, subtaskId) => todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null));
   const tasksById = useMemo(() => {
     const m = {};
@@ -2113,7 +2109,7 @@ function ToDoList({
     onEdit: onEdit,
     onSnooze: dateStr => {
       if (topPick.kind === "project") {
-        snoozeProjectAction(topPick.item.task, topPick.item.action, dateStr);
+        if (topPick.item.action) snoozeProjectAction(topPick.item.task, topPick.item.action, dateStr);else snoozeChore(topPick.item.task, dateStr);
         return;
       }
       const driving = drivingSubtask(topPick.item);
@@ -2163,13 +2159,14 @@ function ToDoList({
       onEdit: onEdit,
       onSnooze: overwhelmed ? dateStr => snoozeProjectAction(t, driving, dateStr) : undefined,
       onAddToToday: inPlan(t.id, driving.id) ? undefined : onAddTaskToToday,
-      onToggleManualTodo: onToggleManualTodo
+      onToggleManualTodo: t.manualTodo ? onToggleManualTodo : undefined
     }) : /*#__PURE__*/React.createElement(TaskRow, {
       key: t.id,
       task: t,
       ...rowProps,
       onSnooze: overwhelmed ? dateStr => snoozeChore(t, dateStr) : undefined,
-      onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
+      onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday,
+      onToggleManualTodo: t.manualTodo ? onToggleManualTodo : undefined
     });
   })), displayProjects.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2187,7 +2184,7 @@ function ToDoList({
   }, "Priority Projects"), displayProjects.map(({
     task,
     action
-  }) => /*#__PURE__*/React.createElement(ActionAsRow, {
+  }) => action ? /*#__PURE__*/React.createElement(ActionAsRow, {
     key: task.id + action.id,
     task: task,
     action: action,
@@ -2195,6 +2192,12 @@ function ToDoList({
     onEdit: onEdit,
     onSnooze: overwhelmed ? kind => snoozeProjectAction(task, action, kind) : undefined,
     onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday
+  }) : /*#__PURE__*/React.createElement(TaskRow, {
+    key: task.id,
+    task: task,
+    ...rowProps,
+    onSnooze: overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined,
+    onAddToToday: inPlan(task.id, null) ? undefined : onAddTaskToToday
   }))), otherProjectItems.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14
@@ -2211,13 +2214,19 @@ function ToDoList({
   }, "Other Projects"), otherProjectItems.map(({
     task,
     action
-  }) => /*#__PURE__*/React.createElement(ActionAsRow, {
+  }) => action ? /*#__PURE__*/React.createElement(ActionAsRow, {
     key: task.id + action.id,
     task: task,
     action: action,
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday,
+    onToggleManualTodo: onToggleManualTodo
+  }) : /*#__PURE__*/React.createElement(TaskRow, {
+    key: task.id,
+    task: task,
+    ...rowProps,
+    onAddToToday: inPlan(task.id, null) ? undefined : onAddTaskToToday,
     onToggleManualTodo: onToggleManualTodo
   }))), /*#__PURE__*/React.createElement(CollapsibleSection, {
     title: "Stale",
@@ -3155,8 +3164,8 @@ function TaskRow({
     },
     style: {
       border: `1px solid ${C.rule}`,
-      background: task.manualTodo ? C.sageDeep : C.white,
-      color: task.manualTodo ? C.white : C.sageDeep,
+      background: C.white,
+      color: C.sageDeep,
       cursor: "pointer",
       padding: "2px 8px",
       fontSize: 11,
