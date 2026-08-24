@@ -71,7 +71,11 @@ const C = {
   white: "#FFFDF8",
   slate: "#5B6B78",
   slateDeep: "#44525C",
-  taupe: "#8C8474"
+  taupe: "#8C8474",
+  sageTint: "#E3EBDD",
+  plumTint: "#F0DEE0",
+  slateTint: "#E1E7EA",
+  taupeTint: "#ECE7DC"
 };
 const PEOPLE = {
   jade: "Jade",
@@ -90,6 +94,12 @@ function filterColor(key) {
   if (key === "jade") return C.sage;
   if (key === "john") return C.plum;
   return C.slate;
+}
+/* the same colour, but as a quiet tint for backgrounds — keeps the colour-coding without the visual weight */
+function filterTint(key) {
+  if (key === "jade") return C.sageTint;
+  if (key === "john") return C.plumTint;
+  return C.slateTint;
 }
 const BUCKETS = [{
   key: "quick",
@@ -1149,18 +1159,21 @@ function FilterChip({
   active,
   onClick,
   label,
-  activeColor
+  activeColor,
+  activeTint
 }) {
-  const bg = activeColor || C.ink;
+  const c = activeColor || C.ink;
+  const tint = activeTint || C.card;
   return /*#__PURE__*/React.createElement("button", {
     onClick: onClick,
     style: {
       flex: 1,
       padding: "6px 0",
       borderRadius: 20,
-      border: `1px solid ${active ? bg : C.rule}`,
-      background: active ? bg : "transparent",
-      color: active ? C.white : C.inkSoft,
+      border: `1.5px solid ${active ? c : C.rule}`,
+      background: active ? tint : "transparent",
+      color: active ? c : C.inkSoft,
+      fontWeight: active ? 700 : 500,
       fontSize: 12,
       cursor: "pointer"
     }
@@ -1314,7 +1327,7 @@ function GridCell({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      background: C.ink,
+      background: C.parchment,
       borderRadius: 6,
       padding: "5px 7px",
       height: 34,
@@ -1332,7 +1345,7 @@ function GridCell({
       padding: 0,
       cursor: "pointer",
       fontSize: 11.5,
-      color: C.white,
+      color: C.ink,
       fontWeight: 700,
       lineHeight: 1.2,
       overflow: "hidden",
@@ -1702,6 +1715,7 @@ const notStartableYet = (t, todayStr) => {
   const eff = effectiveDueDate(t);
   return t.startsOnDue && !!eff && eff > todayStr;
 };
+const isFadedTask = (t, todayStr) => notStartableYet(t, todayStr) && !t.completed;
 
 /* shared "not today" control — used on the hero card and, in overwhelmed mode, on every row */
 function SnoozeControl({
@@ -2188,7 +2202,7 @@ function ToDoList({
   }))), otherProjectItems.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
     title: "Other Projects",
     count: otherProjectItems.length,
-    defaultOpen: false
+    defaultOpen: true
   }, otherProjectItems.map(({
     task,
     action
@@ -2611,12 +2625,7 @@ function QueueView(props) {
     if (filter === "shared") f = f.filter(t => t.scope === "shared");
     return f;
   }, [typed, typeFilter, choreFilter, projectScope, projectFilter, filter, me]);
-  const sorted = useMemo(() => scoped.slice().sort((a, b) => {
-    const ac = a.completed ? 1 : 0,
-      bc = b.completed ? 1 : 0;
-    if (ac !== bc) return ac - bc;
-    return (a.dueDate || "9999").localeCompare(b.dueDate || "9999");
-  }), [scoped]);
+  const sorted = useMemo(() => scoped.filter(t => !t.completed).slice().sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")), [scoped]);
   const rowProps = {
     me,
     onToggle,
@@ -2638,6 +2647,12 @@ function QueueView(props) {
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
+      background: C.card,
+      borderBottom: `1px solid ${C.rule}`,
+      paddingBottom: 10
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
       display: "flex",
       gap: 6,
       padding: "10px 16px 0"
@@ -2649,7 +2664,7 @@ function QueueView(props) {
       padding: "6px 12px",
       borderRadius: 8,
       border: `1px solid ${typeFilter === k ? C.ink : C.rule}`,
-      background: typeFilter === k ? C.ink : C.card,
+      background: typeFilter === k ? C.ink : C.white,
       color: typeFilter === k ? C.white : C.ink,
       fontSize: 12,
       fontWeight: 600,
@@ -2667,7 +2682,8 @@ function QueueView(props) {
     active: choreFilter === k,
     onClick: () => setChoreFilter(k),
     label: l,
-    activeColor: filterColor(k)
+    activeColor: filterColor(k),
+    activeTint: filterTint(k)
   }))), typeFilter === "project" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "8px 16px 0"
@@ -2705,8 +2721,9 @@ function QueueView(props) {
     active: projectFilter === k,
     onClick: () => setProjectFilter(k),
     label: l,
-    activeColor: filterColor(k)
-  })))), typeFilter === "chore" ? /*#__PURE__*/React.createElement(RoomBoard, {
+    activeColor: filterColor(k),
+    activeTint: filterTint(k)
+  }))))), typeFilter === "chore" ? /*#__PURE__*/React.createElement(RoomBoard, {
     tasks: sorted,
     rowProps: rowProps,
     baseRooms: config.rooms,
@@ -2744,7 +2761,7 @@ function SectionDeleteButton({
       },
       style: {
         border: "none",
-        background: "rgba(255,255,255,0.3)",
+        background: C.plum,
         color: C.white,
         borderRadius: 5,
         padding: "1px 7px",
@@ -2763,7 +2780,7 @@ function SectionDeleteButton({
     style: {
       border: "none",
       background: "none",
-      color: C.white,
+      color: C.inkSoft,
       opacity: 0.7,
       cursor: "pointer",
       fontSize: 12,
@@ -2772,6 +2789,10 @@ function SectionDeleteButton({
   }, "×");
 }
 const PREVIEW_COUNT = 3;
+
+/* Quiet header — a thin colour-coded stripe on a neutral card, instead of a full-bleed colour fill. Faded
+   (not-yet-available) tasks are hidden by default, and a section with only faded tasks auto-collapses just
+   like a genuinely empty one — "Show all" reveals both the rest of the list and any faded tasks. */
 function StackedSection({
   name,
   tasks,
@@ -2782,18 +2803,21 @@ function StackedSection({
   emptyLabel,
   dragHandle
 }) {
-  const [expandMode, setExpandMode] = useState(() => tasks.length === 0 ? "none" : "preview");
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const shown = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
+  const fadedCount = tasks.length - shown.length;
+  const [expandMode, setExpandMode] = useState(() => shown.length === 0 ? "none" : "preview");
   const userToggled = useRef(false);
   useEffect(() => {
-    if (!userToggled.current) setExpandMode(tasks.length === 0 ? "none" : "preview");
-  }, [tasks.length === 0]);
+    if (!userToggled.current) setExpandMode(shown.length === 0 ? "none" : "preview");
+  }, [shown.length === 0]);
   const toggleHeader = () => {
     userToggled.current = true;
     setExpandMode(m => m === "none" ? "preview" : "none");
   };
-  const visible = expandMode === "none" ? [] : expandMode === "all" ? tasks : tasks.slice(0, PREVIEW_COUNT);
-  const hiddenCount = tasks.length - visible.length;
-  const bg = name === "Unassigned" ? C.taupe : colorBg;
+  const visible = expandMode === "none" ? [] : expandMode === "all" ? tasks : shown.slice(0, PREVIEW_COUNT);
+  const hiddenCount = expandMode === "preview" ? shown.length - visible.length + fadedCount : 0;
+  const stripe = name === "Unassigned" ? C.taupe : colorBg;
   return /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14
@@ -2803,7 +2827,10 @@ function StackedSection({
       display: "flex",
       alignItems: "center",
       gap: 4,
-      background: bg,
+      background: C.card,
+      borderLeft: `4px solid ${stripe}`,
+      border: `1px solid ${C.rule}`,
+      borderLeftWidth: 4,
       padding: "7px 10px",
       borderRadius: 8,
       marginBottom: 8
@@ -2826,18 +2853,18 @@ function StackedSection({
       fontFamily: "Fraunces, serif",
       fontSize: 14,
       fontWeight: 600,
-      color: C.white
+      color: C.ink
     }
   }, name, " ", /*#__PURE__*/React.createElement("span", {
     style: {
       fontWeight: 400,
-      opacity: 0.8,
+      opacity: 0.65,
       fontSize: 11
     }
   }, "(", tasks.length, ")")), /*#__PURE__*/React.createElement("span", {
     style: {
       marginLeft: "auto",
-      color: "rgba(255,255,255,0.8)",
+      color: C.inkSoft,
       fontSize: 11
     }
   }, expandMode === "none" ? "▸" : "▾")), deletable && /*#__PURE__*/React.createElement(SectionDeleteButton, {
@@ -2910,7 +2937,6 @@ function SectionStack({
       deletable: true,
       emptyLabel: emptyLabel,
       dragHandle: /*#__PURE__*/React.createElement(DragHandle, {
-        light: true,
         onPointerDown: startDrag
       })
     })
@@ -3019,7 +3045,7 @@ function TaskRow({
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
   const todayStr = new Date().toISOString().slice(0, 10);
   const overdue = task.dueDate && task.dueDate < todayStr && !task.completed;
-  const notYetAvailable = task.startsOnDue && !!effectiveDueDate(task) && effectiveDueDate(task) > todayStr && !task.completed;
+  const notYetAvailable = isFadedTask(task, todayStr);
   const na = nextAction(task);
   const progress = actionsProgress(task);
   const badgePerson = task.scope === "personal" ? task.owner : task.assignee;
