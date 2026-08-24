@@ -1640,35 +1640,15 @@ function ActionAsRow({
     }
   }, /*#__PURE__*/React.createElement(SnoozeControl, {
     onSnooze: onSnooze
-  }))), onRestore && /*#__PURE__*/React.createElement("button", {
-    onClick: () => onRestore(),
+  }))), /*#__PURE__*/React.createElement("div", {
     style: {
-      border: `1px solid ${C.rule}`,
-      background: C.white,
-      color: C.sageDeep,
-      cursor: "pointer",
-      padding: "2px 8px",
-      fontSize: 11,
-      fontWeight: 600,
-      borderRadius: 6,
-      whiteSpace: "nowrap",
-      alignSelf: "flex-start"
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      alignItems: "stretch",
+      flexShrink: 0
     }
-  }, "↩ Restore"), onToggleManualTodo && /*#__PURE__*/React.createElement("button", {
-    onClick: () => onToggleManualTodo(task.id),
-    style: {
-      border: `1px solid ${C.rule}`,
-      background: C.white,
-      color: C.sageDeep,
-      cursor: "pointer",
-      padding: "2px 8px",
-      fontSize: 11,
-      fontWeight: 600,
-      borderRadius: 6,
-      whiteSpace: "nowrap",
-      alignSelf: "flex-start"
-    }
-  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onAddToToday && /*#__PURE__*/React.createElement("button", {
+  }, onAddToToday && /*#__PURE__*/React.createElement("button", {
     onClick: () => onAddToToday(task.id, action.id),
     style: {
       border: `1px solid ${C.rule}`,
@@ -1679,10 +1659,35 @@ function ActionAsRow({
       fontSize: 11,
       fontWeight: 600,
       borderRadius: 6,
-      whiteSpace: "nowrap",
-      alignSelf: "flex-start"
+      whiteSpace: "nowrap"
     }
-  }, "+ The plan")));
+  }, "+ The plan"), onToggleManualTodo && /*#__PURE__*/React.createElement("button", {
+    onClick: () => onToggleManualTodo(task.id),
+    style: {
+      border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
+      background: task.manualTodo ? "#E3EBDD" : C.white,
+      color: C.sageDeep,
+      cursor: "pointer",
+      padding: "2px 8px",
+      fontSize: 11,
+      fontWeight: 600,
+      borderRadius: 6,
+      whiteSpace: "nowrap"
+    }
+  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onRestore && /*#__PURE__*/React.createElement("button", {
+    onClick: () => onRestore(),
+    style: {
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      color: C.sageDeep,
+      cursor: "pointer",
+      padding: "2px 8px",
+      fontSize: 11,
+      fontWeight: 600,
+      borderRadius: 6,
+      whiteSpace: "nowrap"
+    }
+  }, "Restore"))));
 }
 function snoozeTarget(kind) {
   const d = new Date();
@@ -3141,39 +3146,15 @@ function TaskRow({
       color: overdue ? C.plum : C.inkSoft,
       marginTop: 3
     }
-  }, notYetAvailable ? `Not yet — ${fmtDate(task.dueDate)}` : fmtDate(task.dueDate))), onRestore && /*#__PURE__*/React.createElement("button", {
-    onClick: e => {
-      e.stopPropagation();
-      onRestore();
-    },
+  }, notYetAvailable ? `Not yet — ${fmtDate(task.dueDate)}` : fmtDate(task.dueDate))), /*#__PURE__*/React.createElement("div", {
     style: {
-      border: `1px solid ${C.rule}`,
-      background: C.white,
-      color: C.sageDeep,
-      cursor: "pointer",
-      padding: "2px 8px",
-      fontSize: 11,
-      fontWeight: 600,
-      borderRadius: 6,
-      whiteSpace: "nowrap"
+      display: "flex",
+      flexDirection: "column",
+      gap: 4,
+      alignItems: "stretch",
+      flexShrink: 0
     }
-  }, "↩ Restore"), onToggleManualTodo && /*#__PURE__*/React.createElement("button", {
-    onClick: e => {
-      e.stopPropagation();
-      onToggleManualTodo(task.id);
-    },
-    style: {
-      border: `1px solid ${C.rule}`,
-      background: C.white,
-      color: C.sageDeep,
-      cursor: "pointer",
-      padding: "2px 8px",
-      fontSize: 11,
-      fontWeight: 600,
-      borderRadius: 6,
-      whiteSpace: "nowrap"
-    }
-  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onAddToToday && /*#__PURE__*/React.createElement("button", {
+  }, onAddToToday && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       onAddToToday(task.id, null);
@@ -3189,7 +3170,39 @@ function TaskRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, "+ The plan")), task.notes && !compact && /*#__PURE__*/React.createElement("div", {
+  }, "+ The plan"), onToggleManualTodo && /*#__PURE__*/React.createElement("button", {
+    onClick: e => {
+      e.stopPropagation();
+      onToggleManualTodo(task.id);
+    },
+    style: {
+      border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
+      background: task.manualTodo ? "#E3EBDD" : C.white,
+      color: C.sageDeep,
+      cursor: "pointer",
+      padding: "2px 8px",
+      fontSize: 11,
+      fontWeight: 600,
+      borderRadius: 6,
+      whiteSpace: "nowrap"
+    }
+  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onRestore && /*#__PURE__*/React.createElement("button", {
+    onClick: e => {
+      e.stopPropagation();
+      onRestore();
+    },
+    style: {
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      color: C.sageDeep,
+      cursor: "pointer",
+      padding: "2px 8px",
+      fontSize: 11,
+      fontWeight: 600,
+      borderRadius: 6,
+      whiteSpace: "nowrap"
+    }
+  }, "Restore"))), task.notes && !compact && /*#__PURE__*/React.createElement("div", {
     style: {
       marginLeft: 30,
       marginTop: 5,
@@ -4137,3 +4150,4 @@ ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.c
 
 </body>
 </html>
+ by
