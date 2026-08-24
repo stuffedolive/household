@@ -411,7 +411,7 @@ function App() {
     setUndo(label, () => saveTodayRaw(prev));
     saveTodayRaw(items);
   };
-  const todayKey = it => it.type + it.id;
+  const todayKey = it => it.type + it.id + (it.subtaskId || "");
   const todayBucket = it => it.bucket === "later" ? "later" : "now";
   const addSundry = title => saveToday("Add sundry", [...todayItems, {
     type: "sundry",
@@ -425,15 +425,16 @@ function App() {
     completed: !it.completed
   } : it));
   const deleteSundry = id => saveToday("Delete sundry", todayItems.filter(it => it.id !== id));
-  const addTaskToToday = taskId => {
-    if (todayItems.some(it => it.type === "task" && it.id === taskId)) return;
-    saveToday("Add to today", [...todayItems, {
+  const addTaskToToday = (taskId, subtaskId) => {
+    if (todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null))) return;
+    saveToday("Add to the plan", [...todayItems, {
       type: "task",
       id: taskId,
+      subtaskId: subtaskId || null,
       bucket: "now"
     }]);
   };
-  const removeTaskFromToday = taskId => saveToday("Remove from today", todayItems.filter(it => !(it.type === "task" && it.id === taskId)));
+  const removeTaskFromToday = (taskId, subtaskId) => saveToday("Remove from the plan", todayItems.filter(it => !(it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null))));
   // reorder only moves within the same bucket (Today vs Later), skipping over items from the other bucket
   const reorderToday = (item, dir) => {
     const key = todayKey(item);
@@ -594,6 +595,16 @@ function App() {
       hiddenUntil: date
     } : a));
   };
+  /* manual "add to to-do list" — lets a date-less chore or an unpinned project show up in the to-do list
+     even though it wouldn't qualify automatically. Independent of pinning/priority and of the plan. */
+  const toggleManualTodo = taskId => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    captureUndo("To-do list", [taskId]);
+    db.collection(TASKS_COLLECTION).doc(taskId).update({
+      manualTodo: !task.manualTodo
+    }).catch(console.error);
+  };
 
   /* scope-aware: pinning a task only clears the previous occupant of that slot
      if the previous occupant was pinned from the SAME scope (personal vs shared) — personal and
@@ -721,6 +732,7 @@ function App() {
     onSetTaskDueDate: setTaskDueDate,
     onSetTaskHiddenUntil: setTaskHiddenUntil,
     onSetActionHiddenUntil: setActionHiddenUntil,
+    onToggleManualTodo: toggleManualTodo,
     me: me,
     todayItems: todayItems,
     onAddSundry: addSundry,
@@ -764,7 +776,8 @@ function App() {
     onDeleteAction: deleteAction,
     onReorderAction: reorderAction,
     onSetTaskActions: setTaskActions,
-    onSetActionDueDate: setActionDueDate
+    onSetActionDueDate: setActionDueDate,
+    onToggleManualTodo: toggleManualTodo
   }), /*#__PURE__*/React.createElement("button", {
     onClick: () => {
       setEditing(null);
@@ -1548,7 +1561,8 @@ function ActionAsRow({
   onEdit,
   onSnooze,
   onAddToToday,
-  onRestore
+  onRestore,
+  onToggleManualTodo
 }) {
   const overdue = action.dueDate && action.dueDate < new Date().toISOString().slice(0, 10);
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
@@ -1640,8 +1654,22 @@ function ActionAsRow({
       whiteSpace: "nowrap",
       alignSelf: "flex-start"
     }
-  }, "↩ Restore"), onAddToToday && /*#__PURE__*/React.createElement("button", {
-    onClick: () => onAddToToday(task.id),
+  }, "↩ Restore"), onToggleManualTodo && /*#__PURE__*/React.createElement("button", {
+    onClick: () => onToggleManualTodo(task.id),
+    style: {
+      border: `1px solid ${C.rule}`,
+      background: task.manualTodo ? C.sageDeep : C.white,
+      color: task.manualTodo ? C.white : C.sageDeep,
+      cursor: "pointer",
+      padding: "2px 8px",
+      fontSize: 11,
+      fontWeight: 600,
+      borderRadius: 6,
+      whiteSpace: "nowrap",
+      alignSelf: "flex-start"
+    }
+  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onAddToToday && /*#__PURE__*/React.createElement("button", {
+    onClick: () => onAddToToday(task.id, action.id),
     style: {
       border: `1px solid ${C.rule}`,
       background: C.white,
@@ -1654,7 +1682,7 @@ function ActionAsRow({
       whiteSpace: "nowrap",
       alignSelf: "flex-start"
     }
-  }, "+ Today")));
+  }, "+ The plan")));
 }
 function snoozeTarget(kind) {
   const d = new Date();
@@ -1901,6 +1929,7 @@ function ToDoList({
   onSetTaskDueDate,
   onSetTaskHiddenUntil,
   onSetActionHiddenUntil,
+  onToggleManualTodo,
   todayItems,
   onAddSundry,
   onToggleSundry,
@@ -1954,20 +1983,21 @@ function ToDoList({
   }), [active, today]);
   const staleIds = new Set(stale.map(t => t.id));
 
-  // chores: dated (own date or a nearer subtask date), not stale, ranked by tier on that effective date
-  const chores = useMemo(() => active.filter(t => t.listType === "chore" && !staleIds.has(t.id) && !!effectiveDueDate(t)).sort((a, b) => {
+  // chores: dated (own date, or a nearer subtask date) OR manually added despite having no date; ranked by
+  // tier on the effective date, with date-less manual adds sorting to the bottom of their importance group
+  const chores = useMemo(() => active.filter(t => t.listType === "chore" && !staleIds.has(t.id) && (!!effectiveDueDate(t) || t.manualTodo)).sort((a, b) => {
     const da = effectiveDueDate(a),
       db = effectiveDueDate(b);
     const ta = tierFor(da, a.priority, today),
       tb = tierFor(db, b.priority, today);
     if (ta !== tb) return ta - tb;
-    return da.localeCompare(db);
+    return (da || "9999").localeCompare(db || "9999");
   }), [active, today, staleIds]);
 
-  // projects: only ones pinned in the Priorities grid for the viewed person — their first/next action always
+  // Priority Projects: pinned in the Priorities grid for the viewed person — their first/next action always
   // shows, even with no priority or due date of its own (falls back to the project's own date, or no date at all).
   // if that next action was postponed, the project sits out of the to-do list until it passes.
-  const projectItems = useMemo(() => {
+  const priorityProjectItems = useMemo(() => {
     const items = active.filter(t => t.listType === "project" && t.gridBucket && t.gridBucket[me] && !staleIds.has(t.id)).map(t => ({
       task: t,
       action: nextAction(t)
@@ -1985,6 +2015,28 @@ function ToDoList({
       return (da || "9999").localeCompare(db || "9999");
     });
   }, [active, me, today, staleIds]);
+
+  // Other Projects: manually added but not pinned — shown the same way, just ranked below Priority Projects
+  const otherProjectItems = useMemo(() => {
+    const items = active.filter(t => t.listType === "project" && t.manualTodo && !(t.gridBucket && t.gridBucket[me]) && !staleIds.has(t.id)).map(t => ({
+      task: t,
+      action: nextAction(t)
+    })).filter(({
+      action
+    }) => !!action).filter(({
+      action
+    }) => !(action.hiddenUntil && action.hiddenUntil > today));
+    return items.sort((a, b) => {
+      const da = a.action.dueDate || a.task.dueDate,
+        db = b.action.dueDate || b.task.dueDate;
+      const ta = tierFor(da, a.task.priority, today),
+        tb = tierFor(db, b.task.priority, today);
+      if (ta !== tb) return ta - tb;
+      return (da || "9999").localeCompare(db || "9999");
+    });
+  }, [active, me, today, staleIds]);
+  // kept as an alias so the rest of this component (topPick, overwhelmed exclusion, etc.) reads naturally
+  const projectItems = priorityProjectItems;
   const rowProps = {
     me,
     onToggle,
@@ -1995,7 +2047,8 @@ function ToDoList({
     onDeleteAction,
     onReorderAction,
     onSetTaskActions,
-    onSetActionDueDate
+    onSetActionDueDate,
+    onToggleManualTodo
   };
 
   // the single most urgent thing across chores + project actions, for the overwhelmed spotlight
@@ -2025,7 +2078,7 @@ function ToDoList({
     task,
     action
   }) => !(task.id === topPick.item.task.id && action.id === topPick.item.action.id)) : projectItems;
-  const todaySelectedTaskIds = new Set(todayItems.filter(it => it.type === "task").map(it => it.id));
+  const inPlan = (taskId, subtaskId) => todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null));
   const tasksById = useMemo(() => {
     const m = {};
     tasks.forEach(t => {
@@ -2080,7 +2133,7 @@ function ToDoList({
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onToggleTodayTaskDone: onToggleTodayTaskDone
-  }), displayChores.length === 0 && displayProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }), displayChores.length === 0 && displayProjects.length === 0 && otherProjectItems.length === 0 && justDone.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 13,
@@ -2109,13 +2162,14 @@ function ToDoList({
       onToggleAction: onToggleAction,
       onEdit: onEdit,
       onSnooze: overwhelmed ? dateStr => snoozeProjectAction(t, driving, dateStr) : undefined,
-      onAddToToday: todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday
+      onAddToToday: inPlan(t.id, driving.id) ? undefined : onAddTaskToToday,
+      onToggleManualTodo: onToggleManualTodo
     }) : /*#__PURE__*/React.createElement(TaskRow, {
       key: t.id,
       task: t,
       ...rowProps,
       onSnooze: overwhelmed ? dateStr => snoozeChore(t, dateStr) : undefined,
-      onAddToToday: todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday
+      onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
     });
   })), displayProjects.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2130,7 +2184,7 @@ function ToDoList({
       letterSpacing: 0.5,
       marginBottom: 6
     }
-  }, "Projects"), displayProjects.map(({
+  }, "Priority Projects"), displayProjects.map(({
     task,
     action
   }) => /*#__PURE__*/React.createElement(ActionAsRow, {
@@ -2140,7 +2194,31 @@ function ToDoList({
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onSnooze: overwhelmed ? kind => snoozeProjectAction(task, action, kind) : undefined,
-    onAddToToday: todaySelectedTaskIds.has(task.id) ? undefined : onAddTaskToToday
+    onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday
+  }))), otherProjectItems.length > 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      fontWeight: 700,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      marginBottom: 6
+    }
+  }, "Other Projects"), otherProjectItems.map(({
+    task,
+    action
+  }) => /*#__PURE__*/React.createElement(ActionAsRow, {
+    key: task.id + action.id,
+    task: task,
+    action: action,
+    onToggleAction: onToggleAction,
+    onEdit: onEdit,
+    onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday,
+    onToggleManualTodo: onToggleManualTodo
   }))), /*#__PURE__*/React.createElement(CollapsibleSection, {
     title: "Stale",
     count: stale.length,
@@ -2162,7 +2240,7 @@ function ToDoList({
     key: t.id,
     task: t,
     ...rowProps,
-    onAddToToday: todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday
+    onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
   }))), /*#__PURE__*/React.createElement(CollapsibleSection, {
     title: "Postponed",
     count: postponedChores.length + postponedProjectItems.length,
@@ -2185,7 +2263,7 @@ function ToDoList({
     task: t,
     ...rowProps,
     onRestore: () => onSetTaskHiddenUntil(t.id, null),
-    onAddToToday: todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday
+    onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
   })), postponedProjectItems.map(({
     task,
     action
@@ -2196,7 +2274,7 @@ function ToDoList({
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onRestore: () => onSetActionHiddenUntil(task.id, action.id, null),
-    onAddToToday: todaySelectedTaskIds.has(task.id) ? undefined : onAddTaskToToday
+    onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday
   }))), /*#__PURE__*/React.createElement(CollapsibleSection, {
     title: "Upcoming",
     count: upcoming.length,
@@ -2218,7 +2296,7 @@ function ToDoList({
     key: t.id,
     task: t,
     ...rowProps,
-    onAddToToday: todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday
+    onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
   }))), justDone.length > 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 18
@@ -2236,7 +2314,7 @@ function ToDoList({
     key: t.id,
     task: t,
     ...rowProps,
-    onAddToToday: todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday
+    onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
   }))));
 }
 
@@ -2256,6 +2334,7 @@ function TodayItemRow({
   startDrag
 }) {
   const task = item.type === "task" ? tasksById[item.id] : null;
+  const subtask = task && item.subtaskId ? (task.actions || []).find(a => a.id === item.subtaskId) : null;
   let title, completed, onCheck;
   if (item.type === "sundry") {
     title = item.title;
@@ -2264,15 +2343,10 @@ function TodayItemRow({
   } else if (task) {
     // "completedToday" is a local, always-visible checkmark separate from the task's real completion state —
     // this is what makes recurring chores (which immediately reset completed:false when done) still show as checked here.
-    title = task.listType === "project" ? nextAction(task) ? nextAction(task).title : task.title : task.title;
+    title = subtask ? subtask.title : task.title;
     completed = !!item.completedToday;
     onCheck = () => {
-      if (task.listType === "project") {
-        const na = nextAction(task);
-        if (na) onToggleAction(task.id, na.id);else onToggle(task);
-      } else {
-        onToggle(task);
-      }
+      if (subtask) onToggleAction(task.id, subtask.id);else onToggle(task);
       onToggleTodayTaskDone(item);
     };
   } else {
@@ -2327,7 +2401,7 @@ function TodayItemRow({
       whiteSpace: "nowrap"
     }
   }, moveLabel), /*#__PURE__*/React.createElement("button", {
-    onClick: () => item.type === "sundry" ? onDeleteSundry(item.id) : onRemoveTask(item.id),
+    onClick: () => item.type === "sundry" ? onDeleteSundry(item.id) : onRemoveTask(item.id, item.subtaskId),
     style: {
       border: "none",
       background: "none",
@@ -2536,7 +2610,8 @@ function QueueView(props) {
     onDeleteAction,
     onReorderAction,
     onSetTaskActions,
-    onSetActionDueDate
+    onSetActionDueDate,
+    onToggleManualTodo
   } = props;
   const typed = useMemo(() => typeFilter === "all" ? tasks : tasks.filter(t => t.listType === typeFilter), [tasks, typeFilter]);
   const scoped = useMemo(() => {
@@ -2574,7 +2649,8 @@ function QueueView(props) {
     onDeleteAction,
     onReorderAction,
     onSetTaskActions,
-    onSetActionDueDate
+    onSetActionDueDate,
+    onToggleManualTodo
   };
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2728,7 +2804,15 @@ function StackedSection({
   emptyLabel,
   dragHandle
 }) {
-  const [expandMode, setExpandMode] = useState("preview"); // preview | all | none
+  const [expandMode, setExpandMode] = useState(() => tasks.length === 0 ? "none" : "preview");
+  const userToggled = useRef(false);
+  useEffect(() => {
+    if (!userToggled.current) setExpandMode(tasks.length === 0 ? "none" : "preview");
+  }, [tasks.length === 0]);
+  const toggleHeader = () => {
+    userToggled.current = true;
+    setExpandMode(m => m === "none" ? "preview" : "none");
+  };
   const visible = expandMode === "none" ? [] : expandMode === "all" ? tasks : tasks.slice(0, PREVIEW_COUNT);
   const hiddenCount = tasks.length - visible.length;
   const bg = name === "Unassigned" ? C.taupe : colorBg;
@@ -2747,7 +2831,7 @@ function StackedSection({
       marginBottom: 8
     }
   }, dragHandle, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setExpandMode(m => m === "none" ? "preview" : "none"),
+    onClick: toggleHeader,
     style: {
       flex: 1,
       textAlign: "left",
@@ -2949,7 +3033,8 @@ function TaskRow({
   compact,
   onSnooze,
   onAddToToday,
-  onRestore
+  onRestore,
+  onToggleManualTodo
 }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
@@ -3063,10 +3148,26 @@ function TaskRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, "↩ Restore"), onAddToToday && /*#__PURE__*/React.createElement("button", {
+  }, "↩ Restore"), onToggleManualTodo && /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
-      onAddToToday(task.id);
+      onToggleManualTodo(task.id);
+    },
+    style: {
+      border: `1px solid ${C.rule}`,
+      background: task.manualTodo ? C.sageDeep : C.white,
+      color: task.manualTodo ? C.white : C.sageDeep,
+      cursor: "pointer",
+      padding: "2px 8px",
+      fontSize: 11,
+      fontWeight: 600,
+      borderRadius: 6,
+      whiteSpace: "nowrap"
+    }
+  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onAddToToday && /*#__PURE__*/React.createElement("button", {
+    onClick: e => {
+      e.stopPropagation();
+      onAddToToday(task.id, null);
     },
     style: {
       border: `1px solid ${C.rule}`,
@@ -3079,7 +3180,7 @@ function TaskRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, "+ Today")), task.notes && !compact && /*#__PURE__*/React.createElement("div", {
+  }, "+ The plan")), task.notes && !compact && /*#__PURE__*/React.createElement("div", {
     style: {
       marginLeft: 30,
       marginTop: 5,
