@@ -1223,13 +1223,13 @@ function PriorityGrid({
   }, "switch to ", PEOPLE[other])), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
-      gridTemplateColumns: "26px repeat(3, 1fr)",
+      gridTemplateColumns: "26px repeat(2, 1fr)",
       gap: 6,
       marginBottom: 6,
       flexShrink: 0
     }
-  }, /*#__PURE__*/React.createElement("div", null), BUCKETS.map(b => /*#__PURE__*/React.createElement("div", {
-    key: b.key,
+  }, /*#__PURE__*/React.createElement("div", null), [["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => /*#__PURE__*/React.createElement("div", {
+    key: scope,
     style: {
       fontSize: 9.5,
       color: C.inkSoft,
@@ -1238,7 +1238,7 @@ function PriorityGrid({
       fontWeight: 700,
       textAlign: "center"
     }
-  }, b.label))), /*#__PURE__*/React.createElement("div", {
+  }, label))), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1,
       display: "flex",
@@ -1246,11 +1246,11 @@ function PriorityGrid({
       gap: 8,
       minHeight: 0
     }
-  }, [["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => /*#__PURE__*/React.createElement("div", {
-    key: scope,
+  }, BUCKETS.map(b => /*#__PURE__*/React.createElement("div", {
+    key: b.key,
     style: {
       display: "grid",
-      gridTemplateColumns: "26px repeat(3, 1fr)",
+      gridTemplateColumns: "26px repeat(2, 1fr)",
       gap: 6,
       flex: 1,
       minHeight: 0
@@ -1271,8 +1271,8 @@ function PriorityGrid({
       writingMode: "vertical-rl",
       transform: "rotate(180deg)"
     }
-  }, label)), BUCKETS.map(b => /*#__PURE__*/React.createElement(GridCell, {
-    key: b.key,
+  }, b.label)), [["personal"], ["shared"]].map(([scope]) => /*#__PURE__*/React.createElement(GridCell, {
+    key: scope,
     bucket: b,
     scope: scope,
     person: viewingPerson,
@@ -2141,20 +2141,11 @@ function ToDoList({
       textAlign: "center",
       marginTop: 40
     }
-  }, "Nothing pressing right now."), displayChores.length > 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: C.inkSoft,
-      fontWeight: 700,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
-      marginBottom: 6
-    }
-  }, "Chores"), displayChores.map(t => {
+  }, "Nothing pressing right now."), displayChores.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+    title: "Chores",
+    count: displayChores.length,
+    defaultOpen: true
+  }, displayChores.map(t => {
     const driving = drivingSubtask(t);
     return driving ? /*#__PURE__*/React.createElement(ActionAsRow, {
       key: t.id,
@@ -2173,20 +2164,11 @@ function ToDoList({
       onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday,
       onToggleManualTodo: t.manualTodo ? onToggleManualTodo : undefined
     });
-  })), displayProjects.length > 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: C.inkSoft,
-      fontWeight: 700,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
-      marginBottom: 6
-    }
-  }, "Priority Projects"), displayProjects.map(({
+  })), displayProjects.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+    title: "Priority Projects",
+    count: displayProjects.length,
+    defaultOpen: true
+  }, displayProjects.map(({
     task,
     action
   }) => action ? /*#__PURE__*/React.createElement(ActionAsRow, {
@@ -2203,20 +2185,11 @@ function ToDoList({
     ...rowProps,
     onSnooze: overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined,
     onAddToToday: inPlan(task.id, null) ? undefined : onAddTaskToToday
-  }))), otherProjectItems.length > 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginBottom: 14
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: C.inkSoft,
-      fontWeight: 700,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
-      marginBottom: 6
-    }
-  }, "Other Projects"), otherProjectItems.map(({
+  }))), otherProjectItems.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+    title: "Other Projects",
+    count: otherProjectItems.length,
+    defaultOpen: false
+  }, otherProjectItems.map(({
     task,
     action
   }) => action ? /*#__PURE__*/React.createElement(ActionAsRow, {
@@ -2311,20 +2284,11 @@ function ToDoList({
     task: t,
     ...rowProps,
     onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
-  }))), justDone.length > 0 && /*#__PURE__*/React.createElement("div", {
-    style: {
-      marginTop: 18
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontSize: 11,
-      color: C.sageDeep,
-      fontWeight: 700,
-      textTransform: "uppercase",
-      letterSpacing: 0.5,
-      marginBottom: 6
-    }
-  }, "Just done ✓"), justDone.map(t => /*#__PURE__*/React.createElement(TaskRow, {
+  }))), justDone.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+    title: "Just done ✓",
+    count: justDone.length,
+    defaultOpen: false
+  }, justDone.map(t => /*#__PURE__*/React.createElement(TaskRow, {
     key: t.id,
     task: t,
     ...rowProps,
@@ -3519,7 +3483,7 @@ function CollapsibleSection({
     }
   }, /*#__PURE__*/React.createElement("span", {
     style: {
-      fontSize: 11,
+      fontSize: 12.5,
       color: C.inkSoft,
       fontWeight: 700,
       textTransform: "uppercase",
@@ -4150,4 +4114,3 @@ ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.c
 
 </body>
 </html>
- by
