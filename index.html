@@ -170,6 +170,20 @@ function App() {
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [lastUndo, setLastUndo] = useState(null); // { label, fn } | null — only ever the most recent action
   const [searchQuery, setSearchQuery] = useState("");
+  const [quickCapture, setQuickCapture] = useState("");
+  const quickAdd = () => {
+    const title = quickCapture.trim();
+    if (!title || !me) return;
+    const id = uid();
+    db.collection(TASKS_COLLECTION).doc(id).set({
+      title, listType: "chore", scope: "shared", room: "Unassigned", category: "Unassigned", assignee: null,
+      priority: null, priorityBucket: null, dueDate: null, startsOnDue: false,
+      recurrence: { unit: "none", amount: 1, mode: "rolling" }, notes: "",
+      completed: false, gridBucket: {}, actions: [],
+      needsDetails: true, createdBy: me, createdAt: Date.now(), updatedAt: Date.now(), completedAt: null,
+    }).catch((e) => console.error("quick add failed", e));
+    setQuickCapture("");
+  };
   const setUndo = (label, fn) => setLastUndo({ label, fn });
   const handleUndo = () => { if (lastUndo) { lastUndo.fn(); setLastUndo(null); } };
   const [priorityViewPerson, setPriorityViewPerson] = useState(null);
@@ -471,7 +485,27 @@ function App() {
     );
   }
 
-  if (tasks === null) return <Shell><div style={centerMsg}>Loading the list…</div></Shell>;
+  if (tasks === null) {
+    return (
+      <Shell>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", padding: 24, gap: 16 }}>
+          <div style={{ fontFamily: "Fraunces, serif", fontSize: 15, color: C.inkSoft }}>Loading the list…</div>
+          <div style={{ width: "100%", maxWidth: 320, textAlign: "center" }}>
+            <div style={{ fontSize: 11.5, color: C.inkSoft, marginBottom: 8 }}>Thought of something? Capture it now — details later.</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                value={quickCapture} onChange={(e) => setQuickCapture(capFirst(e.target.value))}
+                onKeyDown={(e) => { if (e.key === "Enter") quickAdd(); }}
+                placeholder="Quick task…" autoFocus
+                style={{ ...inputStyle, fontSize: 13 }}
+              />
+              <button onClick={quickAdd} style={{ border: "none", background: C.sageDeep, color: C.white, borderRadius: 8, padding: "0 16px", cursor: "pointer" }}>Add</button>
+            </div>
+          </div>
+        </div>
+      </Shell>
+    );
+  }
 
   return (
     <Shell>
@@ -772,7 +806,7 @@ function tierFor(dueDate, priority, todayStr) {
 }
 
 /* a compact row representing a project's next action, standing in for the whole project */
-function ActionAsRow({ task, action, onToggleAction, onEdit, onSnooze, onAddToToday }) {
+function ActionAsRow({ task, action, onToggleAction, onEdit, onSnooze, onAddToToday, onUnpostpone }) {
   const overdue = action.dueDate && action.dueDate < new Date().toISOString().slice(0, 10);
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
   return (
@@ -790,6 +824,7 @@ function ActionAsRow({ task, action, onToggleAction, onEdit, onSnooze, onAddToTo
           </div>
           {onSnooze && <div style={{ marginTop: 6 }}><SnoozeControl onSnooze={onSnooze} /></div>}
         </div>
+        {onUnpostpone && <button onClick={onUnpostpone} style={{ border: `1px solid ${C.rule}`, background: C.white, color: C.inkSoft, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6, whiteSpace: "nowrap", alignSelf: "flex-start" }}>↺ Un-postpone</button>}
         {onAddToToday && <button onClick={() => onAddToToday(task.id)} style={{ border: `1px solid ${C.rule}`, background: C.white, color: C.sageDeep, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6, whiteSpace: "nowrap", alignSelf: "flex-start" }}>+ Today</button>}
       </div>
     </div>
@@ -897,9 +932,13 @@ function ToDoList({
   );
 
   // upcoming: recurring, "due date is start date" tasks approaching their window — computed before the
-  // not-startable-yet exclusion below, since this IS how those tasks get any visibility before they're due
+  // not-startable-yet exclusion below, since this IS how those tasks get any visibility before they're due.
+  // excludes anything whose start gate is already overridden by a subtask due today or earlier (see isBlockedByStartGate) —
+  // that case belongs in the main list instead, not Upcoming.
   const upcoming = useMemo(() => assignedToMe.filter((t) => {
     if (t.completed || !t.startsOnDue || !t.dueDate || t.dueDate <= today) return false;
+    const driving = drivingSubtask(t);
+    if (driving && driving.dueDate && driving.dueDate <= today) return false;
     const period = recurrencePeriodDays(t.recurrence);
     if (!period) return false;
     const daysUntil = Math.round((new Date(t.dueDate + "T00:00:00") - new Date(today + "T00:00:00")) / DAY_MS);
@@ -907,7 +946,14 @@ function ToDoList({
   }).sort((a, b) => a.dueDate.localeCompare(b.dueDate)), [assignedToMe, today]);
 
   const isHidden = (t) => t.hiddenUntil && t.hiddenUntil > today;
-  const active = useMemo(() => assignedToMe.filter((t) => !t.completed && !notStartableYet(t, today) && !isHidden(t)), [assignedToMe, today]);
+  // a subtask due today or earlier means there's real actionable work now, regardless of the parent's own start gate
+  const isBlockedByStartGate = (t, todayStr) => {
+    if (!notStartableYet(t, todayStr)) return false;
+    const driving = drivingSubtask(t);
+    if (driving && driving.dueDate && driving.dueDate <= todayStr) return false;
+    return true;
+  };
+  const active = useMemo(() => assignedToMe.filter((t) => !t.completed && !isBlockedByStartGate(t, today) && !isHidden(t)), [assignedToMe, today]);
 
   // postponed ("not today"): due date untouched, so these still show their true overdue state wherever displayed —
   // only hidden from the ranked to-do list until hiddenUntil passes, then they quietly reappear on their own.
@@ -1038,8 +1084,8 @@ function ToDoList({
       <CollapsibleSection title="Postponed" count={postponedChores.length + postponedProjectItems.length} defaultOpen={false}>
         <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 6 }}>Marked "not today" — still overdue if they were, just out of the way until the date you picked.</div>
         {postponedChores.length === 0 && postponedProjectItems.length === 0 && <div style={{ color: C.inkSoft, fontSize: 12, textAlign: "center", padding: "10px 0" }}>Nothing postponed right now.</div>}
-        {postponedChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} />)}
-        {postponedProjectItems.map(({ task, action }) => <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onAddToToday={todaySelectedTaskIds.has(task.id) ? undefined : onAddTaskToToday} />)}
+        {postponedChores.map((t) => <TaskRow key={t.id} task={t} {...rowProps} onAddToToday={todaySelectedTaskIds.has(t.id) ? undefined : onAddTaskToToday} onUnpostpone={() => onSetTaskHiddenUntil(t.id, null)} />)}
+        {postponedProjectItems.map(({ task, action }) => <ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onAddToToday={todaySelectedTaskIds.has(task.id) ? undefined : onAddTaskToToday} onUnpostpone={() => onSetActionHiddenUntil(task.id, action.id, null)} />)}
       </CollapsibleSection>
 
       <CollapsibleSection title="Upcoming" count={upcoming.length} defaultOpen={false}>
@@ -1105,7 +1151,7 @@ function TodayPlanSection({ items, tasksById, onAddSundry, onToggleSundry, onDel
   return (
     <div style={{ background: C.card, border: `1px solid ${C.rule}`, borderRadius: 12, padding: "14px 14px 10px", marginBottom: 18, minHeight: "45vh", display: "flex", flexDirection: "column" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-        <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, color: C.ink }}>Today's plan</div>
+        <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, color: C.ink }}>The plan</div>
         {!resetting ? (
           <button onClick={() => setResetting(true)} style={{ border: `1px solid ${C.plum}`, color: C.plum, background: "none", borderRadius: 8, padding: "4px 10px", fontSize: 10.5, fontWeight: 600, cursor: "pointer" }}>Reset</button>
         ) : (
@@ -1358,7 +1404,7 @@ function AddSectionRow({ onAdd, label }) {
   );
 }
 
-function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetTaskActions, onSetActionDueDate, compact, onSnooze, onAddToToday }) {
+function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAction, onDeleteAction, onReorderAction, onSetTaskActions, onSetActionDueDate, compact, onSnooze, onAddToToday, onUnpostpone }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
   const imp = IMPORTANCE.find((x) => x.key === task.priority) || null;
@@ -1390,6 +1436,7 @@ function TaskRow({ task, me, onToggle, onEdit, onDelete, onToggleAction, onAddAc
           )}
           {compact && task.dueDate && <div style={{ fontSize: 10, fontFamily: "IBM Plex Mono, monospace", color: overdue ? C.plum : C.inkSoft, marginTop: 3 }}>{notYetAvailable ? `Not yet — ${fmtDate(task.dueDate)}` : fmtDate(task.dueDate)}</div>}
         </div>
+        {onUnpostpone && <button onClick={(e) => { e.stopPropagation(); onUnpostpone(); }} style={{ border: `1px solid ${C.rule}`, background: C.white, color: C.inkSoft, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6, whiteSpace: "nowrap" }}>↺ Un-postpone</button>}
         {onAddToToday && <button onClick={(e) => { e.stopPropagation(); onAddToToday(task.id); }} style={{ border: `1px solid ${C.rule}`, background: C.white, color: C.sageDeep, cursor: "pointer", padding: "2px 8px", fontSize: 11, fontWeight: 600, borderRadius: 6, whiteSpace: "nowrap" }}>+ Today</button>}
       </div>
 
@@ -1564,17 +1611,18 @@ function SectionSelect({ value, onChange, options, onAddNew }) {
 
 function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSave, onDelete }) {
   const [t, setT] = useState(() => {
-    const base = initial || {
-      id: uid(), title: "", listType: "chore", scope: "shared", owner: me,
-      room: DEFAULT_ROOMS[0], category: DEFAULT_CATEGORIES[0], assignee: null,
+    if (initial) return { ...initial, recurrence: normRecurrence(initial.recurrence) };
+    return {
+      id: uid(), title: "", listType: null, scope: null, owner: me,
+      room: "Unassigned", category: "Unassigned", assignee: null,
       priority: null, priorityBucket: null,
-      dueDate: null, recurrence: { unit: "none", amount: 1, mode: "rolling" }, notes: "",
+      dueDate: null, recurrence: { unit: null, amount: 1, mode: "rolling" }, notes: "",
       completed: false, gridBucket: {}, actions: [],
       needsDetails: false, createdBy: me, startsOnDue: false, createdAt: Date.now(), completedAt: null,
     };
-    return { ...base, recurrence: normRecurrence(base.recurrence) };
   });
   const [deferDetails, setDeferDetails] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(!!(initial && initial.notes));
   const set = (k, v) => setT((p) => ({ ...p, [k]: v }));
   const [newAction, setNewAction] = useState("");
   const addFormAction = () => {
@@ -1584,24 +1632,23 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
   };
   const removeFormAction = (id) => set("actions", (t.actions || []).filter((a) => a.id !== id));
   const toggleFormAction = (id) => set("actions", (t.actions || []).map((a) => (a.id === id ? { ...a, completed: !a.completed } : a)));
-  const reorderFormAction = (id, dir) => {
-    const idx = (t.actions || []).findIndex((a) => a.id === id);
-    if (idx < 0) return;
-    set("actions", moveAction(t.actions || [], idx, dir));
-  };
   const setFormActionDate = (id, date) => set("actions", (t.actions || []).map((a) => (a.id === id ? { ...a, dueDate: date || null } : a)));
 
   const categoryOptions = t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me];
   const showAssignee = t.scope === "shared";
-  const isValid = t.title.trim() && (deferDetails || (t.listType === "chore" ? !!t.room : !!t.category));
+  const isValid = t.title.trim() && (deferDetails || (!!t.listType && !!t.scope && !!t.recurrence.unit));
 
   const finishAndSave = () => {
     const finalActions = newAction.trim() ? [...(t.actions || []), { id: uid(), title: newAction.trim(), completed: false, dueDate: null }] : (t.actions || []);
-    const detailsOk = deferDetails || (t.listType === "chore" ? t.room : t.category);
+    const detailsOk = deferDetails || (!!t.listType && !!t.scope && !!t.recurrence.unit);
     if (t.title.trim() && detailsOk) {
+      const finalListType = t.listType || "chore";
+      const finalScope = t.scope || "shared";
       onSave({
         ...t, actions: finalActions,
-        owner: t.scope === "personal" ? (t.owner || me) : null,
+        listType: finalListType, scope: finalScope,
+        recurrence: { ...t.recurrence, unit: t.recurrence.unit || "none" },
+        owner: finalScope === "personal" ? (t.owner || me) : null,
         needsDetails: deferDetails, createdBy: t.createdBy || me,
       });
     } else {
@@ -1613,15 +1660,35 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
     <Overlay
       title={initial ? "Edit task" : "New task"}
       onClose={finishAndSave}
-      headerExtra={<button disabled={!isValid} onClick={finishAndSave} style={{ background: isValid ? C.ink : C.rule, color: C.white, border: "none", borderRadius: 20, padding: "7px 16px", fontSize: 13, fontWeight: 700, cursor: isValid ? "pointer" : "default" }}>Save</button>}
+      headerExtra={
+        <>
+          <button onClick={() => setNotesOpen((o) => !o)} title="Notes" style={{ border: "none", background: "none", cursor: "pointer", color: notesOpen ? C.sageDeep : C.inkSoft, fontSize: 18, padding: 0, lineHeight: 1 }}>📝</button>
+          <button disabled={!isValid} onClick={finishAndSave} style={{ background: isValid ? C.ink : C.rule, color: C.white, border: "none", borderRadius: 20, padding: "7px 16px", fontSize: 13, fontWeight: 700, cursor: isValid ? "pointer" : "default" }}>Save</button>
+        </>
+      }
     >
       <FormSection first>
-        <Field label="Title *"><input value={t.title} onChange={(e) => set("title", capFirst(e.target.value))} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>
-        {!initial && (
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 15, padding: "9px 11px", background: C.card, borderRadius: 8, border: `1px solid ${C.rule}` }}>
-            <input type="checkbox" id="defer-details" checked={deferDetails} onChange={(e) => setDeferDetails(e.target.checked)} style={{ marginTop: 2 }} />
-            <label htmlFor="defer-details" style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.4 }}>Add details later</label>
+        <Field label="Title *">
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={t.title} onChange={(e) => set("title", capFirst(e.target.value))} placeholder="e.g. Clean shower screen" style={{ ...inputStyle, flex: 1 }} />
+            {!initial && (
+              <button onClick={() => setDeferDetails((d) => !d)} style={{ flexShrink: 0, border: `1px solid ${deferDetails ? C.sageDeep : C.rule}`, background: deferDetails ? C.sageDeep : C.white, color: deferDetails ? C.white : C.inkSoft, borderRadius: 8, padding: "0 12px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+                {deferDetails ? "✓ Later" : "Details later"}
+              </button>
+            )}
           </div>
+        </Field>
+
+        <Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={(e) => set("dueDate", e.target.value || null)} style={{ ...inputStyle, width: 170 }} /></Field>
+        {t.dueDate && (
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 13, padding: "9px 11px", background: C.card, borderRadius: 8, border: `1px solid ${C.rule}` }}>
+            <input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={(e) => set("startsOnDue", e.target.checked)} style={{ marginTop: 2 }} />
+            <label htmlFor="starts-on-due" style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.4 }}>Due date is do date</label>
+          </div>
+        )}
+
+        {notesOpen && (
+          <Field label="Notes"><textarea value={t.notes || ""} onChange={(e) => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></Field>
         )}
 
         <Field label="Subtasks">
@@ -1651,46 +1718,39 @@ function TaskForm({ me, initial, config, onAddRoom, onAddCategory, onClose, onSa
           <Field label="Type *"><SegRow options={[["chore", "Chore"], ["project", "Project"]]} value={t.listType} onChange={(v) => set("listType", v)} /></Field>
           <Field label="Belongs to *"><SegRow options={[["shared", "Shared"], ["personal", "Personal"]]} value={t.scope} onChange={(v) => set("scope", v)} /></Field>
 
-          {t.listType === "chore" ? (
-            <Field label="Room *"><SectionSelect value={t.room} onChange={(v) => set("room", v)} options={config.rooms} onAddNew={onAddRoom} /></Field>
-          ) : (
-            <Field label="Category *"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={categoryOptions} onAddNew={(name) => onAddCategory(t.scope, t.owner || me, name)} /></Field>
-          )}
-
           {showAssignee && <Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={(v) => set("assignee", v)} /></Field>}
+
+          {t.listType && (
+            t.listType === "chore" ? (
+              <Field label="Room"><SectionSelect value={t.room} onChange={(v) => set("room", v)} options={["Unassigned", ...config.rooms]} onAddNew={onAddRoom} /></Field>
+            ) : (
+              <Field label="Category"><SectionSelect value={t.category} onChange={(v) => set("category", v)} options={["Unassigned", ...categoryOptions]} onAddNew={(name) => onAddCategory(t.scope, t.owner || me, name)} /></Field>
+            )
+          )}
         </FormSection>
       )}
 
-      <FormSection title="Priority & schedule">
-        <Field label="Importance"><SegRow options={[[null, "None"], ...IMPORTANCE.map((p) => [p.key, p.label])]} value={t.priority} onChange={(v) => set("priority", v)} /></Field>
+      {!deferDetails && (
+        <FormSection title="Schedule">
+          <Field label="Importance"><SegRow options={[[null, "None"], ...IMPORTANCE.map((p) => [p.key, p.label])]} value={t.priority} onChange={(v) => set("priority", v)} /></Field>
 
-        {t.listType === "project" && (
-          <Field label="Priorities (doesn't pin automatically)"><SegRow options={[[null, "None"], ...BUCKETS.map((b) => [b.key, b.label])]} value={t.priorityBucket} onChange={(v) => set("priorityBucket", v)} /></Field>
-        )}
+          {t.listType === "project" && (
+            <Field label="Priority category"><SegRow options={[[null, "None"], ...BUCKETS.map((b) => [b.key, b.label])]} value={t.priorityBucket} onChange={(v) => set("priorityBucket", v)} /></Field>
+          )}
 
-        <Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={(e) => set("dueDate", e.target.value || null)} style={{ ...inputStyle, width: 170 }} /></Field>
-        {t.dueDate && (
-          <div style={{ display: "flex", alignItems: "flex-start", gap: 9, marginBottom: 13, padding: "9px 11px", background: C.card, borderRadius: 8, border: `1px solid ${C.rule}` }}>
-            <input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={(e) => set("startsOnDue", e.target.checked)} style={{ marginTop: 2 }} />
-            <label htmlFor="starts-on-due" style={{ fontSize: 12, color: C.inkSoft, lineHeight: 1.4 }}>Due date is do date</label>
-          </div>
-        )}
-        <Field label="Repeats"><SegRow options={RECUR_UNITS} value={t.recurrence.unit} onChange={(v) => set("recurrence", { ...t.recurrence, unit: v })} /></Field>
-        {t.recurrence.unit !== "none" && (
-          <>
-            <Field label={`Every (${t.recurrence.unit}s)`}>
-              <input type="number" min="1" value={t.recurrence.amount} onChange={(e) => set("recurrence", { ...t.recurrence, amount: Math.max(1, parseInt(e.target.value, 10) || 1) })} style={{ ...inputStyle, width: 90 }} />
-            </Field>
-            <Field label="When completed">
-              <SegRow options={[["rolling", "Restart timer from completion"], ["fixed", "Stick to the schedule"]]} value={t.recurrence.mode} onChange={(v) => set("recurrence", { ...t.recurrence, mode: v })} />
-            </Field>
-          </>
-        )}
-      </FormSection>
-
-      <FormSection title="Notes">
-        <Field label="Notes"><textarea value={t.notes || ""} onChange={(e) => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} /></Field>
-      </FormSection>
+          <Field label="Repeats *"><SegRow options={RECUR_UNITS} value={t.recurrence.unit} onChange={(v) => set("recurrence", { ...t.recurrence, unit: v })} /></Field>
+          {t.recurrence.unit && t.recurrence.unit !== "none" && (
+            <>
+              <Field label={`Every (${t.recurrence.unit}s)`}>
+                <input type="number" min="1" value={t.recurrence.amount} onChange={(e) => set("recurrence", { ...t.recurrence, amount: Math.max(1, parseInt(e.target.value, 10) || 1) })} style={{ ...inputStyle, width: 90 }} />
+              </Field>
+              <Field label="When completed">
+                <SegRow options={[["rolling", "Restart timer from completion"], ["fixed", "Stick to the schedule"]]} value={t.recurrence.mode} onChange={(v) => set("recurrence", { ...t.recurrence, mode: v })} />
+              </Field>
+            </>
+          )}
+        </FormSection>
+      )}
 
       {initial && (
         <button
