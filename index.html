@@ -1828,7 +1828,7 @@ function HeroCard({
   onEdit,
   onSnooze
 }) {
-  const isProject = pick.kind === "project";
+  const isProject = pick.kind === "project" || pick.kind === "otherProject";
   const task = isProject ? pick.item.task : pick.item;
   const driving = isProject ? pick.item.action : drivingSubtask(task);
   const title = driving ? driving.title : task.title;
@@ -1928,6 +1928,7 @@ function HeroCard({
   })));
 }
 function upcomingLeadDays(periodDays) {
+  if (periodDays == null) return 7; // one-off tasks: a week's notice before their single due date
   if (periodDays >= 300) return 30; // yearly-ish
   if (periodDays >= 150) return 14; // ~6-monthly
   if (periodDays >= 7) return 3; // weekly through ~5-monthly
@@ -1974,8 +1975,7 @@ function ToDoList({
     if (t.completed || !t.startsOnDue) return false;
     const eff = effectiveDueDate(t);
     if (!eff || eff <= today) return false;
-    const period = recurrencePeriodDays(t.recurrence);
-    if (!period) return false;
+    const period = recurrencePeriodDays(t.recurrence); // null for one-off tasks — upcomingLeadDays handles that
     const daysUntil = Math.round((new Date(eff + "T00:00:00") - new Date(today + "T00:00:00")) / DAY_MS);
     return daysUntil <= upcomingLeadDays(period);
   }).sort((a, b) => (effectiveDueDate(a) || "9999").localeCompare(effectiveDueDate(b) || "9999")), [assignedToMe, today]);
@@ -2078,21 +2078,25 @@ function ToDoList({
       tier: tierFor(projectItems[0].action && projectItems[0].action.dueDate || projectItems[0].task.dueDate, projectItems[0].task.priority, today),
       item: projectItems[0]
     } : null;
-    const candidates = [choreTop, projTop].filter(Boolean);
+    const otherTop = otherProjectItems[0] ? {
+      kind: "otherProject",
+      tier: tierFor(otherProjectItems[0].action && otherProjectItems[0].action.dueDate || otherProjectItems[0].task.dueDate, otherProjectItems[0].task.priority, today),
+      item: otherProjectItems[0]
+    } : null;
+    const candidates = [choreTop, projTop, otherTop].filter(Boolean);
     if (!candidates.length) return null;
     candidates.sort((a, b) => a.tier - b.tier);
     return candidates[0];
-  }, [chores, projectItems, today]);
+  }, [chores, projectItems, otherProjectItems, today]);
 
   // "Not today" postpones — real due date is left alone, so overdue/stale status stays honest; the item just
   // moves into the Postponed section until the chosen date, then quietly reappears in normal rank.
   const snoozeChore = (task, dateStr) => onSetTaskHiddenUntil(task.id, dateStr);
   const snoozeProjectAction = (task, action, dateStr) => onSetActionHiddenUntil(task.id, action.id, dateStr);
+  const sameItem = (a, b) => a.task.id === b.task.id && (a.action ? a.action.id : null) === (b.action ? b.action.id : null);
   const displayChores = overwhelmed && topPick && topPick.kind === "chore" ? chores.filter(t => t.id !== topPick.item.id) : chores;
-  const displayProjects = overwhelmed && topPick && topPick.kind === "project" ? projectItems.filter(({
-    task,
-    action
-  }) => !(task.id === topPick.item.task.id && (action ? action.id : null) === (topPick.item.action ? topPick.item.action.id : null))) : projectItems;
+  const displayProjects = overwhelmed && topPick && topPick.kind === "project" ? projectItems.filter(item => !sameItem(item, topPick.item)) : projectItems;
+  const displayOtherProjects = overwhelmed && topPick && topPick.kind === "otherProject" ? otherProjectItems.filter(item => !sameItem(item, topPick.item)) : otherProjectItems;
   const inPlan = (taskId, subtaskId) => todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null));
   const tasksById = useMemo(() => {
     const m = {};
@@ -2127,7 +2131,7 @@ function ToDoList({
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onSnooze: dateStr => {
-      if (topPick.kind === "project") {
+      if (topPick.kind === "project" || topPick.kind === "otherProject") {
         if (topPick.item.action) snoozeProjectAction(topPick.item.task, topPick.item.action, dateStr);else snoozeChore(topPick.item.task, dateStr);
         return;
       }
@@ -2148,7 +2152,7 @@ function ToDoList({
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onToggleTodayTaskDone: onToggleTodayTaskDone
-  }), displayChores.length === 0 && displayProjects.length === 0 && otherProjectItems.length === 0 && justDone.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }), displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 13,
@@ -2199,11 +2203,11 @@ function ToDoList({
     ...rowProps,
     onSnooze: overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined,
     onAddToToday: inPlan(task.id, null) ? undefined : onAddTaskToToday
-  }))), otherProjectItems.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+  }))), displayOtherProjects.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
     title: "Other Projects",
-    count: otherProjectItems.length,
+    count: displayOtherProjects.length,
     defaultOpen: true
-  }, otherProjectItems.map(({
+  }, displayOtherProjects.map(({
     task,
     action
   }) => action ? /*#__PURE__*/React.createElement(ActionAsRow, {
@@ -2804,19 +2808,18 @@ function StackedSection({
   dragHandle
 }) {
   const todayStr = new Date().toISOString().slice(0, 10);
-  const shown = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
-  const fadedCount = tasks.length - shown.length;
-  const [expandMode, setExpandMode] = useState(() => shown.length === 0 ? "none" : "preview");
+  const active = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
+  const faded = useMemo(() => tasks.filter(t => isFadedTask(t, todayStr)), [tasks, todayStr]);
+  const [collapsed, setCollapsed] = useState(() => active.length === 0);
+  const [showFuture, setShowFuture] = useState(false);
   const userToggled = useRef(false);
   useEffect(() => {
-    if (!userToggled.current) setExpandMode(shown.length === 0 ? "none" : "preview");
-  }, [shown.length === 0]);
+    if (!userToggled.current) setCollapsed(active.length === 0);
+  }, [active.length === 0]);
   const toggleHeader = () => {
     userToggled.current = true;
-    setExpandMode(m => m === "none" ? "preview" : "none");
+    setCollapsed(c => !c);
   };
-  const visible = expandMode === "none" ? [] : expandMode === "all" ? tasks : shown.slice(0, PREVIEW_COUNT);
-  const hiddenCount = expandMode === "preview" ? shown.length - visible.length + fadedCount : 0;
   const stripe = name === "Unassigned" ? C.taupe : colorBg;
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2827,7 +2830,7 @@ function StackedSection({
       display: "flex",
       alignItems: "center",
       gap: 4,
-      background: C.card,
+      background: C.parchment,
       borderLeft: `4px solid ${stripe}`,
       border: `1px solid ${C.rule}`,
       borderLeftWidth: 4,
@@ -2867,22 +2870,22 @@ function StackedSection({
       color: C.inkSoft,
       fontSize: 11
     }
-  }, expandMode === "none" ? "▸" : "▾")), deletable && /*#__PURE__*/React.createElement(SectionDeleteButton, {
+  }, collapsed ? "▸" : "▾")), deletable && /*#__PURE__*/React.createElement(SectionDeleteButton, {
     onDelete: () => onDelete(name)
-  })), expandMode !== "none" && /*#__PURE__*/React.createElement("div", null, tasks.length === 0 && /*#__PURE__*/React.createElement("div", {
+  })), !collapsed && /*#__PURE__*/React.createElement("div", null, tasks.length === 0 && /*#__PURE__*/React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 12,
       textAlign: "center",
       padding: "10px 0"
     }
-  }, emptyLabel), visible.map(t => /*#__PURE__*/React.createElement(TaskRow, {
+  }, emptyLabel), active.map(t => /*#__PURE__*/React.createElement(TaskRow, {
     key: t.id,
     task: t,
     ...rowProps,
     compact: true
-  })), expandMode === "preview" && hiddenCount > 0 && /*#__PURE__*/React.createElement("button", {
-    onClick: () => setExpandMode("all"),
+  })), faded.length > 0 && !showFuture && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowFuture(true),
     style: {
       width: "100%",
       border: `1px dashed ${C.rule}`,
@@ -2893,8 +2896,13 @@ function StackedSection({
       fontSize: 11.5,
       cursor: "pointer"
     }
-  }, "Show all ", tasks.length, " →"), expandMode === "all" && tasks.length > PREVIEW_COUNT && /*#__PURE__*/React.createElement("button", {
-    onClick: () => setExpandMode("preview"),
+  }, "Show future tasks/chores (", faded.length, ") →"), showFuture && faded.map(t => /*#__PURE__*/React.createElement(TaskRow, {
+    key: t.id,
+    task: t,
+    ...rowProps,
+    compact: true
+  })), showFuture && faded.length > 0 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowFuture(false),
     style: {
       width: "100%",
       border: "none",
@@ -2904,7 +2912,7 @@ function StackedSection({
       cursor: "pointer",
       padding: "4px 0"
     }
-  }, "Show fewer ↑")));
+  }, "Hide future tasks/chores ↑")));
 }
 function SectionStack({
   baseSections,
