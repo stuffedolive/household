@@ -259,6 +259,12 @@ function App() {
   const [projectScope, setProjectScope] = useState("shared");
   const [projectFilter, setProjectFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("chore");
+  const [highlightTaskId, setHighlightTaskId] = useState(null);
+  useEffect(() => {
+    if (!highlightTaskId) return;
+    const t = setTimeout(() => setHighlightTaskId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightTaskId]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pickerFor, setPickerFor] = useState(null);
@@ -701,9 +707,16 @@ function App() {
     setSearchQuery: setSearchQuery,
     searchResults: searchResults,
     onSelectSearchResult: t => {
-      setEditing(t);
-      setShowForm(true);
       setSearchQuery("");
+      setView("queue");
+      setTypeFilter(t.listType);
+      if (t.listType === "chore") {
+        setChoreFilter("all");
+      } else {
+        setProjectScope(t.scope || "shared");
+        setProjectFilter("all");
+      }
+      setHighlightTaskId(t.id);
     }
   }), configError && /*#__PURE__*/React.createElement("div", {
     style: {
@@ -768,6 +781,7 @@ function App() {
     setProjectFilter: setProjectFilter,
     typeFilter: typeFilter,
     setTypeFilter: setTypeFilter,
+    highlightTaskId: highlightTaskId,
     config: config,
     onAddRoom: addRoom,
     onAddCategory: addCategory,
@@ -2595,18 +2609,19 @@ function QueueView(props) {
     onReorderAction,
     onSetTaskActions,
     onSetActionDueDate,
-    onToggleManualTodo
+    onToggleManualTodo,
+    highlightTaskId
   } = props;
   const typed = useMemo(() => typeFilter === "all" ? tasks : tasks.filter(t => t.listType === typeFilter), [tasks, typeFilter]);
   const scoped = useMemo(() => {
     if (typeFilter === "chore") {
       if (choreFilter === "all") return typed;
-      return typed.filter(t => t.scope === "personal" ? t.owner === choreFilter : t.assignee === choreFilter);
+      return typed.filter(t => t.scope === "personal" ? t.owner === choreFilter : t.assignee === choreFilter || !t.assignee);
     }
     if (typeFilter === "project") {
       let f = typed.filter(t => t.scope === projectScope);
       if (projectScope === "shared") {
-        if (projectFilter !== "all") f = f.filter(t => t.assignee === projectFilter);
+        if (projectFilter !== "all") f = f.filter(t => t.assignee === projectFilter || !t.assignee);
       } else {
         f = f.filter(t => t.owner === me);
       }
@@ -2723,7 +2738,8 @@ function QueueView(props) {
     onAddRoom: onAddRoom,
     onDeleteRoom: onDeleteRoom,
     onReorderRoomsFull: onReorderRoomsFull,
-    colorBg: filterColor(choreFilter)
+    colorBg: filterColor(choreFilter),
+    highlightTaskId: highlightTaskId
   }) : (() => {
     const catList = projectScope === "shared" ? config.sharedCategories : config.personalCategories[me];
     return /*#__PURE__*/React.createElement(CategoryBoard, {
@@ -2734,7 +2750,8 @@ function QueueView(props) {
       onAddCategory: name => onAddCategory(projectScope, me, name),
       onDeleteCategory: name => onDeleteCategory(projectScope, me, name),
       onReorderCategoriesFull: newArr => onReorderCategoriesFull(projectScope, me, newArr),
-      colorBg: projectScope === "shared" ? filterColor(projectFilter) : filterColor(me)
+      colorBg: projectScope === "shared" ? filterColor(projectFilter) : filterColor(me),
+      highlightTaskId: highlightTaskId
     });
   })());
 }
@@ -2793,17 +2810,34 @@ function StackedSection({
   onDelete,
   deletable,
   emptyLabel,
-  dragHandle
+  dragHandle,
+  highlightTaskId
 }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const active = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
   const faded = useMemo(() => tasks.filter(t => isFadedTask(t, todayStr)), [tasks, todayStr]);
+  const containsHighlight = highlightTaskId && tasks.some(t => t.id === highlightTaskId);
+  const highlightIsFaded = containsHighlight && faded.some(t => t.id === highlightTaskId);
   const [collapsed, setCollapsed] = useState(() => active.length === 0);
   const [showFuture, setShowFuture] = useState(false);
   const userToggled = useRef(false);
+  const sectionRef = useRef(null);
   useEffect(() => {
     if (!userToggled.current) setCollapsed(active.length === 0);
   }, [active.length === 0]);
+  useEffect(() => {
+    if (containsHighlight) {
+      if (highlightIsFaded) setShowFuture(true);
+      setCollapsed(false);
+      const t = setTimeout(() => {
+        if (sectionRef.current) sectionRef.current.scrollIntoView({
+          behavior: "smooth",
+          block: "center"
+        });
+      }, 60);
+      return () => clearTimeout(t);
+    }
+  }, [containsHighlight, highlightIsFaded]);
   const toggleHeader = () => {
     userToggled.current = true;
     setCollapsed(c => !c);
@@ -2812,7 +2846,8 @@ function StackedSection({
   return /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14
-    }
+    },
+    ref: sectionRef
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -2871,7 +2906,8 @@ function StackedSection({
     key: t.id,
     task: t,
     ...rowProps,
-    compact: true
+    compact: true,
+    highlighted: t.id === highlightTaskId
   })), faded.length > 0 && !showFuture && /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowFuture(true),
     style: {
@@ -2888,7 +2924,8 @@ function StackedSection({
     key: t.id,
     task: t,
     ...rowProps,
-    compact: true
+    compact: true,
+    highlighted: t.id === highlightTaskId
   })), showFuture && faded.length > 0 && /*#__PURE__*/React.createElement("button", {
     onClick: () => setShowFuture(false),
     style: {
@@ -2912,7 +2949,8 @@ function SectionStack({
   onDelete,
   onReorderFull,
   addLabel,
-  emptyLabel
+  emptyLabel,
+  highlightTaskId
 }) {
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2932,6 +2970,7 @@ function SectionStack({
       onDelete: onDelete,
       deletable: true,
       emptyLabel: emptyLabel,
+      highlightTaskId: highlightTaskId,
       dragHandle: /*#__PURE__*/React.createElement(DragHandle, {
         onPointerDown: startDrag
       })
@@ -2944,7 +2983,8 @@ function SectionStack({
     rowProps: rowProps,
     onDelete: onDelete,
     deletable: name !== "Unassigned",
-    emptyLabel: emptyLabel
+    emptyLabel: emptyLabel,
+    highlightTaskId: highlightTaskId
   })), /*#__PURE__*/React.createElement(AddSectionRow, {
     onAdd: onAdd,
     label: addLabel
@@ -2958,7 +2998,8 @@ function RoomBoard({
   onAddRoom,
   onDeleteRoom,
   onReorderRoomsFull,
-  colorBg
+  colorBg,
+  highlightTaskId
 }) {
   return /*#__PURE__*/React.createElement(SectionStack, {
     baseSections: baseRooms,
@@ -2970,7 +3011,8 @@ function RoomBoard({
     onDelete: onDeleteRoom,
     onReorderFull: onReorderRoomsFull,
     addLabel: "room",
-    emptyLabel: "No chores here"
+    emptyLabel: "No chores here",
+    highlightTaskId: highlightTaskId
   });
 }
 function CategoryBoard({
@@ -2981,7 +3023,8 @@ function CategoryBoard({
   onAddCategory,
   onDeleteCategory,
   onReorderCategoriesFull,
-  colorBg
+  colorBg,
+  highlightTaskId
 }) {
   return /*#__PURE__*/React.createElement(SectionStack, {
     baseSections: baseCategories,
@@ -2993,7 +3036,8 @@ function CategoryBoard({
     onDelete: onDeleteCategory,
     onReorderFull: onReorderCategoriesFull,
     addLabel: "category",
-    emptyLabel: "No projects here"
+    emptyLabel: "No projects here",
+    highlightTaskId: highlightTaskId
   });
 }
 function AddSectionRow({
@@ -3034,7 +3078,8 @@ function TaskRow({
   onSnooze,
   onAddToToday,
   onRestore,
-  onToggleManualTodo
+  onToggleManualTodo,
+  highlighted
 }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
@@ -3054,7 +3099,8 @@ function TaskRow({
   return /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.card,
-      border: `1px solid ${C.rule}`,
+      border: `1px solid ${highlighted ? C.mustard : C.rule}`,
+      boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
       borderRadius: 10,
       padding: compact ? "9px 10px" : "11px 12px",
       marginBottom: 8,
@@ -3068,7 +3114,6 @@ function TaskRow({
     }
   }, /*#__PURE__*/React.createElement("button", {
     onClick: () => onToggle(task),
-    disabled: notYetAvailable,
     style: {
       width: 20,
       height: 20,
@@ -3078,7 +3123,7 @@ function TaskRow({
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      cursor: notYetAvailable ? "default" : "pointer",
+      cursor: "pointer",
       flexShrink: 0,
       marginTop: 1,
       color: C.white,
