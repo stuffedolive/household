@@ -2646,6 +2646,28 @@ function QueueView(props) {
     onSetActionDueDate,
     onToggleManualTodo
   };
+  const catListForNav = projectScope === "shared" ? config.sharedCategories : config.personalCategories[me];
+  const navSections = useMemo(() => {
+    if (typeFilter === "chore") {
+      const names = [...config.rooms, ...withOrphans(config.rooms, sorted, "room").slice(config.rooms.length)];
+      return names.map(name => ({
+        name,
+        count: sorted.filter(t => (t.room || "Unassigned") === name).length
+      }));
+    }
+    const names = [...catListForNav, ...withOrphans(catListForNav, sorted, "category").slice(catListForNav.length)];
+    return names.map(name => ({
+      name,
+      count: sorted.filter(t => (t.category || "Unassigned") === name).length
+    }));
+  }, [typeFilter, config.rooms, catListForNav, sorted]);
+  const [showNav, setShowNav] = useState(false);
+  const [jumpToSection, setJumpToSection] = useState(null);
+  useEffect(() => {
+    if (!jumpToSection) return;
+    const t = setTimeout(() => setJumpToSection(null), 4000);
+    return () => clearTimeout(t);
+  }, [jumpToSection]);
   return /*#__PURE__*/React.createElement("div", {
     style: {
       height: "calc(100% - 150px)",
@@ -2678,7 +2700,20 @@ function QueueView(props) {
       cursor: "pointer",
       flex: 1
     }
-  }, l))), typeFilter === "chore" && /*#__PURE__*/React.createElement("div", {
+  }, l)), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowNav(true),
+    "aria-label": "Jump to a category",
+    style: {
+      padding: "6px 12px",
+      borderRadius: 8,
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      color: C.ink,
+      fontSize: 14,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, "☰")), typeFilter === "chore" && /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
@@ -2739,9 +2774,10 @@ function QueueView(props) {
     onDeleteRoom: onDeleteRoom,
     onReorderRoomsFull: onReorderRoomsFull,
     colorBg: filterColor(choreFilter),
-    highlightTaskId: highlightTaskId
+    highlightTaskId: highlightTaskId,
+    jumpToSection: jumpToSection
   }) : (() => {
-    const catList = projectScope === "shared" ? config.sharedCategories : config.personalCategories[me];
+    const catList = catListForNav;
     return /*#__PURE__*/React.createElement(CategoryBoard, {
       tasks: sorted,
       rowProps: rowProps,
@@ -2751,9 +2787,45 @@ function QueueView(props) {
       onDeleteCategory: name => onDeleteCategory(projectScope, me, name),
       onReorderCategoriesFull: newArr => onReorderCategoriesFull(projectScope, me, newArr),
       colorBg: projectScope === "shared" ? filterColor(projectFilter) : filterColor(me),
-      highlightTaskId: highlightTaskId
+      highlightTaskId: highlightTaskId,
+      jumpToSection: jumpToSection
     });
-  })());
+  })(), showNav && /*#__PURE__*/React.createElement(Overlay, {
+    title: typeFilter === "chore" ? "Rooms" : "Categories",
+    onClose: () => setShowNav(false)
+  }, navSections.map(({
+    name,
+    count
+  }) => /*#__PURE__*/React.createElement("button", {
+    key: name,
+    onClick: () => {
+      setJumpToSection(name);
+      setShowNav(false);
+    },
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      width: "100%",
+      textAlign: "left",
+      border: "none",
+      borderBottom: `1px solid ${C.rule}`,
+      background: "none",
+      padding: "13px 4px",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 14.5,
+      color: C.ink,
+      fontWeight: 600
+    }
+  }, name), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.inkSoft
+    }
+  }, count)))));
 }
 
 /* horizontally scrolling row with tap-to-scroll arrows — helps when there are many sections */
@@ -2811,13 +2883,15 @@ function StackedSection({
   deletable,
   emptyLabel,
   dragHandle,
-  highlightTaskId
+  highlightTaskId,
+  jumpToSection
 }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const active = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
   const faded = useMemo(() => tasks.filter(t => isFadedTask(t, todayStr)), [tasks, todayStr]);
   const containsHighlight = highlightTaskId && tasks.some(t => t.id === highlightTaskId);
   const highlightIsFaded = containsHighlight && faded.some(t => t.id === highlightTaskId);
+  const isJumpTarget = jumpToSection === name;
   const [collapsed, setCollapsed] = useState(() => active.length === 0);
   const [showFuture, setShowFuture] = useState(false);
   const userToggled = useRef(false);
@@ -2826,18 +2900,18 @@ function StackedSection({
     if (!userToggled.current) setCollapsed(active.length === 0);
   }, [active.length === 0]);
   useEffect(() => {
-    if (containsHighlight) {
+    if (containsHighlight || isJumpTarget) {
       if (highlightIsFaded) setShowFuture(true);
       setCollapsed(false);
       const t = setTimeout(() => {
         if (sectionRef.current) sectionRef.current.scrollIntoView({
           behavior: "smooth",
-          block: "center"
+          block: "start"
         });
       }, 60);
       return () => clearTimeout(t);
     }
-  }, [containsHighlight, highlightIsFaded]);
+  }, [containsHighlight, highlightIsFaded, isJumpTarget]);
   const toggleHeader = () => {
     userToggled.current = true;
     setCollapsed(c => !c);
@@ -2855,7 +2929,8 @@ function StackedSection({
       gap: 4,
       background: C.rule,
       borderLeft: `4px solid ${stripe}`,
-      border: `1px solid ${C.rule}`,
+      border: `1px solid ${isJumpTarget ? C.mustard : C.rule}`,
+      boxShadow: isJumpTarget ? `0 0 0 2px ${C.mustard}` : "none",
       borderLeftWidth: 4,
       padding: "7px 10px",
       borderRadius: 8,
@@ -2950,7 +3025,8 @@ function SectionStack({
   onReorderFull,
   addLabel,
   emptyLabel,
-  highlightTaskId
+  highlightTaskId,
+  jumpToSection
 }) {
   return /*#__PURE__*/React.createElement("div", {
     style: {
@@ -2971,6 +3047,7 @@ function SectionStack({
       deletable: true,
       emptyLabel: emptyLabel,
       highlightTaskId: highlightTaskId,
+      jumpToSection: jumpToSection,
       dragHandle: /*#__PURE__*/React.createElement(DragHandle, {
         onPointerDown: startDrag
       })
@@ -2984,7 +3061,8 @@ function SectionStack({
     onDelete: onDelete,
     deletable: name !== "Unassigned",
     emptyLabel: emptyLabel,
-    highlightTaskId: highlightTaskId
+    highlightTaskId: highlightTaskId,
+    jumpToSection: jumpToSection
   })), /*#__PURE__*/React.createElement(AddSectionRow, {
     onAdd: onAdd,
     label: addLabel
@@ -2999,7 +3077,8 @@ function RoomBoard({
   onDeleteRoom,
   onReorderRoomsFull,
   colorBg,
-  highlightTaskId
+  highlightTaskId,
+  jumpToSection
 }) {
   return /*#__PURE__*/React.createElement(SectionStack, {
     baseSections: baseRooms,
@@ -3012,7 +3091,8 @@ function RoomBoard({
     onReorderFull: onReorderRoomsFull,
     addLabel: "room",
     emptyLabel: "No chores here",
-    highlightTaskId: highlightTaskId
+    highlightTaskId: highlightTaskId,
+    jumpToSection: jumpToSection
   });
 }
 function CategoryBoard({
@@ -3024,7 +3104,8 @@ function CategoryBoard({
   onDeleteCategory,
   onReorderCategoriesFull,
   colorBg,
-  highlightTaskId
+  highlightTaskId,
+  jumpToSection
 }) {
   return /*#__PURE__*/React.createElement(SectionStack, {
     baseSections: baseCategories,
@@ -3037,7 +3118,8 @@ function CategoryBoard({
     onReorderFull: onReorderCategoriesFull,
     addLabel: "category",
     emptyLabel: "No projects here",
-    highlightTaskId: highlightTaskId
+    highlightTaskId: highlightTaskId,
+    jumpToSection: jumpToSection
   });
 }
 function AddSectionRow({
