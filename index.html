@@ -1564,7 +1564,7 @@ function NeedsDetailsList({
 const DAY_MS = 86400000;
 const SOON_DAYS = 3; // "due soon" window
 const STALE_DAYS_DEFAULT = 60; // fallback for one-off (non-recurring) tasks
-const LINGER_MS = 24 * 3600 * 1000; // how long a just-completed task stays visible
+const LINGER_MS = 48 * 3600 * 1000; // how long a just-completed task stays visible
 
 function urgencyBand(dueDate, todayStr) {
   if (!dueDate) return "none";
@@ -1993,7 +1993,7 @@ function ToDoList({
   const today = new Date().toISOString().slice(0, 10);
   const now = Date.now();
   const assignedToMe = useMemo(() => tasks.filter(t => t.scope === "personal" ? t.owner === me : t.assignee === me || !t.assignee), [tasks, me]);
-  const justDone = useMemo(() => assignedToMe.filter(t => t.completed && t.completedAt && now - t.completedAt < LINGER_MS).sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0)), [assignedToMe, now]);
+  const justDone = useMemo(() => tasks.filter(t => t.completed && t.completedAt && now - t.completedAt < LINGER_MS).sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0)), [tasks, now]);
 
   // upcoming: recurring, "due date is start date" tasks approaching their window — computed before the
   // not-startable-yet exclusion below, since this IS how those tasks get any visibility before they're due.
@@ -2240,12 +2240,14 @@ function ToDoList({
     action: action,
     onToggleAction: onToggleAction,
     onEdit: onEdit,
+    onSnooze: overwhelmed ? dateStr => snoozeProjectAction(task, action, dateStr) : undefined,
     onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday,
     onToggleManualTodo: onToggleManualTodo
   }) : /*#__PURE__*/React.createElement(TaskRow, {
     key: task.id,
     task: task,
     ...rowProps,
+    onSnooze: overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined,
     onAddToToday: inPlan(task.id, null) ? undefined : onAddTaskToToday,
     onToggleManualTodo: onToggleManualTodo
   }))), /*#__PURE__*/React.createElement(CollapsibleSection, {
@@ -2305,7 +2307,7 @@ function ToDoList({
     ...rowProps,
     onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
   }))), justDone.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
-    title: "Just done ✓",
+    title: "Recently completed",
     count: justDone.length,
     defaultOpen: false
   }, justDone.map(t => /*#__PURE__*/React.createElement(TaskRow, {
