@@ -527,13 +527,15 @@ function App() {
       ref.update({
         dueDate: nextDue,
         completed: false,
-        completedAt: null
+        completedAt: null,
+        lastCompletedAt: Date.now()
       }).catch(console.error);
     } else {
       const nowCompleting = !task.completed;
       ref.update({
         completed: nowCompleting,
-        completedAt: nowCompleting ? Date.now() : null
+        completedAt: nowCompleting ? Date.now() : null,
+        lastCompletedAt: nowCompleting ? Date.now() : null
       }).catch(console.error);
     }
   };
@@ -595,11 +597,12 @@ function App() {
     }).catch(console.error);
   };
   /* "Not today" postponement — hides from the to-do list without touching the real due date, so overdue/stale
-     status stays honest. Chores get it on the task itself; project subtasks get it on the specific subtask. */
+     status stays honest. Chores get it on the task itself; project subtasks get it on the specific subtask.
+     Keyed per-person: postponing a shared or unassigned task only hides it for the person who postponed it. */
   const setTaskHiddenUntil = (taskId, date) => {
     captureUndo("Postpone", [taskId]);
     db.collection(TASKS_COLLECTION).doc(taskId).update({
-      hiddenUntil: date
+      [`hiddenUntil.${me}`]: date
     }).catch(console.error);
   };
   const setActionHiddenUntil = (taskId, actionId, date) => {
@@ -608,7 +611,10 @@ function App() {
     captureUndo("Postpone", [taskId]);
     updateActions(taskId, (task.actions || []).map(a => a.id === actionId ? {
       ...a,
-      hiddenUntil: date
+      hiddenUntil: {
+        ...(a.hiddenUntil || {}),
+        [me]: date
+      }
     } : a));
   };
   /* manual "add to to-do list" — lets a date-less chore or an unpinned project show up in the to-do list
@@ -1992,8 +1998,43 @@ function ToDoList({
   const [overwhelmed, setOverwhelmed] = useState(false);
   const today = new Date().toISOString().slice(0, 10);
   const now = Date.now();
-  const assignedToMe = useMemo(() => tasks.filter(t => t.scope === "personal" ? t.owner === me : t.assignee === me || !t.assignee), [tasks, me]);
-  const justDone = useMemo(() => tasks.filter(t => t.completed && t.completedAt && now - t.completedAt < LINGER_MS).sort((a, b) => (b.completedAt || 0) - (a.completedAt || 0)), [tasks, now]);
+
+  // "just checked off" linger: keep a task looking done, in its original spot, for ~5s before it actually
+  // moves to Recently Completed — without this, a task (especially a recurring one, whose due date jumps
+  // forward immediately) would vanish from view the instant you tap it, with no visible confirmation.
+  const [pendingComplete, setPendingComplete] = useState({}); // taskId -> { snapshot, expiry }
+  useEffect(() => {
+    const entries = Object.entries(pendingComplete);
+    if (!entries.length) return;
+    const timers = entries.map(([id, {
+      expiry
+    }]) => setTimeout(() => setPendingComplete(p => {
+      const n = {
+        ...p
+      };
+      delete n[id];
+      return n;
+    }), Math.max(expiry - Date.now(), 0)));
+    return () => timers.forEach(clearTimeout);
+  }, [pendingComplete]);
+  const wrappedToggle = task => {
+    if (!task.completed) {
+      setPendingComplete(p => ({
+        ...p,
+        [task.id]: {
+          snapshot: {
+            ...task,
+            completed: true
+          },
+          expiry: Date.now() + 5000
+        }
+      }));
+    }
+    onToggle(task);
+  };
+  const effectiveTasks = useMemo(() => tasks.map(t => pendingComplete[t.id] ? pendingComplete[t.id].snapshot : t), [tasks, pendingComplete]);
+  const assignedToMe = useMemo(() => effectiveTasks.filter(t => t.scope === "personal" ? t.owner === me : t.assignee === me || !t.assignee), [effectiveTasks, me]);
+  const justDone = useMemo(() => tasks.filter(t => t.lastCompletedAt && now - t.lastCompletedAt < LINGER_MS && !pendingComplete[t.id]).sort((a, b) => (b.lastCompletedAt || 0) - (a.lastCompletedAt || 0)), [tasks, now, pendingComplete]);
 
   // upcoming: recurring, "due date is start date" tasks approaching their window — computed before the
   // not-startable-yet exclusion below, since this IS how those tasks get any visibility before they're due.
@@ -2006,15 +2047,17 @@ function ToDoList({
     const daysUntil = Math.round((new Date(eff + "T00:00:00") - new Date(today + "T00:00:00")) / DAY_MS);
     return daysUntil <= upcomingLeadDays(period);
   }).sort((a, b) => (effectiveDueDate(a) || "9999").localeCompare(effectiveDueDate(b) || "9999")), [assignedToMe, today]);
-  const isHidden = t => t.hiddenUntil && t.hiddenUntil > today;
-  const active = useMemo(() => assignedToMe.filter(t => !t.completed && !notStartableYet(t, today) && !isHidden(t)), [assignedToMe, today]);
+  const isHidden = t => t.hiddenUntil && t.hiddenUntil[me] && t.hiddenUntil[me] > today;
+  const isActionHidden = a => a.hiddenUntil && a.hiddenUntil[me] && a.hiddenUntil[me] > today;
+  const active = useMemo(() => assignedToMe.filter(t => (!t.completed || pendingComplete[t.id]) && !notStartableYet(t, today) && !isHidden(t)), [assignedToMe, today, pendingComplete]);
 
   // postponed ("not today"): due date untouched, so these still show their true overdue state wherever displayed —
-  // only hidden from the ranked to-do list until hiddenUntil passes, then they quietly reappear on their own.
+  // only hidden from the ranked to-do list (for the person who postponed it) until hiddenUntil passes, then it
+  // quietly reappears on its own.
   const postponedChores = useMemo(() => assignedToMe.filter(t => !t.completed && t.listType === "chore" && isHidden(t)), [assignedToMe, today]);
   const postponedProjectItems = useMemo(() => assignedToMe.filter(t => !t.completed && t.listType === "project").map(t => ({
     task: t,
-    action: (t.actions || []).find(a => !a.completed && a.hiddenUntil && a.hiddenUntil > today)
+    action: (t.actions || []).find(a => !a.completed && isActionHidden(a))
   })).filter(({
     action
   }) => !!action), [assignedToMe, today]);
@@ -2040,7 +2083,7 @@ function ToDoList({
       action: nextAction(t)
     })).filter(({
       action
-    }) => !(action && action.hiddenUntil && action.hiddenUntil > today));
+    }) => !(action && isActionHidden(action)));
     return items.sort((a, b) => {
       const da = a.action && a.action.dueDate || a.task.dueDate,
         db = b.action && b.action.dueDate || b.task.dueDate;
@@ -2058,7 +2101,7 @@ function ToDoList({
       action: nextAction(t)
     })).filter(({
       action
-    }) => !(action && action.hiddenUntil && action.hiddenUntil > today));
+    }) => !(action && isActionHidden(action)));
     return items.sort((a, b) => {
       const da = a.action && a.action.dueDate || a.task.dueDate,
         db = b.action && b.action.dueDate || b.task.dueDate;
@@ -2072,7 +2115,7 @@ function ToDoList({
   const projectItems = priorityProjectItems;
   const rowProps = {
     me,
-    onToggle,
+    onToggle: wrappedToggle,
     onEdit,
     onDelete,
     onToggleAction,
@@ -2144,7 +2187,7 @@ function ToDoList({
     }
   }, overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"), overwhelmed && topPick && /*#__PURE__*/React.createElement(HeroCard, {
     pick: topPick,
-    onToggle: onToggle,
+    onToggle: wrappedToggle,
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onSnooze: dateStr => {
@@ -2314,6 +2357,7 @@ function ToDoList({
     key: t.id,
     task: t,
     ...rowProps,
+    showAsCompleted: true,
     onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
   }))));
 }
@@ -3163,13 +3207,15 @@ function TaskRow({
   onAddToToday,
   onRestore,
   onToggleManualTodo,
-  highlighted
+  highlighted,
+  showAsCompleted
 }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
   const todayStr = new Date().toISOString().slice(0, 10);
-  const overdue = task.dueDate && task.dueDate < todayStr && !task.completed;
+  const isDone = task.completed || showAsCompleted;
+  const overdue = task.dueDate && task.dueDate < todayStr && !isDone;
   const notYetAvailable = isFadedTask(task, todayStr);
   const na = nextAction(task);
   const progress = actionsProgress(task);
@@ -3188,7 +3234,7 @@ function TaskRow({
       borderRadius: 10,
       padding: compact ? "9px 10px" : "11px 12px",
       marginBottom: 8,
-      opacity: task.completed ? 0.55 : notYetAvailable ? 0.5 : 1
+      opacity: isDone ? 0.55 : notYetAvailable ? 0.5 : 1
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
@@ -3203,7 +3249,7 @@ function TaskRow({
       height: 20,
       borderRadius: "50%",
       border: `2px solid ${imp ? imp.color : C.inkSoft}`,
-      background: task.completed ? imp ? imp.color : C.inkSoft : "transparent",
+      background: isDone ? imp ? imp.color : C.inkSoft : "transparent",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -3213,7 +3259,7 @@ function TaskRow({
       color: C.white,
       fontSize: 11
     }
-  }, task.completed && "✓"), /*#__PURE__*/React.createElement("div", {
+  }, isDone && "✓"), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1,
       minWidth: 0
@@ -3233,7 +3279,7 @@ function TaskRow({
       fontSize: compact ? 13 : 14,
       color: C.ink,
       fontWeight: 600,
-      textDecoration: task.completed ? "line-through" : "none"
+      textDecoration: isDone ? "line-through" : "none"
     }
   }, task.title)), !compact && /*#__PURE__*/React.createElement("div", {
     style: {
