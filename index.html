@@ -77,6 +77,7 @@ const C = {
   slateTint: "#E1E7EA",
   taupeTint: "#ECE7DC"
 };
+const APP_VERSION = "v40";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1018,6 +1019,14 @@ function Header({
       color: C.inkSoft
     }
   }, "viewing as ", PEOPLE[me]))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: 4,
+      right: 8,
+      fontSize: 8.5,
+      color: C.rule
+    }
+  }, APP_VERSION), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 8,
@@ -1967,6 +1976,19 @@ function upcomingLeadDays(periodDays) {
   if (periodDays >= 7) return 3; // weekly through ~5-monthly
   return 1; // more frequent than weekly
 }
+/* A recurring chore only clutters the main Chores list once it's actually due or close to due — this applies
+   the same lead-window scaling as Upcoming to EVERY recurring chore, not just ones with "Due date is do date"
+   checked. Completing a monthly chore today rolls its due date a month out, and it should disappear from the
+   list until it's genuinely relevant again, without needing that box ticked. One-off (non-repeating) chores
+   are unaffected — they keep showing regardless of distance, same as always. */
+function withinLeadWindow(t, todayStr) {
+  const eff = effectiveDueDate(t);
+  if (!eff || eff <= todayStr) return true;
+  const period = recurrencePeriodDays(t.recurrence);
+  if (!period) return true;
+  const daysUntil = Math.round((new Date(eff + "T00:00:00") - new Date(todayStr + "T00:00:00")) / DAY_MS);
+  return daysUntil <= upcomingLeadDays(period);
+}
 function ToDoList({
   tasks,
   me,
@@ -2063,8 +2085,9 @@ function ToDoList({
   }) => !!action), [assignedToMe, today]);
 
   // chores: dated (own date, or a nearer subtask date) OR manually added despite having no date; ranked by
-  // tier on the effective date, with date-less manual adds sorting to the bottom of their importance group
-  const chores = useMemo(() => active.filter(t => t.listType === "chore" && (!!effectiveDueDate(t) || t.manualTodo)).sort((a, b) => {
+  // tier on the effective date, with date-less manual adds sorting to the bottom of their importance group.
+  // Recurring chores only appear once within their lead window (or overdue) — see withinLeadWindow.
+  const chores = useMemo(() => active.filter(t => t.listType === "chore" && (!!effectiveDueDate(t) || t.manualTodo)).filter(t => t.manualTodo || withinLeadWindow(t, today)).sort((a, b) => {
     const da = effectiveDueDate(a),
       db = effectiveDueDate(b);
     const ta = tierFor(da, a.priority, today),
