@@ -1091,6 +1091,7 @@ function Header({
     }
   }, "No matches."), searchResults.map(t => /*#__PURE__*/React.createElement("button", {
     key: t.id,
+    onMouseDown: e => e.preventDefault(),
     onClick: () => onSelectSearchResult(t),
     style: {
       display: "block",

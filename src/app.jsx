@@ -1,0 +1,3167 @@
+const {
+  useState,
+  useEffect,
+  useMemo,
+  useRef
+} = React;
+
+/* ---------- design tokens ---------- */
+const C = {
+  ink: "#2B2A28",
+  inkSoft: "#5C574C",
+  parchment: "#EDE7D8",
+  card: "#F8F5EC",
+  rule: "#D9D0BC",
+  sage: "#6E7B5E",
+  sageDeep: "#4F5A43",
+  plum: "#7A3B45",
+  mustard: "#B5842A",
+  white: "#FFFDF8",
+  slate: "#5B6B78",
+  slateDeep: "#44525C",
+  taupe: "#8C8474",
+  sageTint: "#E3EBDD",
+  plumTint: "#F0DEE0",
+  slateTint: "#E1E7EA",
+  taupeTint: "#ECE7DC"
+};
+const APP_VERSION = "v40";
+const PEOPLE = {
+  jade: "Jade",
+  john: "John"
+};
+const PERSON_COLOR = {
+  jade: C.sage,
+  john: C.plum
+};
+const PERSON_CODE = {
+  jade: "JC",
+  john: "JE"
+};
+/* consistent colour-by-person across filter chips and section headers: jade=green, john=maroon, shared/all=slate, unassigned=taupe grey */
+function filterColor(key) {
+  if (key === "jade") return C.sage;
+  if (key === "john") return C.plum;
+  return C.slate;
+}
+/* the same colour, but as a quiet tint for backgrounds — keeps the colour-coding without the visual weight */
+function filterTint(key) {
+  if (key === "jade") return C.sageTint;
+  if (key === "john") return C.plumTint;
+  return C.slateTint;
+}
+const BUCKETS = [{
+  key: "quick",
+  label: "Quick"
+}, {
+  key: "mid",
+  label: "Middle-term"
+}, {
+  key: "long",
+  label: "Long-term"
+}];
+const DEFAULT_ROOMS = ["Kitchen", "Bathroom", "Living", "Bedroom", "Laundry", "General"];
+const DEFAULT_CATEGORIES = ["General"];
+const RECUR_UNITS = [["none", "Never"], ["day", "Days"], ["week", "Weeks"], ["month", "Months"]];
+const IMPORTANCE = [{
+  key: "high",
+  label: "High",
+  color: C.plum
+}, {
+  key: "med",
+  label: "Med",
+  color: C.mustard
+}, {
+  key: "low",
+  label: "Low",
+  color: C.sage
+}];
+const uid = () => Math.random().toString(36).slice(2, 10);
+const capFirst = s => s && s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+const nextAction = task => (task.actions || []).find(a => !a.completed) || null;
+/* a chore's true urgency for to-do-list purposes is the EARLIER of its own due date and its next incomplete
+   subtask's due date — a subtask due sooner than the parent should surface the parent sooner too. */
+function effectiveDueDate(task) {
+  const na = nextAction(task);
+  const subDate = na ? na.dueDate : null;
+  if (subDate && task.dueDate) return subDate < task.dueDate ? subDate : task.dueDate;
+  return subDate || task.dueDate || null;
+}
+/* the specific subtask driving a chore's urgency, if it's an earlier date than the chore's own — null otherwise */
+function drivingSubtask(task) {
+  const na = nextAction(task);
+  if (!na || !na.dueDate) return null;
+  if (!task.dueDate) return na;
+  return na.dueDate < task.dueDate ? na : null;
+}
+const actionsProgress = task => {
+  const acts = task.actions || [];
+  if (!acts.length) return null;
+  return `${acts.filter(a => a.completed).length}/${acts.length} subtasks`;
+};
+const moveAction = (actions, idx, dir) => {
+  const arr = actions.slice();
+  const j = idx + dir;
+  if (j < 0 || j >= arr.length) return arr;
+  [arr[idx], arr[j]] = [arr[j], arr[idx]];
+  return arr;
+};
+/* normalize both the new {unit, amount, mode} shape and the old fixed-string shape from earlier versions */
+function normRecurrence(r) {
+  if (!r) return {
+    unit: "none",
+    amount: 1,
+    mode: "rolling"
+  };
+  if (typeof r === "string") {
+    const map = {
+      none: ["none", 1],
+      daily: ["day", 1],
+      weekly: ["week", 1],
+      fortnightly: ["week", 2],
+      monthly: ["month", 1]
+    };
+    const [unit, amount] = map[r] || ["none", 1];
+    return {
+      unit,
+      amount,
+      mode: "rolling"
+    };
+  }
+  return {
+    unit: r.unit || "none",
+    amount: r.amount || 1,
+    mode: r.mode || "rolling"
+  };
+}
+function recurrenceLabel(rec) {
+  const r = normRecurrence(rec);
+  if (r.unit === "none") return null;
+  const unitWord = r.amount === 1 ? r.unit : `${r.unit}s`;
+  return `every ${r.amount} ${unitWord}${r.mode === "fixed" ? " · fixed" : ""}`;
+}
+function addInterval(dateStr, unit, amount) {
+  const d = new Date(dateStr + "T00:00:00");
+  if (unit === "day") d.setDate(d.getDate() + amount);else if (unit === "week") d.setDate(d.getDate() + amount * 7);else if (unit === "month") d.setMonth(d.getMonth() + amount);
+  return d.toISOString().slice(0, 10);
+}
+function fmtDate(dateStr) {
+  if (!dateStr) return "No date";
+  const d = new Date(dateStr + "T00:00:00");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diff = Math.round((d - today) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  if (diff < 0) return `${-diff === 1 ? "1 day" : `${-diff} days`} ago`;
+  const base = d.toLocaleDateString("en-AU", {
+    day: "numeric",
+    month: "short"
+  });
+  if (diff >= 2 && diff <= 14) return `${base} (${diff}d)`;
+  return base;
+}
+/* ensure every room/category actually in use gets a column, and always include a permanent "Unassigned" catch-all */
+function withOrphans(sections, tasks, field) {
+  const used = new Set(tasks.map(t => t[field]).filter(Boolean));
+  const extra = [...used].filter(v => !sections.includes(v) && v !== "Unassigned");
+  return [...sections, ...extra, "Unassigned"];
+}
+const TASKS_COLLECTION = "tasks";
+const CONFIG_DOC = db.collection("meta").doc("config");
+const TODAY_COLLECTION = "today";
+const HOUSEHOLD_EMAIL = "access@household-ledger.local";
+function sanitizeList(arr, fallback) {
+  const clean = [...new Set((arr || []).map(s => String(s).trim()).filter(Boolean))];
+  return clean.length ? clean : fallback;
+}
+function App() {
+  const [authReady, setAuthReady] = useState(null);
+  const [me, setMe] = useState(null);
+  const [tasks, setTasks] = useState(null);
+  const [config, setConfig] = useState({
+    rooms: DEFAULT_ROOMS,
+    sharedCategories: DEFAULT_CATEGORIES,
+    personalCategories: {
+      jade: DEFAULT_CATEGORIES,
+      john: DEFAULT_CATEGORIES
+    }
+  });
+  const [view, setView] = useState("grid");
+  const [showNeedsDetails, setShowNeedsDetails] = useState(false);
+  const [lastUndo, setLastUndo] = useState(null); // { label, fn } | null — only ever the most recent action
+  const [searchQuery, setSearchQuery] = useState("");
+  const setUndo = (label, fn) => setLastUndo({
+    label,
+    fn
+  });
+  const handleUndo = () => {
+    if (lastUndo) {
+      lastUndo.fn();
+      setLastUndo(null);
+    }
+  };
+  const [priorityViewPerson, setPriorityViewPerson] = useState(null);
+  const [filter, setFilter] = useState("all");
+  const [choreFilter, setChoreFilter] = useState("all");
+  const [projectScope, setProjectScope] = useState("shared");
+  const [projectFilter, setProjectFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("chore");
+  const [highlightTaskId, setHighlightTaskId] = useState(null);
+  useEffect(() => {
+    if (!highlightTaskId) return;
+    const t = setTimeout(() => setHighlightTaskId(null), 4000);
+    return () => clearTimeout(t);
+  }, [highlightTaskId]);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [pickerFor, setPickerFor] = useState(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const u = params.get("user");
+    if (u && PEOPLE[u]) setMe(u);
+  }, []);
+  useEffect(() => {
+    const unsub = auth.onAuthStateChanged(user => {
+      if (user && user.email === HOUSEHOLD_EMAIL) setAuthReady(true);else if (user) {
+        auth.signOut();
+        setAuthReady(false);
+      } else setAuthReady(false);
+    });
+    return unsub;
+  }, []);
+  useEffect(() => {
+    if (authReady !== true) return;
+    const unsub = db.collection(TASKS_COLLECTION).onSnapshot(snap => setTasks(snap.docs.map(d => ({
+      id: d.id,
+      ...d.data()
+    }))), err => {
+      console.error("sync error", err);
+      setTasks([]);
+    });
+    return unsub;
+  }, [authReady]);
+  const [configError, setConfigError] = useState(false);
+  useEffect(() => {
+    if (authReady !== true) return;
+    const unsub = CONFIG_DOC.onSnapshot(doc => {
+      setConfigError(false);
+      const d = doc.data() || {};
+      // fold in anything from the brief unified-categories period so nothing already created gets lost
+      const unifiedExtras = sanitizeList(d.categories, []);
+      setConfig({
+        rooms: sanitizeList(d.rooms, DEFAULT_ROOMS),
+        sharedCategories: sanitizeList([...(d.sharedCategories || []), ...unifiedExtras], DEFAULT_CATEGORIES),
+        personalCategories: {
+          jade: sanitizeList([...(d.personalCategories && d.personalCategories.jade || []), ...unifiedExtras], DEFAULT_CATEGORIES),
+          john: sanitizeList([...(d.personalCategories && d.personalCategories.john || []), ...unifiedExtras], DEFAULT_CATEGORIES)
+        }
+      });
+    }, err => {
+      console.error("config sync error — likely a Firestore rules issue on /meta/config:", err);
+      setConfigError(true);
+    });
+    return unsub;
+  }, [authReady]);
+  const addRoom = name => CONFIG_DOC.set({
+    rooms: firebase.firestore.FieldValue.arrayUnion(name)
+  }, {
+    merge: true
+  }).catch(console.error);
+  const addCategory = (scope, owner, name) => {
+    if (scope === "shared") CONFIG_DOC.set({
+      sharedCategories: firebase.firestore.FieldValue.arrayUnion(name)
+    }, {
+      merge: true
+    }).catch(console.error);else CONFIG_DOC.set({
+      [`personalCategories.${owner}`]: firebase.firestore.FieldValue.arrayUnion(name)
+    }, {
+      merge: true
+    }).catch(console.error);
+  };
+  const deleteRoom = name => {
+    const prevRooms = config.rooms;
+    const affectedTasks = (tasks || []).filter(t => t.room === name).map(t => ({
+      ...t
+    }));
+    setUndo("Delete room", () => {
+      CONFIG_DOC.update({
+        rooms: prevRooms
+      }).catch(console.error);
+      affectedTasks.forEach(t => db.collection(TASKS_COLLECTION).doc(t.id).set(t).catch(console.error));
+    });
+    const next = config.rooms.filter(r => r !== name);
+    CONFIG_DOC.update({
+      rooms: next
+    }).catch(e => {
+      console.error("delete room failed", e);
+      window.alert("Delete failed: " + e.message);
+    });
+    affectedTasks.forEach(t => db.collection(TASKS_COLLECTION).doc(t.id).update({
+      room: null
+    }).catch(console.error));
+  };
+  const deleteCategory = (scope, owner, name) => {
+    if (scope === "shared") {
+      const prevList = config.sharedCategories;
+      const affectedTasks = (tasks || []).filter(t => t.scope === "shared" && t.category === name).map(t => ({
+        ...t
+      }));
+      setUndo("Delete category", () => {
+        CONFIG_DOC.update({
+          sharedCategories: prevList
+        }).catch(console.error);
+        affectedTasks.forEach(t => db.collection(TASKS_COLLECTION).doc(t.id).set(t).catch(console.error));
+      });
+      const next = prevList.filter(c => c !== name);
+      CONFIG_DOC.update({
+        sharedCategories: next
+      }).catch(e => {
+        console.error("delete category failed", e);
+        window.alert("Delete failed: " + e.message);
+      });
+      affectedTasks.forEach(t => db.collection(TASKS_COLLECTION).doc(t.id).update({
+        category: null
+      }).catch(console.error));
+    } else {
+      const prevList = config.personalCategories[owner] || [];
+      const affectedTasks = (tasks || []).filter(t => t.scope === "personal" && t.owner === owner && t.category === name).map(t => ({
+        ...t
+      }));
+      setUndo("Delete category", () => {
+        CONFIG_DOC.update({
+          [`personalCategories.${owner}`]: prevList
+        }).catch(console.error);
+        affectedTasks.forEach(t => db.collection(TASKS_COLLECTION).doc(t.id).set(t).catch(console.error));
+      });
+      const next = prevList.filter(c => c !== name);
+      CONFIG_DOC.update({
+        [`personalCategories.${owner}`]: next
+      }).catch(e => {
+        console.error("delete category failed", e);
+        window.alert("Delete failed: " + e.message);
+      });
+      affectedTasks.forEach(t => db.collection(TASKS_COLLECTION).doc(t.id).update({
+        category: null
+      }).catch(console.error));
+    }
+  };
+  const reorderRoomsFull = newArr => CONFIG_DOC.update({
+    rooms: newArr
+  }).catch(console.error);
+  const reorderCategoriesFull = (scope, owner, newArr) => {
+    if (scope === "shared") CONFIG_DOC.update({
+      sharedCategories: newArr
+    }).catch(console.error);else CONFIG_DOC.update({
+      [`personalCategories.${owner}`]: newArr
+    }).catch(console.error);
+  };
+
+  /* Today's plan — private per person: sundry one-off items + references to real tasks, one combined
+     reorderable list. Lives in its own doc per person so it never becomes visible to the other partner. */
+  const [todayItems, setTodayItems] = useState([]);
+  useEffect(() => {
+    if (authReady !== true || !me) return;
+    const unsub = db.collection(TODAY_COLLECTION).doc(me).onSnapshot(doc => setTodayItems(doc.data() && doc.data().items || []), err => console.error("today sync error — check Firestore rules cover /today/{docId}:", err));
+    return unsub;
+  }, [authReady, me]);
+  const saveTodayRaw = items => db.collection(TODAY_COLLECTION).doc(me).set({
+    items
+  }, {
+    merge: true
+  }).catch(console.error);
+  const saveToday = (label, items) => {
+    const prev = todayItems;
+    setUndo(label, () => saveTodayRaw(prev));
+    saveTodayRaw(items);
+  };
+  const todayKey = it => it.type + it.id + (it.subtaskId || "");
+  const todayBucket = it => it.bucket === "later" ? "later" : "now";
+  const addSundry = title => saveToday("Add sundry", [...todayItems, {
+    type: "sundry",
+    id: uid(),
+    title: title.trim(),
+    completed: false,
+    bucket: "now"
+  }]);
+  const toggleSundry = id => saveToday("Toggle sundry", todayItems.map(it => it.id === id ? {
+    ...it,
+    completed: !it.completed
+  } : it));
+  const deleteSundry = id => saveToday("Delete sundry", todayItems.filter(it => it.id !== id));
+  const addTaskToToday = (taskId, subtaskId) => {
+    if (todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null))) return;
+    saveToday("Add to the plan", [...todayItems, {
+      type: "task",
+      id: taskId,
+      subtaskId: subtaskId || null,
+      bucket: "now"
+    }]);
+  };
+  const removeTaskFromToday = (taskId, subtaskId) => saveToday("Remove from the plan", todayItems.filter(it => !(it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null))));
+  // reorder only moves within the same bucket (Today vs Later), skipping over items from the other bucket
+  const reorderToday = (item, dir) => {
+    const key = todayKey(item);
+    const idx = todayItems.findIndex(it => todayKey(it) === key);
+    if (idx < 0) return;
+    const b = todayBucket(todayItems[idx]);
+    let j = idx;
+    do {
+      j += dir;
+    } while (j >= 0 && j < todayItems.length && todayBucket(todayItems[j]) !== b);
+    if (j < 0 || j >= todayItems.length) return;
+    const arr = todayItems.slice();
+    [arr[idx], arr[j]] = [arr[j], arr[idx]];
+    saveToday("Reorder today", arr);
+  };
+  // drag-and-drop finalize for one bucket's subset — the other bucket's items pass through untouched
+  const reorderTodayBucketFull = (bucket, newSubsetOrder) => {
+    const others = todayItems.filter(it => todayBucket(it) !== bucket);
+    saveToday("Reorder today", bucket === "later" ? [...others, ...newSubsetOrder] : [...newSubsetOrder, ...others]);
+  };
+  const setTodayBucket = (item, bucket) => {
+    const key = todayKey(item);
+    saveToday("Move item", todayItems.map(it => todayKey(it) === key ? {
+      ...it,
+      bucket
+    } : it));
+  };
+  // a local "done today" checkmark, independent of the underlying task's real completion state — this is what
+  // makes the Today's-plan checkbox behave sensibly even for recurring chores, which reset completed:false
+  // immediately as part of advancing their schedule and would otherwise never visibly show as checked here.
+  const toggleTodayTaskDone = item => {
+    const key = todayKey(item);
+    saveToday("Mark done", todayItems.map(it => todayKey(it) === key ? {
+      ...it,
+      completedToday: !it.completedToday
+    } : it));
+  };
+  const resetToday = () => saveToday("Reset today", []);
+  const captureUndo = (label, taskIds) => {
+    const snapshots = taskIds.map(id => tasks.find(t => t.id === id)).filter(Boolean).map(t => ({
+      ...t
+    }));
+    if (!snapshots.length) return;
+    setUndo(label, () => {
+      snapshots.forEach(snap => db.collection(TASKS_COLLECTION).doc(snap.id).set(snap).catch(console.error));
+    });
+  };
+  const upsertTask = task => {
+    const {
+      id,
+      ...data
+    } = task;
+    const prev = tasks.find(t => t.id === id);
+    setUndo(prev ? "Edit task" : "New task", () => {
+      if (prev) db.collection(TASKS_COLLECTION).doc(id).set(prev).catch(console.error);else db.collection(TASKS_COLLECTION).doc(id).delete().catch(console.error);
+    });
+    db.collection(TASKS_COLLECTION).doc(id).set({
+      ...data,
+      updatedAt: Date.now()
+    }).catch(e => console.error("save failed", e));
+  };
+  const deleteTask = id => {
+    captureUndo("Delete task", [id]);
+    db.collection(TASKS_COLLECTION).doc(id).delete().catch(e => console.error(e));
+  };
+  const toggleComplete = task => {
+    captureUndo("Toggle complete", [task.id]);
+    const ref = db.collection(TASKS_COLLECTION).doc(task.id);
+    const rec = normRecurrence(task.recurrence);
+    if (!task.completed && rec.unit !== "none" && task.dueDate) {
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const base = rec.mode === "fixed" ? task.dueDate : todayStr;
+      const nextDue = addInterval(base, rec.unit, rec.amount);
+      ref.update({
+        dueDate: nextDue,
+        completed: false,
+        completedAt: null,
+        lastCompletedAt: Date.now()
+      }).catch(console.error);
+    } else {
+      const nowCompleting = !task.completed;
+      ref.update({
+        completed: nowCompleting,
+        completedAt: nowCompleting ? Date.now() : null,
+        lastCompletedAt: nowCompleting ? Date.now() : null
+      }).catch(console.error);
+    }
+  };
+  const updateActions = (taskId, actions) => db.collection(TASKS_COLLECTION).doc(taskId).update({
+    actions
+  }).catch(console.error);
+  const toggleAction = (taskId, actionId) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    captureUndo("Toggle subtask", [taskId]);
+    updateActions(taskId, (task.actions || []).map(a => a.id === actionId ? {
+      ...a,
+      completed: !a.completed
+    } : a));
+  };
+  const addAction = (taskId, title) => {
+    if (!title.trim()) return;
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    captureUndo("Add subtask", [taskId]);
+    updateActions(taskId, [...(task.actions || []), {
+      id: uid(),
+      title: title.trim(),
+      completed: false,
+      dueDate: null
+    }]);
+  };
+  const deleteAction = (taskId, actionId) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    captureUndo("Delete subtask", [taskId]);
+    updateActions(taskId, (task.actions || []).filter(a => a.id !== actionId));
+  };
+  const reorderAction = (taskId, actionId, dir) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    const idx = (task.actions || []).findIndex(a => a.id === actionId);
+    if (idx < 0) return;
+    captureUndo("Reorder subtasks", [taskId]);
+    updateActions(taskId, moveAction(task.actions || [], idx, dir));
+  };
+  const setTaskActions = (taskId, actions) => {
+    captureUndo("Reorder subtasks", [taskId]);
+    updateActions(taskId, actions);
+  };
+  const setActionDueDate = (taskId, actionId, date) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    captureUndo("Set subtask date", [taskId]);
+    updateActions(taskId, (task.actions || []).map(a => a.id === actionId ? {
+      ...a,
+      dueDate: date || null
+    } : a));
+  };
+  const setTaskDueDate = (taskId, date) => {
+    captureUndo("Change due date", [taskId]);
+    db.collection(TASKS_COLLECTION).doc(taskId).update({
+      dueDate: date
+    }).catch(console.error);
+  };
+  /* "Not today" postponement — hides from the to-do list without touching the real due date, so overdue/stale
+     status stays honest. Chores get it on the task itself; project subtasks get it on the specific subtask.
+     Keyed per-person: postponing a shared or unassigned task only hides it for the person who postponed it. */
+  const setTaskHiddenUntil = (taskId, date) => {
+    captureUndo("Postpone", [taskId]);
+    db.collection(TASKS_COLLECTION).doc(taskId).update({
+      [`hiddenUntil.${me}`]: date
+    }).catch(console.error);
+  };
+  const setActionHiddenUntil = (taskId, actionId, date) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    captureUndo("Postpone", [taskId]);
+    updateActions(taskId, (task.actions || []).map(a => a.id === actionId ? {
+      ...a,
+      hiddenUntil: {
+        ...(a.hiddenUntil || {}),
+        [me]: date
+      }
+    } : a));
+  };
+  /* manual "add to to-do list" — lets a date-less chore or an unpinned project show up in the to-do list
+     even though it wouldn't qualify automatically. Independent of pinning/priority and of the plan. */
+  const toggleManualTodo = taskId => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    captureUndo("To-do list", [taskId]);
+    db.collection(TASKS_COLLECTION).doc(taskId).update({
+      manualTodo: !task.manualTodo
+    }).catch(console.error);
+  };
+
+  /* scope-aware: pinning a task only clears the previous occupant of that slot
+     if the previous occupant was pinned from the SAME scope (personal vs shared) — personal and
+     shared pins for the same person+bucket are independent of each other. */
+  const setBucket = (taskId, person, bucket, scope) => {
+    const affected = [taskId, ...tasks.filter(t => t.id !== taskId && t.scope === scope && t.gridBucket && t.gridBucket[person] === bucket).map(t => t.id)];
+    captureUndo("Pin priority", affected);
+    db.collection(TASKS_COLLECTION).doc(taskId).update({
+      [`gridBucket.${person}`]: bucket
+    }).catch(console.error);
+    tasks.forEach(t => {
+      if (t.id !== taskId && t.scope === scope && t.gridBucket && t.gridBucket[person] === bucket) {
+        db.collection(TASKS_COLLECTION).doc(t.id).update({
+          [`gridBucket.${person}`]: firebase.firestore.FieldValue.delete()
+        }).catch(console.error);
+      }
+    });
+  };
+  const clearBucket = (taskId, person) => {
+    captureUndo("Unpin priority", [taskId]);
+    db.collection(TASKS_COLLECTION).doc(taskId).update({
+      [`gridBucket.${person}`]: firebase.firestore.FieldValue.delete()
+    }).catch(console.error);
+  };
+  const visibleTasks = useMemo(() => (tasks || []).filter(t => t.scope === "shared" || t.owner === me), [tasks, me]);
+  const searchResults = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return visibleTasks.filter(t => t.title.toLowerCase().includes(q)).slice(0, 8);
+  }, [searchQuery, visibleTasks]);
+  const needsDetailsTasks = useMemo(() => (tasks || []).filter(t => t.needsDetails && t.createdBy === me), [tasks, me]);
+  if (authReady === null) return /*#__PURE__*/<Shell><div style={centerMsg}>Loading…</div></Shell>;
+  if (authReady === false) return /*#__PURE__*/<Shell><PinGate /></Shell>;
+  if (!me) {
+    return /*#__PURE__*/<Shell><div style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        height: "100%",
+        gap: 18,
+        padding: 24
+      }}><div style={{
+          fontFamily: "Fraunces, serif",
+          fontSize: 26,
+          color: C.ink,
+          textAlign: "center"
+        }}>Who's checking in?</div><div style={{
+          fontSize: 13,
+          color: C.inkSoft,
+          textAlign: "center",
+          maxWidth: 260
+        }}>Bookmark this page with <code>?user=jade</code> or <code>?user=john</code> on the end of the URL to always land on your view.</div><div style={{
+          display: "flex",
+          gap: 12
+        }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
+  }
+  if (tasks === null) return /*#__PURE__*/<Shell><div style={centerMsg}>Loading the list…</div></Shell>;
+  return /*#__PURE__*/<Shell><Header me={me} view={view} setView={setView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
+      setSearchQuery("");
+      setView("queue");
+      setTypeFilter(t.listType);
+      if (t.listType === "chore") {
+        setChoreFilter("all");
+      } else {
+        setProjectScope(t.scope || "shared");
+        setProjectFilter("all");
+      }
+      setHighlightTaskId(t.id);
+    }} />{configError && /*#__PURE__*/<div style={{
+      background: C.plum,
+      color: C.white,
+      fontSize: 11,
+      padding: "6px 16px",
+      textAlign: "center"
+    }}>Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too.</div>}{view === "grid" ? /*#__PURE__*/<PriorityGrid tasks={tasks} me={me} viewingPerson={priorityViewPerson || me} setViewingPerson={setPriorityViewPerson} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={t => {
+      setEditing(t);
+      setShowForm(true);
+    }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={t => {
+      setEditing(t);
+      setShowForm(true);
+    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectScope={projectScope} setProjectScope={setProjectScope} projectFilter={projectFilter} setProjectFilter={setProjectFilter} typeFilter={typeFilter} setTypeFilter={setTypeFilter} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
+      setEditing(t);
+      setShowForm(true);
+    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onToggleManualTodo={toggleManualTodo} />}<button onClick={() => {
+      setEditing(null);
+      setShowForm(true);
+    }} style={{
+      position: "absolute",
+      right: 18,
+      bottom: 22,
+      width: 52,
+      height: 52,
+      borderRadius: "50%",
+      background: C.ink,
+      color: C.white,
+      border: "none",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      boxShadow: "0 6px 16px rgba(43,42,40,0.28)",
+      cursor: "pointer",
+      fontSize: 24
+    }} aria-label="Add task">+</button>{showForm && /*#__PURE__*/<TaskForm me={me} initial={editing} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => setShowForm(false)} onSave={t => {
+      upsertTask(t);
+      setShowForm(false);
+    }} onDelete={id => {
+      deleteTask(id);
+      setShowForm(false);
+    }} />}{showNeedsDetails && /*#__PURE__*/<NeedsDetailsList tasks={needsDetailsTasks} onClose={() => setShowNeedsDetails(false)} onPick={t => {
+      setEditing(t);
+      setShowForm(true);
+      setShowNeedsDetails(false);
+    }} />}{pickerFor && /*#__PURE__*/<BucketPicker tasks={tasks.filter(t => t.listType === "project" && !t.completed && (pickerFor.scope === "shared" ? t.scope === "shared" && (t.assignee === pickerFor.person || !t.assignee) : t.scope === "personal" && t.owner === pickerFor.person) && (!t.priorityBucket || t.priorityBucket === pickerFor.bucket))} onPick={taskId => {
+      setBucket(taskId, pickerFor.person, pickerFor.bucket, pickerFor.scope);
+      setPickerFor(null);
+    }} onClose={() => setPickerFor(null)} />}</Shell>;
+}
+const centerMsg = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  height: "100%",
+  color: "#5C574C",
+  fontFamily: "Fraunces, serif"
+};
+
+/* ---------- PIN gate ---------- */
+function PinGate() {
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = () => {
+    if (!pin.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    auth.signInWithEmailAndPassword(HOUSEHOLD_EMAIL, pin).catch(() => setError("Wrong PIN — try again.")).finally(() => setBusy(false));
+  };
+  return /*#__PURE__*/<div style={{
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    height: "100%",
+    gap: 14,
+    padding: 24
+  }}><div style={{
+      fontFamily: "Fraunces, serif",
+      fontSize: 24,
+      color: C.ink,
+      textAlign: "center"
+    }}>Enter the household PIN</div><input type="password" inputMode="numeric" autoFocus={true} value={pin} onChange={e => setPin(e.target.value)} onKeyDown={e => {
+      if (e.key === "Enter") submit();
+    }} style={{
+      ...inputStyle,
+      width: 200,
+      textAlign: "center",
+      letterSpacing: 4,
+      fontSize: 18
+    }} />{error && /*#__PURE__*/<div style={{
+      color: C.plum,
+      fontSize: 12.5
+    }}>{error}</div>}<button onClick={submit} disabled={busy || !pin.trim()} style={{
+      ...btnStyle(C.ink),
+      opacity: busy || !pin.trim() ? 0.5 : 1
+    }}>{busy ? "Checking…" : "Unlock"}</button></div>;
+}
+
+/* ---------- shell ---------- */
+function Shell({
+  children
+}) {
+  return /*#__PURE__*/<div className="app-shell-height" style={{
+    position: "relative",
+    width: "100%",
+    maxWidth: 480,
+    margin: "0 auto",
+    background: C.parchment,
+    fontFamily: "Inter, sans-serif",
+    overflow: "hidden",
+    paddingBottom: "env(safe-area-inset-bottom)",
+    boxSizing: "border-box"
+  }}>{children}</div>;
+}
+function btnStyle(bg) {
+  return {
+    padding: "12px 22px",
+    borderRadius: 10,
+    border: "none",
+    background: bg,
+    color: C.white,
+    fontSize: 15,
+    fontWeight: 600,
+    cursor: "pointer"
+  };
+}
+function Header({
+  me,
+  view,
+  setView,
+  needsDetailsCount,
+  onOpenNeedsDetails,
+  undoLabel,
+  onUndo,
+  searchQuery,
+  setSearchQuery,
+  searchResults,
+  onSelectSearchResult
+}) {
+  return /*#__PURE__*/<div style={{
+    padding: "18px 18px 10px",
+    borderBottom: `1px solid ${C.rule}`,
+    position: "relative"
+  }}><div style={{
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "baseline"
+    }}><div style={{
+        fontFamily: "Fraunces, serif",
+        fontSize: 22,
+        fontWeight: 600,
+        color: C.ink
+      }}>Our Life List</div><div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }}>{needsDetailsCount > 0 && /*#__PURE__*/<button onClick={onOpenNeedsDetails} style={{
+          border: "none",
+          background: C.mustard,
+          color: C.white,
+          borderRadius: 20,
+          padding: "3px 9px",
+          fontSize: 10.5,
+          fontWeight: 700,
+          cursor: "pointer"
+        }}>{needsDetailsCount} need details</button>}<div style={{
+          fontSize: 11,
+          color: C.inkSoft
+        }}>viewing as {PEOPLE[me]}</div></div></div><div style={{
+      position: "absolute",
+      top: 4,
+      right: 8,
+      fontSize: 8.5,
+      color: C.rule
+    }}>{APP_VERSION}</div><div style={{
+      display: "flex",
+      gap: 8,
+      alignItems: "center",
+      marginTop: 12
+    }}><button onClick={onUndo} disabled={!undoLabel} style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        border: `1px solid ${C.rule}`,
+        background: undoLabel ? C.card : "transparent",
+        color: undoLabel ? C.inkSoft : C.rule,
+        borderRadius: 20,
+        padding: "6px 12px",
+        fontSize: 11,
+        fontWeight: 600,
+        cursor: undoLabel ? "pointer" : "default",
+        whiteSpace: "nowrap",
+        flexShrink: 0
+      }}>↺ {undoLabel ? `Undo ${undoLabel}` : "Undo"}</button><input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search tasks…" style={{
+        flex: 1,
+        minWidth: 0,
+        padding: "6px 12px",
+        borderRadius: 20,
+        border: `1px solid ${C.rule}`,
+        background: C.white,
+        fontSize: 12,
+        color: C.ink,
+        outline: "none",
+        boxSizing: "border-box"
+      }} /></div>{searchQuery.trim() && /*#__PURE__*/<div style={{
+      position: "absolute",
+      left: 18,
+      right: 18,
+      top: "100%",
+      background: C.white,
+      border: `1px solid ${C.rule}`,
+      borderRadius: 10,
+      marginTop: 4,
+      boxShadow: "0 8px 20px rgba(43,42,40,0.18)",
+      zIndex: 20,
+      maxHeight: 260,
+      overflowY: "auto"
+    }}>{searchResults.length === 0 && /*#__PURE__*/<div style={{
+        padding: "12px",
+        fontSize: 12.5,
+        color: C.inkSoft,
+        textAlign: "center"
+      }}>No matches.</div>}{searchResults.map(t => /*#__PURE__*/<button key={t.id} onMouseDown={e => e.preventDefault()} onClick={() => onSelectSearchResult(t)} style={{
+        display: "block",
+        width: "100%",
+        textAlign: "left",
+        border: "none",
+        borderBottom: `1px solid ${C.rule}`,
+        background: "none",
+        padding: "10px 12px",
+        cursor: "pointer"
+      }}><span style={{
+          fontSize: 13,
+          color: C.ink,
+          fontWeight: 600
+        }}>{t.title}</span><span style={{
+          fontSize: 10.5,
+          color: C.inkSoft,
+          marginLeft: 6
+        }}>{t.listType === "chore" ? "Chore" : "Project"}</span></button>)}</div>}<div style={{
+      display: "flex",
+      gap: 8,
+      marginTop: 14
+    }}><TabButton active={view === "todo"} onClick={() => setView("todo")} label="To-do list" /><TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" /><TabButton active={view === "queue"} onClick={() => setView("queue")} label="Tasks" /></div></div>;
+}
+function TabButton({
+  active,
+  onClick,
+  label
+}) {
+  return /*#__PURE__*/<button onClick={onClick} style={{
+    flex: 1,
+    padding: "9px 0",
+    borderRadius: 8,
+    border: `1px solid ${active ? C.ink : C.rule}`,
+    background: active ? C.ink : "transparent",
+    color: active ? C.white : C.inkSoft,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer"
+  }}>{label}</button>;
+}
+function PersonBadge({
+  person,
+  size = 20
+}) {
+  if (!person) return /*#__PURE__*/<span style={{
+    width: size,
+    height: size,
+    borderRadius: "50%",
+    background: C.rule,
+    flexShrink: 0,
+    display: "inline-block"
+  }} />;
+  return /*#__PURE__*/<span style={{
+    fontSize: size <= 20 ? 9 : 10,
+    fontWeight: 700,
+    color: C.white,
+    background: PERSON_COLOR[person],
+    borderRadius: "50%",
+    width: size,
+    height: size,
+    flexShrink: 0,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center"
+  }}>{PERSON_CODE[person]}</span>;
+}
+function FilterChip({
+  active,
+  onClick,
+  label,
+  activeColor,
+  activeTint
+}) {
+  const c = activeColor || C.ink;
+  const tint = activeTint || C.card;
+  return /*#__PURE__*/<button onClick={onClick} style={{
+    flex: 1,
+    padding: "6px 0",
+    borderRadius: 20,
+    border: `1.5px solid ${active ? c : C.rule}`,
+    background: active ? tint : "transparent",
+    color: active ? c : C.inkSoft,
+    fontWeight: active ? 700 : 500,
+    fontSize: 12,
+    cursor: "pointer"
+  }}>{label}</button>;
+}
+
+/* ---------- priority grid ---------- */
+function PriorityGrid({
+  tasks,
+  me,
+  viewingPerson,
+  setViewingPerson,
+  onOpenPicker,
+  onClearBucket,
+  onToggleAction,
+  onEditTask
+}) {
+  const other = viewingPerson === "jade" ? "john" : "jade";
+  return /*#__PURE__*/<div style={{
+    padding: "16px 16px 12px",
+    height: "calc(100% - 150px)",
+    display: "flex",
+    flexDirection: "column"
+  }}><button onClick={() => setViewingPerson(other)} style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      border: "none",
+      background: "none",
+      padding: 0,
+      cursor: "pointer",
+      marginBottom: 14,
+      flexShrink: 0
+    }}><span style={{
+        fontFamily: "Fraunces, serif",
+        fontSize: 20,
+        fontWeight: 600,
+        color: C.ink
+      }}>{PEOPLE[viewingPerson]}</span>{viewingPerson === me && /*#__PURE__*/<span style={{
+        fontSize: 10,
+        background: C.sage,
+        color: C.white,
+        padding: "2px 7px",
+        borderRadius: 20
+      }}>you</span>}<span style={{
+        fontSize: 11,
+        color: C.inkSoft,
+        textDecoration: "underline"
+      }}>switch to {PEOPLE[other]}</span></button><div style={{
+      display: "grid",
+      gridTemplateColumns: "26px repeat(2, 1fr)",
+      gap: 6,
+      marginBottom: 6,
+      flexShrink: 0
+    }}><div />{[["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => /*#__PURE__*/<div key={scope} style={{
+        fontSize: 9.5,
+        color: C.inkSoft,
+        textTransform: "uppercase",
+        letterSpacing: 0.5,
+        fontWeight: 700,
+        textAlign: "center"
+      }}>{label}</div>)}</div><div style={{
+      flex: 1,
+      display: "flex",
+      flexDirection: "column",
+      gap: 8,
+      minHeight: 0
+    }}>{BUCKETS.map(b => /*#__PURE__*/<div key={b.key} style={{
+        display: "grid",
+        gridTemplateColumns: "26px repeat(2, 1fr)",
+        gap: 6,
+        flex: 1,
+        minHeight: 0
+      }}><div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center"
+        }}><span style={{
+            fontSize: 10.5,
+            color: C.inkSoft,
+            fontWeight: 700,
+            textTransform: "uppercase",
+            letterSpacing: 0.5,
+            writingMode: "vertical-rl",
+            transform: "rotate(180deg)"
+          }}>{b.label}</span></div>{[["personal"], ["shared"]].map(([scope]) => /*#__PURE__*/<GridCell key={scope} bucket={b} scope={scope} person={viewingPerson} tasks={tasks} onOpenPicker={onOpenPicker} onClearBucket={onClearBucket} onToggleAction={onToggleAction} onEditTask={onEditTask} />)}</div>)}</div></div>;
+}
+function GridCell({
+  bucket,
+  scope,
+  person,
+  tasks,
+  onOpenPicker,
+  onClearBucket,
+  onToggleAction,
+  onEditTask
+}) {
+  const pinned = tasks.find(t => t.gridBucket && t.gridBucket[person] === bucket.key && (scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === person));
+  const incomplete = pinned ? (pinned.actions || []).filter(a => !a.completed) : [];
+  return /*#__PURE__*/<div style={{
+    background: C.card,
+    border: `1px solid ${C.rule}`,
+    borderRadius: 10,
+    padding: 8,
+    position: "relative",
+    display: "flex",
+    flexDirection: "column",
+    overflow: "hidden"
+  }}>{pinned ? /*#__PURE__*/<div style={{
+      display: "flex",
+      flexDirection: "column",
+      height: "100%"
+    }}><div style={{
+        background: C.rule,
+        borderRadius: 6,
+        padding: "5px 7px",
+        height: 34,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center"
+      }}><button onClick={() => onEditTask(pinned)} style={{
+          width: "100%",
+          textAlign: "left",
+          border: "none",
+          background: "none",
+          padding: 0,
+          cursor: "pointer",
+          fontSize: 11.5,
+          color: C.ink,
+          fontWeight: 700,
+          lineHeight: 1.2,
+          overflow: "hidden",
+          display: "-webkit-box",
+          WebkitLineClamp: 2,
+          WebkitBoxOrient: "vertical"
+        }}>{pinned.title}</button></div>{incomplete.length > 0 ? /*#__PURE__*/<div style={{
+        marginTop: 5,
+        flex: 1,
+        overflowY: "auto",
+        minHeight: 0
+      }}><button onClick={() => onToggleAction(pinned.id, incomplete[0].id)} style={{
+          display: "block",
+          width: "100%",
+          textAlign: "left",
+          border: "none",
+          background: "none",
+          padding: 0,
+          cursor: "pointer"
+        }}><span style={{
+            fontSize: 12,
+            color: C.sageDeep,
+            fontWeight: 700,
+            lineHeight: 1.3
+          }}>Next: {incomplete[0].title}</span>{incomplete[0].dueDate && /*#__PURE__*/<span style={{
+            fontSize: 9.5,
+            color: C.inkSoft
+          }}> · {fmtDate(incomplete[0].dueDate)}</span>}</button>{incomplete.slice(1).map(a => /*#__PURE__*/<div key={a.id} onClick={() => onToggleAction(pinned.id, a.id)} style={{
+          fontSize: 9,
+          color: C.inkSoft,
+          opacity: 0.55,
+          marginTop: 3,
+          cursor: "pointer",
+          lineHeight: 1.3
+        }}>{a.title}</div>)}</div> : (pinned.actions || []).length > 0 ? /*#__PURE__*/<div style={{
+        fontSize: 10,
+        color: C.inkSoft,
+        marginTop: 4
+      }}>All subtasks done</div> : /*#__PURE__*/<div style={{
+        flex: 1
+      }} />}{pinned.notes && /*#__PURE__*/<div style={{
+        fontSize: 9.5,
+        color: C.inkSoft,
+        fontStyle: "italic",
+        marginTop: 4,
+        lineHeight: 1.3,
+        overflow: "hidden",
+        display: "-webkit-box",
+        WebkitLineClamp: 2,
+        WebkitBoxOrient: "vertical",
+        flexShrink: 0
+      }}>{pinned.notes}</div>}<div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginTop: 6,
+        flexShrink: 0
+      }}><span style={{
+          fontSize: 10,
+          color: C.inkSoft,
+          fontFamily: "IBM Plex Mono, monospace",
+          fontWeight: 600
+        }}>{fmtDate(pinned.dueDate)}</span><button onClick={() => onClearBucket(pinned.id, person)} style={{
+          border: "none",
+          background: "none",
+          cursor: "pointer",
+          color: C.inkSoft,
+          padding: 0,
+          fontSize: 13
+        }}>×</button></div></div> : /*#__PURE__*/<button onClick={() => onOpenPicker({
+      person,
+      scope,
+      bucket: bucket.key
+    })} style={{
+      width: "100%",
+      height: "100%",
+      minHeight: 34,
+      border: `1px dashed ${C.rule}`,
+      borderRadius: 6,
+      background: "transparent",
+      color: C.inkSoft,
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: 13
+    }}>📌</button>}</div>;
+}
+function BucketPicker({
+  tasks,
+  onPick,
+  onClose
+}) {
+  return /*#__PURE__*/<Overlay title="Pin to this slot" onClose={onClose}><div style={{
+      fontSize: 11.5,
+      color: C.inkSoft,
+      marginBottom: 10
+    }}>Showing projects already tagged for this bucket, or untagged ones. Chores don't appear here.</div>{tasks.length === 0 && /*#__PURE__*/<div style={{
+      color: C.inkSoft,
+      fontSize: 13,
+      padding: "8px 0"
+    }}>Nothing matches yet. Add or tag a project first.</div>}{tasks.map(t => /*#__PURE__*/<button key={t.id} onClick={() => onPick(t.id)} style={{
+      width: "100%",
+      textAlign: "left",
+      padding: "11px 12px",
+      marginBottom: 6,
+      borderRadius: 8,
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      cursor: "pointer",
+      fontSize: 13.5,
+      color: C.ink
+    }}>{t.title}<div style={{
+        fontSize: 10.5,
+        color: C.inkSoft,
+        marginTop: 2,
+        fontFamily: "IBM Plex Mono, monospace"
+      }}>{fmtDate(t.dueDate)}</div></button>)}</Overlay>;
+}
+function NeedsDetailsList({
+  tasks,
+  onPick,
+  onClose
+}) {
+  return /*#__PURE__*/<Overlay title="Finish these off" onClose={onClose}><div style={{
+      fontSize: 11.5,
+      color: C.inkSoft,
+      marginBottom: 10
+    }}>Tasks you added without full details. Tap one to fill it in properly.</div>{tasks.map(t => /*#__PURE__*/<button key={t.id} onClick={() => onPick(t)} style={{
+      width: "100%",
+      textAlign: "left",
+      padding: "11px 12px",
+      marginBottom: 6,
+      borderRadius: 8,
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      cursor: "pointer",
+      fontSize: 13.5,
+      color: C.ink
+    }}>{t.title}<div style={{
+        fontSize: 10.5,
+        color: C.inkSoft,
+        marginTop: 2
+      }}>{t.listType === "chore" ? "Chore" : "Project"}</div></button>)}</Overlay>;
+}
+
+/* ---------- to-do list: a simple first pass — urgent/pressing items across everything visible to me ---------- */
+const DAY_MS = 86400000;
+const SOON_DAYS = 3; // "due soon" window
+const STALE_DAYS_DEFAULT = 60; // fallback for one-off (non-recurring) tasks
+const LINGER_MS = 48 * 3600 * 1000; // how long a just-completed task stays visible
+
+function urgencyBand(dueDate, todayStr) {
+  if (!dueDate) return "none";
+  if (dueDate < todayStr) return "overdue";
+  const diff = Math.round((new Date(dueDate + "T00:00:00") - new Date(todayStr + "T00:00:00")) / DAY_MS);
+  if (diff <= SOON_DAYS) return "soon";
+  return "later";
+}
+/* approximate recurrence period in days, or null for one-off tasks */
+function recurrencePeriodDays(rec) {
+  const r = normRecurrence(rec);
+  if (r.unit === "none") return null;
+  if (r.unit === "day") return r.amount;
+  if (r.unit === "week") return r.amount * 7;
+  if (r.unit === "month") return r.amount * 30;
+  return null;
+}
+
+/* Strict two-level ranking: high/med importance ALWAYS outranks low/none, with zero exceptions.
+   Within that group, urgency (overdue > soon > later) decides order; importance is only a fine tiebreak. */
+function tierFor(dueDate, priority, todayStr) {
+  const group = priority === "high" || priority === "med" ? 0 : 1; // 0 = not-low, always first
+  const u = urgencyBand(dueDate, todayStr);
+  const urgencyRank = u === "overdue" ? 0 : u === "soon" ? 1 : 2;
+  const tie = priority === "high" ? 0 : priority === "med" ? 1 : priority === "low" ? 2 : 3;
+  return group * 100 + urgencyRank * 10 + tie;
+}
+
+/* a compact row representing a project's next action, standing in for the whole project */
+function ActionAsRow({
+  task,
+  action,
+  onToggleAction,
+  onEdit,
+  onSnooze,
+  onAddToToday,
+  onRestore,
+  onToggleManualTodo
+}) {
+  const overdue = action.dueDate && action.dueDate < new Date().toISOString().slice(0, 10);
+  const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
+  return /*#__PURE__*/<div style={{
+    background: C.card,
+    border: `1px solid ${C.rule}`,
+    borderRadius: 10,
+    padding: "11px 12px",
+    marginBottom: 8
+  }}><div style={{
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 10
+    }}><button onClick={() => onToggleAction(task.id, action.id)} style={{
+        width: 20,
+        height: 20,
+        borderRadius: "50%",
+        border: `2px solid ${imp ? imp.color : C.inkSoft}`,
+        background: "transparent",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        flexShrink: 0,
+        marginTop: 1
+      }} /><div style={{
+        flex: 1,
+        minWidth: 0
+      }}><div onClick={() => onEdit(task)} style={{
+          cursor: "pointer"
+        }}><div style={{
+            fontSize: 14,
+            color: C.ink,
+            fontWeight: 600
+          }}>{action.title}</div><div style={{
+            fontSize: 11,
+            color: C.inkSoft,
+            marginTop: 2
+          }}>↳ {task.title}</div><div style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 6,
+            marginTop: 5,
+            alignItems: "center"
+          }}>{imp && /*#__PURE__*/<Tag color={imp.color}>{imp.label}</Tag>}<span style={{
+              fontSize: 10.5,
+              fontFamily: "IBM Plex Mono, monospace",
+              color: overdue ? C.plum : C.inkSoft,
+              fontWeight: overdue ? 700 : 500
+            }}>{fmtDate(action.dueDate || task.dueDate)}</span></div></div>{onSnooze && /*#__PURE__*/<div style={{
+          marginTop: 6
+        }}><SnoozeControl onSnooze={onSnooze} /></div>}</div><div style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        alignItems: "stretch",
+        flexShrink: 0
+      }}>{onAddToToday && /*#__PURE__*/<button onClick={() => onAddToToday(task.id, action.id)} style={{
+          border: `1px solid ${C.rule}`,
+          background: C.white,
+          color: C.sageDeep,
+          cursor: "pointer",
+          padding: "2px 8px",
+          fontSize: 11,
+          fontWeight: 600,
+          borderRadius: 6,
+          whiteSpace: "nowrap"
+        }}>+ The plan</button>}{onToggleManualTodo && /*#__PURE__*/<button onClick={() => onToggleManualTodo(task.id)} style={{
+          border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
+          background: task.manualTodo ? "#E3EBDD" : C.white,
+          color: C.sageDeep,
+          cursor: "pointer",
+          padding: "2px 8px",
+          fontSize: 11,
+          fontWeight: 600,
+          borderRadius: 6,
+          whiteSpace: "nowrap"
+        }}>{task.manualTodo ? "− To-do list" : "+ To-do list"}</button>}{onRestore && /*#__PURE__*/<button onClick={() => onRestore()} style={{
+          border: `1px solid ${C.rule}`,
+          background: C.white,
+          color: C.sageDeep,
+          cursor: "pointer",
+          padding: "2px 8px",
+          fontSize: 11,
+          fontWeight: 600,
+          borderRadius: 6,
+          whiteSpace: "nowrap"
+        }}>Restore</button>}</div></div></div>;
+}
+function snoozeTarget(kind) {
+  const d = new Date();
+  if (kind === "tomorrow") d.setDate(d.getDate() + 1);else if (kind === "next-weekend") {
+    const day = d.getDay();
+    const diff = (6 - day + 7) % 7 || 7;
+    d.setDate(d.getDate() + diff);
+  } else if (kind === "next-month") d.setMonth(d.getMonth() + 1);
+  return d.toISOString().slice(0, 10);
+}
+const notStartableYet = (t, todayStr) => {
+  const eff = effectiveDueDate(t);
+  return t.startsOnDue && !!eff && eff > todayStr;
+};
+const isFadedTask = (t, todayStr) => notStartableYet(t, todayStr) && !t.completed;
+
+/* shared "not today" control — used on the hero card and, in overwhelmed mode, on every row */
+function SnoozeControl({
+  onSnooze
+}) {
+  const [mode, setMode] = useState("closed"); // closed | options | custom
+  const [customDate, setCustomDate] = useState("");
+  const pillStyle = {
+    background: C.ink,
+    color: C.white,
+    border: "1px solid rgba(255,255,255,0.25)",
+    borderRadius: 8,
+    padding: "5px 11px",
+    fontSize: 11,
+    fontWeight: 600,
+    cursor: "pointer"
+  };
+  const closeBtn = onClick => /*#__PURE__*/<button onClick={onClick} style={{
+    background: C.ink,
+    color: C.white,
+    border: "1px solid rgba(255,255,255,0.25)",
+    borderRadius: "50%",
+    width: 24,
+    height: 24,
+    fontSize: 13,
+    fontWeight: 700,
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 0
+  }}>×</button>;
+  if (mode === "closed") {
+    return /*#__PURE__*/<button onClick={() => setMode("options")} style={{
+      background: C.ink,
+      color: C.white,
+      border: "1px solid rgba(255,255,255,0.25)",
+      borderRadius: 20,
+      padding: "5px 14px",
+      fontSize: 11.5,
+      fontWeight: 700,
+      cursor: "pointer"
+    }}>Not today</button>;
+  }
+  if (mode === "custom") {
+    return /*#__PURE__*/<div style={{
+      display: "flex",
+      gap: 6,
+      flexWrap: "wrap",
+      alignItems: "center"
+    }}><input type="date" value={customDate} onChange={e => setCustomDate(e.target.value)} style={{
+        fontSize: 12,
+        padding: "5px 8px",
+        borderRadius: 8,
+        border: "1px solid rgba(255,255,255,0.3)",
+        background: C.ink,
+        color: C.white
+      }} /><button onClick={() => {
+        if (customDate) {
+          onSnooze(customDate);
+          setMode("closed");
+        }
+      }} disabled={!customDate} style={{
+        ...pillStyle,
+        opacity: customDate ? 1 : 0.5
+      }}>Set</button>{closeBtn(() => setMode("closed"))}</div>;
+  }
+  return /*#__PURE__*/<div style={{
+    display: "flex",
+    gap: 6,
+    flexWrap: "wrap",
+    alignItems: "center"
+  }}>{[["tomorrow", "Tomorrow"], ["next-weekend", "Next weekend"], ["next-month", "Next month"]].map(([k, l]) => /*#__PURE__*/<button key={k} onClick={() => {
+      onSnooze(snoozeTarget(k));
+      setMode("closed");
+    }} style={pillStyle}>{l}</button>)}<button onClick={() => setMode("custom")} style={pillStyle}>Custom date</button>{closeBtn(() => setMode("closed"))}</div>;
+}
+
+/* prominent hero card for "overwhelmed" mode — visually set apart from everything else */
+function HeroCard({
+  pick,
+  onToggle,
+  onToggleAction,
+  onEdit,
+  onSnooze
+}) {
+  const isProject = pick.kind === "project" || pick.kind === "otherProject";
+  const task = isProject ? pick.item.task : pick.item;
+  const driving = isProject ? pick.item.action : drivingSubtask(task);
+  const title = driving ? driving.title : task.title;
+  const dueDate = driving ? driving.dueDate || task.dueDate : effectiveDueDate(task);
+  const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
+  return /*#__PURE__*/<div style={{
+    background: C.ink,
+    color: C.white,
+    borderRadius: 20,
+    padding: "30px 24px",
+    textAlign: "center",
+    boxShadow: "0 14px 34px rgba(43,42,40,0.3)",
+    marginBottom: 18
+  }}><div style={{
+      fontSize: 10,
+      opacity: 0.55,
+      marginBottom: 10,
+      textTransform: "uppercase",
+      letterSpacing: 1
+    }}>Most pressing right now</div>{driving && /*#__PURE__*/<div style={{
+      fontSize: 11,
+      opacity: 0.6,
+      marginBottom: 8,
+      textTransform: "uppercase",
+      letterSpacing: 0.5
+    }}>from {task.title}</div>}{imp && /*#__PURE__*/<div style={{
+      display: "inline-block",
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: 0.5,
+      textTransform: "uppercase",
+      background: imp.color,
+      color: C.white,
+      padding: "3px 11px",
+      borderRadius: 20,
+      marginBottom: 14
+    }}>{imp.label} importance</div>}<div style={{
+      fontFamily: "Fraunces, serif",
+      fontSize: 26,
+      fontWeight: 600,
+      lineHeight: 1.25,
+      marginBottom: 12
+    }}>{title}</div><div style={{
+      fontFamily: "IBM Plex Mono, monospace",
+      fontSize: 13,
+      opacity: 0.8,
+      marginBottom: 22
+    }}>{fmtDate(dueDate)}</div><div style={{
+      display: "flex",
+      gap: 10,
+      justifyContent: "center",
+      marginBottom: 18
+    }}><button onClick={() => driving ? onToggleAction(task.id, driving.id) : onToggle(task)} style={{
+        background: C.white,
+        color: C.ink,
+        border: "none",
+        borderRadius: 10,
+        padding: "11px 22px",
+        fontWeight: 700,
+        fontSize: 14,
+        cursor: "pointer"
+      }}>Done</button><button onClick={() => onEdit(task)} style={{
+        background: "transparent",
+        color: C.white,
+        border: "1px solid rgba(255,255,255,0.4)",
+        borderRadius: 10,
+        padding: "11px 18px",
+        fontSize: 14,
+        cursor: "pointer"
+      }}>Open</button></div><div style={{
+      display: "flex",
+      justifyContent: "center"
+    }}><SnoozeControl onSnooze={onSnooze} /></div></div>;
+}
+function upcomingLeadDays(periodDays) {
+  if (periodDays == null) return 7; // one-off tasks: a week's notice before their single due date
+  if (periodDays >= 300) return 30; // yearly-ish
+  if (periodDays >= 150) return 14; // ~6-monthly
+  if (periodDays >= 7) return 3; // weekly through ~5-monthly
+  return 1; // more frequent than weekly
+}
+/* A recurring chore only clutters the main Chores list once it's actually due or close to due — this applies
+   the same lead-window scaling as Upcoming to EVERY recurring chore, not just ones with "Due date is do date"
+   checked. Completing a monthly chore today rolls its due date a month out, and it should disappear from the
+   list until it's genuinely relevant again, without needing that box ticked. One-off (non-repeating) chores
+   are unaffected — they keep showing regardless of distance, same as always. */
+function withinLeadWindow(t, todayStr) {
+  const eff = effectiveDueDate(t);
+  if (!eff || eff <= todayStr) return true;
+  const period = recurrencePeriodDays(t.recurrence);
+  if (!period) return true;
+  const daysUntil = Math.round((new Date(eff + "T00:00:00") - new Date(todayStr + "T00:00:00")) / DAY_MS);
+  return daysUntil <= upcomingLeadDays(period);
+}
+function ToDoList({
+  tasks,
+  me,
+  onToggle,
+  onEdit,
+  onDelete,
+  onToggleAction,
+  onAddAction,
+  onDeleteAction,
+  onReorderAction,
+  onSetTaskActions,
+  onSetActionDueDate,
+  onSetTaskDueDate,
+  onSetTaskHiddenUntil,
+  onSetActionHiddenUntil,
+  onToggleManualTodo,
+  todayItems,
+  onAddSundry,
+  onToggleSundry,
+  onDeleteSundry,
+  onAddTaskToToday,
+  onRemoveTaskFromToday,
+  onReorderToday,
+  onReorderTodayBucketFull,
+  onResetToday,
+  onSetTodayBucket,
+  onToggleTodayTaskDone
+}) {
+  const [overwhelmed, setOverwhelmed] = useState(false);
+  const today = new Date().toISOString().slice(0, 10);
+  const now = Date.now();
+
+  // "just checked off" linger: keep a task looking done, in its original spot, for ~5s before it actually
+  // moves to Recently Completed — without this, a task (especially a recurring one, whose due date jumps
+  // forward immediately) would vanish from view the instant you tap it, with no visible confirmation.
+  const [pendingComplete, setPendingComplete] = useState({}); // taskId -> { snapshot, expiry }
+  useEffect(() => {
+    const entries = Object.entries(pendingComplete);
+    if (!entries.length) return;
+    const timers = entries.map(([id, {
+      expiry
+    }]) => setTimeout(() => setPendingComplete(p => {
+      const n = {
+        ...p
+      };
+      delete n[id];
+      return n;
+    }), Math.max(expiry - Date.now(), 0)));
+    return () => timers.forEach(clearTimeout);
+  }, [pendingComplete]);
+  const wrappedToggle = task => {
+    if (!task.completed) {
+      setPendingComplete(p => ({
+        ...p,
+        [task.id]: {
+          snapshot: {
+            ...task,
+            completed: true
+          },
+          expiry: Date.now() + 5000
+        }
+      }));
+    }
+    onToggle(task);
+  };
+  const effectiveTasks = useMemo(() => tasks.map(t => pendingComplete[t.id] ? pendingComplete[t.id].snapshot : t), [tasks, pendingComplete]);
+  const assignedToMe = useMemo(() => effectiveTasks.filter(t => t.scope === "personal" ? t.owner === me : t.assignee === me || !t.assignee), [effectiveTasks, me]);
+  const justDone = useMemo(() => tasks.filter(t => t.lastCompletedAt && now - t.lastCompletedAt < LINGER_MS && !pendingComplete[t.id]).sort((a, b) => (b.lastCompletedAt || 0) - (a.lastCompletedAt || 0)), [tasks, now, pendingComplete]);
+
+  // upcoming: recurring, "due date is start date" tasks approaching their window — computed before the
+  // not-startable-yet exclusion below, since this IS how those tasks get any visibility before they're due.
+  // Uses effective date, so a subtask due sooner correctly pulls the task out of Upcoming and into the active list.
+  const upcoming = useMemo(() => assignedToMe.filter(t => {
+    if (t.completed || !t.startsOnDue) return false;
+    const eff = effectiveDueDate(t);
+    if (!eff || eff <= today) return false;
+    const period = recurrencePeriodDays(t.recurrence); // null for one-off tasks — upcomingLeadDays handles that
+    const daysUntil = Math.round((new Date(eff + "T00:00:00") - new Date(today + "T00:00:00")) / DAY_MS);
+    return daysUntil <= upcomingLeadDays(period);
+  }).sort((a, b) => (effectiveDueDate(a) || "9999").localeCompare(effectiveDueDate(b) || "9999")), [assignedToMe, today]);
+  const isHidden = t => t.hiddenUntil && t.hiddenUntil[me] && t.hiddenUntil[me] > today;
+  const isActionHidden = a => a.hiddenUntil && a.hiddenUntil[me] && a.hiddenUntil[me] > today;
+  const active = useMemo(() => assignedToMe.filter(t => (!t.completed || pendingComplete[t.id]) && !notStartableYet(t, today) && !isHidden(t)), [assignedToMe, today, pendingComplete]);
+
+  // postponed ("not today"): due date untouched, so these still show their true overdue state wherever displayed —
+  // only hidden from the ranked to-do list (for the person who postponed it) until hiddenUntil passes, then it
+  // quietly reappears on its own.
+  const postponedChores = useMemo(() => assignedToMe.filter(t => !t.completed && t.listType === "chore" && isHidden(t)), [assignedToMe, today]);
+  const postponedProjectItems = useMemo(() => assignedToMe.filter(t => !t.completed && t.listType === "project").map(t => ({
+    task: t,
+    action: (t.actions || []).find(a => !a.completed && isActionHidden(a))
+  })).filter(({
+    action
+  }) => !!action), [assignedToMe, today]);
+
+  // chores: dated (own date, or a nearer subtask date) OR manually added despite having no date; ranked by
+  // tier on the effective date, with date-less manual adds sorting to the bottom of their importance group.
+  // Recurring chores only appear once within their lead window (or overdue) — see withinLeadWindow.
+  const chores = useMemo(() => active.filter(t => t.listType === "chore" && (!!effectiveDueDate(t) || t.manualTodo)).filter(t => t.manualTodo || withinLeadWindow(t, today)).sort((a, b) => {
+    const da = effectiveDueDate(a),
+      db = effectiveDueDate(b);
+    const ta = tierFor(da, a.priority, today),
+      tb = tierFor(db, b.priority, today);
+    if (ta !== tb) return ta - tb;
+    return (da || "9999").localeCompare(db || "9999");
+  }), [active, today]);
+
+  // Priority Projects: pinned in the Priorities grid for the viewed person — their first/next action always
+  // shows, even with no priority or due date of its own (falls back to the project's own date, or no date at all).
+  // if that next action was postponed, the project sits out of the to-do list until it passes.
+  // Projects with no incomplete subtask at all just display as themselves (no action to show instead).
+  const priorityProjectItems = useMemo(() => {
+    const items = active.filter(t => t.listType === "project" && t.gridBucket && t.gridBucket[me]).map(t => ({
+      task: t,
+      action: nextAction(t)
+    })).filter(({
+      action
+    }) => !(action && isActionHidden(action)));
+    return items.sort((a, b) => {
+      const da = a.action && a.action.dueDate || a.task.dueDate,
+        db = b.action && b.action.dueDate || b.task.dueDate;
+      const ta = tierFor(da, a.task.priority, today),
+        tb = tierFor(db, b.task.priority, today);
+      if (ta !== tb) return ta - tb;
+      return (da || "9999").localeCompare(db || "9999");
+    });
+  }, [active, me, today]);
+
+  // Other Projects: manually added but not pinned — shown the same way, just ranked below Priority Projects
+  const otherProjectItems = useMemo(() => {
+    const items = active.filter(t => t.listType === "project" && t.manualTodo && !(t.gridBucket && t.gridBucket[me])).map(t => ({
+      task: t,
+      action: nextAction(t)
+    })).filter(({
+      action
+    }) => !(action && isActionHidden(action)));
+    return items.sort((a, b) => {
+      const da = a.action && a.action.dueDate || a.task.dueDate,
+        db = b.action && b.action.dueDate || b.task.dueDate;
+      const ta = tierFor(da, a.task.priority, today),
+        tb = tierFor(db, b.task.priority, today);
+      if (ta !== tb) return ta - tb;
+      return (da || "9999").localeCompare(db || "9999");
+    });
+  }, [active, me, today]);
+  // kept as an alias so the rest of this component (topPick, overwhelmed exclusion, etc.) reads naturally
+  const projectItems = priorityProjectItems;
+  const rowProps = {
+    me,
+    onToggle: wrappedToggle,
+    onEdit,
+    onDelete,
+    onToggleAction,
+    onAddAction,
+    onDeleteAction,
+    onReorderAction,
+    onSetTaskActions,
+    onSetActionDueDate
+  };
+
+  // the single most urgent thing across chores + project actions, for the overwhelmed spotlight
+  const topPick = useMemo(() => {
+    const choreTop = chores[0] ? {
+      kind: "chore",
+      tier: tierFor(effectiveDueDate(chores[0]), chores[0].priority, today),
+      item: chores[0]
+    } : null;
+    const projTop = projectItems[0] ? {
+      kind: "project",
+      tier: tierFor(projectItems[0].action && projectItems[0].action.dueDate || projectItems[0].task.dueDate, projectItems[0].task.priority, today),
+      item: projectItems[0]
+    } : null;
+    const otherTop = otherProjectItems[0] ? {
+      kind: "otherProject",
+      tier: tierFor(otherProjectItems[0].action && otherProjectItems[0].action.dueDate || otherProjectItems[0].task.dueDate, otherProjectItems[0].task.priority, today),
+      item: otherProjectItems[0]
+    } : null;
+    const candidates = [choreTop, projTop, otherTop].filter(Boolean);
+    if (!candidates.length) return null;
+    candidates.sort((a, b) => a.tier - b.tier);
+    return candidates[0];
+  }, [chores, projectItems, otherProjectItems, today]);
+
+  // "Not today" postpones — real due date is left alone, so overdue/stale status stays honest; the item just
+  // moves into the Postponed section until the chosen date, then quietly reappears in normal rank.
+  const snoozeChore = (task, dateStr) => onSetTaskHiddenUntil(task.id, dateStr);
+  const snoozeProjectAction = (task, action, dateStr) => onSetActionHiddenUntil(task.id, action.id, dateStr);
+  const sameItem = (a, b) => a.task.id === b.task.id && (a.action ? a.action.id : null) === (b.action ? b.action.id : null);
+  const displayChores = overwhelmed && topPick && topPick.kind === "chore" ? chores.filter(t => t.id !== topPick.item.id) : chores;
+  const displayProjects = overwhelmed && topPick && topPick.kind === "project" ? projectItems.filter(item => !sameItem(item, topPick.item)) : projectItems;
+  const displayOtherProjects = overwhelmed && topPick && topPick.kind === "otherProject" ? otherProjectItems.filter(item => !sameItem(item, topPick.item)) : otherProjectItems;
+  const inPlan = (taskId, subtaskId) => todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null));
+  const tasksById = useMemo(() => {
+    const m = {};
+    tasks.forEach(t => {
+      m[t.id] = t;
+    });
+    return m;
+  }, [tasks]);
+  return /*#__PURE__*/<div style={{
+    height: "calc(100% - 120px)",
+    overflowY: "auto",
+    padding: "14px 16px 90px"
+  }}><button onClick={() => setOverwhelmed(o => !o)} style={{
+      width: "100%",
+      border: `1px solid ${C.rule}`,
+      background: overwhelmed ? C.ink : C.card,
+      color: overwhelmed ? C.white : C.inkSoft,
+      borderRadius: 8,
+      padding: "7px 0",
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      marginBottom: 12
+    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button>{overwhelmed && topPick && /*#__PURE__*/<HeroCard pick={topPick} onToggle={wrappedToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={dateStr => {
+      if (topPick.kind === "project" || topPick.kind === "otherProject") {
+        if (topPick.item.action) snoozeProjectAction(topPick.item.task, topPick.item.action, dateStr);else snoozeChore(topPick.item.task, dateStr);
+        return;
+      }
+      const driving = drivingSubtask(topPick.item);
+      if (driving) snoozeProjectAction(topPick.item, driving, dateStr);else snoozeChore(topPick.item, dateStr);
+    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} />{displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/<div style={{
+      color: C.inkSoft,
+      fontSize: 13,
+      textAlign: "center",
+      marginTop: 40
+    }}>Nothing pressing right now.</div>}{displayChores.length > 0 && /*#__PURE__*/<CollapsibleSection title="Chores" count={displayChores.length} defaultOpen={true}>{displayChores.map(t => {
+        const driving = drivingSubtask(t);
+        return driving ? /*#__PURE__*/<ActionAsRow key={t.id} task={t} action={driving} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(t, driving, dateStr) : undefined} onAddToToday={inPlan(t.id, driving.id) ? undefined : onAddTaskToToday} onToggleManualTodo={t.manualTodo ? onToggleManualTodo : undefined} /> : /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(t, dateStr) : undefined} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={t.manualTodo ? onToggleManualTodo : undefined} />;
+      })}</CollapsibleSection>}{displayProjects.length > 0 && /*#__PURE__*/<CollapsibleSection title="Priority Projects" count={displayProjects.length} defaultOpen={true}>{displayProjects.map(({
+        task,
+        action
+      }) => {
+        const d = action && action.dueDate || task.dueDate;
+        const notYetDue = !!d && d > today;
+        return /*#__PURE__*/<div key={task.id + (action ? action.id : "")} style={notYetDue ? {
+          opacity: 0.55
+        } : undefined}>{action ? /*#__PURE__*/<ActionAsRow task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? kind => snoozeProjectAction(task, action, kind) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} /> : /*#__PURE__*/<TaskRow task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} />}</div>;
+      })}</CollapsibleSection>}{displayOtherProjects.length > 0 && /*#__PURE__*/<CollapsibleSection title="Other Projects" count={displayOtherProjects.length} defaultOpen={true}>{displayOtherProjects.map(({
+        task,
+        action
+      }) => action ? /*#__PURE__*/<ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(task, action, dateStr) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} /> : /*#__PURE__*/<TaskRow key={task.id} task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} />)}</CollapsibleSection>}<CollapsibleSection title="Postponed" count={postponedChores.length + postponedProjectItems.length} defaultOpen={false}><div style={{
+        fontSize: 11,
+        color: C.inkSoft,
+        marginBottom: 6
+      }}>Marked "not today" — still overdue if they were, just out of the way until the date you picked.</div>{postponedChores.length === 0 && postponedProjectItems.length === 0 && /*#__PURE__*/<div style={{
+        color: C.inkSoft,
+        fontSize: 12,
+        textAlign: "center",
+        padding: "10px 0"
+      }}>Nothing postponed right now.</div>}{postponedChores.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onRestore={() => onSetTaskHiddenUntil(t.id, null)} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}{postponedProjectItems.map(({
+        task,
+        action
+      }) => /*#__PURE__*/<ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onRestore={() => onSetActionHiddenUntil(task.id, action.id, null)} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} />)}</CollapsibleSection><CollapsibleSection title="Upcoming" count={upcoming.length} defaultOpen={false}><div style={{
+        fontSize: 11,
+        color: C.inkSoft,
+        marginBottom: 6
+      }}>Recurring, can't-start-early tasks whose window is approaching.</div>{upcoming.length === 0 && /*#__PURE__*/<div style={{
+        color: C.inkSoft,
+        fontSize: 12,
+        textAlign: "center",
+        padding: "10px 0"
+      }}>Nothing coming up yet.</div>}{upcoming.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}</CollapsibleSection>{justDone.length > 0 && /*#__PURE__*/<CollapsibleSection title="Recently completed" count={justDone.length} defaultOpen={false}>{justDone.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} showAsCompleted={true} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}</CollapsibleSection>}</div>;
+}
+
+/* compact "Today's plan" — just titles, sits at the top of the list like the hero card does for overwhelmed mode */
+function TodayItemRow({
+  item,
+  tasksById,
+  onToggleSundry,
+  onDeleteSundry,
+  onRemoveTask,
+  onToggle,
+  onToggleAction,
+  onEdit,
+  onMove,
+  moveLabel,
+  onToggleTodayTaskDone,
+  startDrag
+}) {
+  const task = item.type === "task" ? tasksById[item.id] : null;
+  const subtask = task && item.subtaskId ? (task.actions || []).find(a => a.id === item.subtaskId) : null;
+  let title, completed, onCheck;
+  if (item.type === "sundry") {
+    title = item.title;
+    completed = item.completed;
+    onCheck = () => onToggleSundry(item.id);
+  } else if (task) {
+    // "completedToday" is a local, always-visible checkmark separate from the task's real completion state —
+    // this is what makes recurring chores (which immediately reset completed:false when done) still show as checked here.
+    title = subtask ? subtask.title : task.title;
+    completed = !!item.completedToday;
+    onCheck = () => {
+      if (subtask) onToggleAction(task.id, subtask.id);else onToggle(task);
+      onToggleTodayTaskDone(item);
+    };
+  } else {
+    title = "(removed)";
+    completed = false;
+    onCheck = () => {};
+  }
+  return /*#__PURE__*/<div style={{
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+    padding: "6px 0",
+    background: C.card
+  }}>{startDrag && /*#__PURE__*/<DragHandle onPointerDown={startDrag} />}<button onClick={onCheck} style={{
+      width: 18,
+      height: 18,
+      borderRadius: "50%",
+      border: `2px solid ${C.sage}`,
+      background: completed ? C.sage : "transparent",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      cursor: "pointer",
+      color: C.white,
+      fontSize: 10,
+      flexShrink: 0
+    }}>{completed && "✓"}</button><span onClick={task ? () => onEdit(task) : undefined} style={{
+      flex: 1,
+      fontSize: 13.5,
+      color: C.ink,
+      textDecoration: completed ? "line-through" : "none",
+      cursor: task ? "pointer" : "default"
+    }}>{title}</span><button onClick={onMove} style={{
+      border: "none",
+      background: "none",
+      color: C.inkSoft,
+      cursor: "pointer",
+      fontSize: 10,
+      padding: "0 2px",
+      whiteSpace: "nowrap"
+    }}>{moveLabel}</button><button onClick={() => item.type === "sundry" ? onDeleteSundry(item.id) : onRemoveTask(item.id, item.subtaskId)} style={{
+      border: "none",
+      background: "none",
+      color: C.inkSoft,
+      cursor: "pointer",
+      fontSize: 12
+    }}>×</button></div>;
+}
+function TodayPlanSection({
+  items,
+  tasksById,
+  onAddSundry,
+  onToggleSundry,
+  onDeleteSundry,
+  onReorderBucketFull,
+  onRemoveTask,
+  onReset,
+  onSetBucket,
+  onToggle,
+  onToggleAction,
+  onEdit,
+  onToggleTodayTaskDone
+}) {
+  const [newSundry, setNewSundry] = useState("");
+  const [resetting, setResetting] = useState(false);
+  const commitSundry = () => {
+    if (newSundry.trim()) {
+      onAddSundry(newSundry.trim());
+      setNewSundry("");
+    }
+  };
+  const nowItems = items.filter(it => it.bucket !== "later");
+  const laterItems = items.filter(it => it.bucket === "later");
+  const keyFn = item => item.type + item.id;
+  return /*#__PURE__*/<div style={{
+    background: C.card,
+    border: `1px solid ${C.rule}`,
+    borderRadius: 12,
+    padding: "14px 14px 10px",
+    marginBottom: 18,
+    minHeight: "45vh",
+    display: "flex",
+    flexDirection: "column"
+  }}><div style={{
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 10
+    }}><div style={{
+        fontFamily: "Fraunces, serif",
+        fontSize: 16,
+        color: C.ink
+      }}>The plan</div>{!resetting ? /*#__PURE__*/<button onClick={() => setResetting(true)} style={{
+        border: `1px solid ${C.plum}`,
+        color: C.plum,
+        background: "none",
+        borderRadius: 8,
+        padding: "4px 10px",
+        fontSize: 10.5,
+        fontWeight: 600,
+        cursor: "pointer"
+      }}>Reset</button> : /*#__PURE__*/<button onClick={() => {
+        onReset();
+        setResetting(false);
+      }} style={{
+        border: "none",
+        color: C.white,
+        background: C.plum,
+        borderRadius: 8,
+        padding: "4px 10px",
+        fontSize: 10.5,
+        fontWeight: 700,
+        cursor: "pointer"
+      }}>Confirm?</button>}</div><div style={{
+      flex: 1
+    }}>{nowItems.length === 0 && /*#__PURE__*/<div style={{
+        color: C.inkSoft,
+        fontSize: 12.5,
+        textAlign: "center",
+        padding: "6px 0 4px"
+      }}>Nothing planned yet.</div>}<DragReorderList items={nowItems} keyFn={keyFn} onFinalize={arr => onReorderBucketFull("now", arr)} renderRow={(item, idx, startDrag) => /*#__PURE__*/<TodayItemRow item={item} tasksById={tasksById} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onRemoveTask={onRemoveTask} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onMove={() => onSetBucket(item, "later")} moveLabel="↓ Later" startDrag={startDrag} />} />{laterItems.length > 0 && /*#__PURE__*/<div style={{
+        marginTop: 14,
+        paddingTop: 10,
+        borderTop: `1px dashed ${C.rule}`
+      }}><div style={{
+          fontSize: 10.5,
+          color: C.inkSoft,
+          fontWeight: 700,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+          marginBottom: 4
+        }}>Later</div><DragReorderList items={laterItems} keyFn={keyFn} onFinalize={arr => onReorderBucketFull("later", arr)} renderRow={(item, idx, startDrag) => /*#__PURE__*/<TodayItemRow item={item} tasksById={tasksById} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onRemoveTask={onRemoveTask} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onMove={() => onSetBucket(item, "now")} moveLabel="↑ Today" startDrag={startDrag} />} /></div>}</div><div style={{
+      display: "flex",
+      gap: 6,
+      marginTop: 14
+    }}><input value={newSundry} onChange={e => setNewSundry(capFirst(e.target.value))} onKeyDown={e => {
+        if (e.key === "Enter") commitSundry();
+      }} onBlur={commitSundry} placeholder="Add a sundry…" style={{
+        ...inputStyle,
+        fontSize: 13,
+        background: C.white
+      }} /><button onClick={commitSundry} style={{
+        border: "none",
+        background: C.sageDeep,
+        color: C.white,
+        borderRadius: 8,
+        padding: "0 14px",
+        cursor: "pointer"
+      }}>+</button></div></div>;
+}
+function QueueView(props) {
+  const {
+    tasks,
+    me,
+    filter,
+    setFilter,
+    choreFilter,
+    setChoreFilter,
+    projectScope,
+    setProjectScope,
+    projectFilter,
+    setProjectFilter,
+    typeFilter,
+    setTypeFilter,
+    config,
+    onAddRoom,
+    onAddCategory,
+    onDeleteRoom,
+    onDeleteCategory,
+    onReorderRoomsFull,
+    onReorderCategoriesFull,
+    onToggle,
+    onEdit,
+    onDelete,
+    onToggleAction,
+    onAddAction,
+    onDeleteAction,
+    onReorderAction,
+    onSetTaskActions,
+    onSetActionDueDate,
+    onToggleManualTodo,
+    highlightTaskId
+  } = props;
+  const typed = useMemo(() => typeFilter === "all" ? tasks : tasks.filter(t => t.listType === typeFilter), [tasks, typeFilter]);
+  const scoped = useMemo(() => {
+    if (typeFilter === "chore") {
+      if (choreFilter === "all") return typed;
+      return typed.filter(t => t.scope === "personal" ? t.owner === choreFilter : t.assignee === choreFilter || !t.assignee);
+    }
+    if (typeFilter === "project") {
+      let f = typed.filter(t => t.scope === projectScope);
+      if (projectScope === "shared") {
+        if (projectFilter !== "all") f = f.filter(t => t.assignee === projectFilter || !t.assignee);
+      } else {
+        f = f.filter(t => t.owner === me);
+      }
+      return f;
+    }
+    let f = typed;
+    if (filter === "mine") f = f.filter(t => t.owner === me || t.scope === "shared" && (t.assignee === me || !t.assignee));
+    if (filter === "shared") f = f.filter(t => t.scope === "shared");
+    return f;
+  }, [typed, typeFilter, choreFilter, projectScope, projectFilter, filter, me]);
+  const sorted = useMemo(() => scoped.filter(t => !t.completed).slice().sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")), [scoped]);
+  const rowProps = {
+    me,
+    onToggle,
+    onEdit,
+    onDelete,
+    onToggleAction,
+    onAddAction,
+    onDeleteAction,
+    onReorderAction,
+    onSetTaskActions,
+    onSetActionDueDate,
+    onToggleManualTodo
+  };
+  const catListForNav = projectScope === "shared" ? config.sharedCategories : config.personalCategories[me];
+  const navSections = useMemo(() => {
+    if (typeFilter === "chore") {
+      const names = [...config.rooms, ...withOrphans(config.rooms, sorted, "room").slice(config.rooms.length)];
+      return names.map(name => ({
+        name,
+        count: sorted.filter(t => (t.room || "Unassigned") === name).length
+      }));
+    }
+    const names = [...catListForNav, ...withOrphans(catListForNav, sorted, "category").slice(catListForNav.length)];
+    return names.map(name => ({
+      name,
+      count: sorted.filter(t => (t.category || "Unassigned") === name).length
+    }));
+  }, [typeFilter, config.rooms, catListForNav, sorted]);
+  const [showNav, setShowNav] = useState(false);
+  const [jumpToSection, setJumpToSection] = useState(null);
+  useEffect(() => {
+    if (!jumpToSection) return;
+    const t = setTimeout(() => setJumpToSection(null), 4000);
+    return () => clearTimeout(t);
+  }, [jumpToSection]);
+  return /*#__PURE__*/<div style={{
+    height: "calc(100% - 150px)",
+    display: "flex",
+    flexDirection: "column"
+  }}><div style={{
+      background: C.card,
+      borderBottom: `1px solid ${C.rule}`,
+      paddingBottom: 10
+    }}><div style={{
+        display: "flex",
+        gap: 6,
+        padding: "10px 16px 0"
+      }}>{[["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => /*#__PURE__*/<button key={k} onClick={() => setTypeFilter(k)} style={{
+          padding: "6px 12px",
+          borderRadius: 8,
+          border: `1px solid ${typeFilter === k ? C.ink : C.rule}`,
+          background: typeFilter === k ? C.ink : C.white,
+          color: typeFilter === k ? C.white : C.ink,
+          fontSize: 12,
+          fontWeight: 600,
+          cursor: "pointer",
+          flex: 1
+        }}>{l}</button>)}<button onClick={() => setShowNav(true)} aria-label="Jump to a category" style={{
+          padding: "6px 12px",
+          borderRadius: 8,
+          border: `1px solid ${C.rule}`,
+          background: C.white,
+          color: C.ink,
+          fontSize: 14,
+          cursor: "pointer",
+          flexShrink: 0
+        }}>☰</button></div>{typeFilter === "chore" && /*#__PURE__*/<div style={{
+        display: "flex",
+        gap: 6,
+        padding: "8px 16px 0"
+      }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/<FilterChip key={k} active={choreFilter === k} onClick={() => setChoreFilter(k)} label={l} activeColor={filterColor(k)} activeTint={filterTint(k)} />)}</div>}{typeFilter === "project" && /*#__PURE__*/<React.Fragment><div style={{
+          padding: "8px 16px 0"
+        }}><button onClick={() => setProjectScope(projectScope === "shared" ? "personal" : "shared")} style={{
+            width: "100%",
+            padding: "8px 12px",
+            borderRadius: 8,
+            border: `1px solid ${C.ink}`,
+            background: C.ink,
+            color: C.white,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 6
+          }}>{projectScope === "shared" ? "Shared Projects" : "Personal Projects"} <span style={{
+              opacity: 0.6,
+              fontSize: 11
+            }}>⇄</span></button></div>{projectScope === "shared" && /*#__PURE__*/<div style={{
+          display: "flex",
+          gap: 6,
+          padding: "8px 16px 0"
+        }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/<FilterChip key={k} active={projectFilter === k} onClick={() => setProjectFilter(k)} label={l} activeColor={filterColor(k)} activeTint={filterTint(k)} />)}</div>}</React.Fragment>}</div>{typeFilter === "chore" ? /*#__PURE__*/<RoomBoard tasks={sorted} rowProps={rowProps} baseRooms={config.rooms} extraRooms={withOrphans(config.rooms, sorted, "room").slice(config.rooms.length)} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} onReorderRoomsFull={onReorderRoomsFull} colorBg={filterColor(choreFilter)} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} /> : (() => {
+      const catList = catListForNav;
+      return /*#__PURE__*/<CategoryBoard tasks={sorted} rowProps={rowProps} baseCategories={catList} extraCategories={withOrphans(catList, sorted, "category").slice(catList.length)} onAddCategory={name => onAddCategory(projectScope, me, name)} onDeleteCategory={name => onDeleteCategory(projectScope, me, name)} onReorderCategoriesFull={newArr => onReorderCategoriesFull(projectScope, me, newArr)} colorBg={projectScope === "shared" ? filterColor(projectFilter) : filterColor(me)} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} />;
+    })()}{showNav && /*#__PURE__*/<Overlay title={typeFilter === "chore" ? "Rooms" : "Categories"} onClose={() => setShowNav(false)}>{navSections.map(({
+        name,
+        count
+      }) => /*#__PURE__*/<button key={name} onClick={() => {
+        setJumpToSection(name);
+        setShowNav(false);
+      }} style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        width: "100%",
+        textAlign: "left",
+        border: "none",
+        borderBottom: `1px solid ${C.rule}`,
+        background: "none",
+        padding: "13px 4px",
+        cursor: "pointer"
+      }}><span style={{
+          fontSize: 14.5,
+          color: C.ink,
+          fontWeight: 600
+        }}>{name}</span><span style={{
+          fontSize: 12,
+          color: C.inkSoft
+        }}>{count}</span></button>)}</Overlay>}</div>;
+}
+
+/* horizontally scrolling row with tap-to-scroll arrows — helps when there are many sections */
+/* two-tap inline confirm — avoids relying on window.confirm(), which can be unreliable in installed PWAs */
+function SectionDeleteButton({
+  onDelete
+}) {
+  const [confirming, setConfirming] = useState(false);
+  if (confirming) {
+    return /*#__PURE__*/<button onClick={e => {
+      e.stopPropagation();
+      onDelete();
+    }} style={{
+      border: "none",
+      background: C.plum,
+      color: C.white,
+      borderRadius: 5,
+      padding: "1px 7px",
+      fontSize: 10,
+      fontWeight: 700,
+      cursor: "pointer",
+      whiteSpace: "nowrap"
+    }}>Confirm?</button>;
+  }
+  return /*#__PURE__*/<button onClick={e => {
+    e.stopPropagation();
+    setConfirming(true);
+  }} style={{
+    border: "none",
+    background: "none",
+    color: C.inkSoft,
+    opacity: 0.7,
+    cursor: "pointer",
+    fontSize: 12,
+    padding: 0
+  }}>×</button>;
+}
+const PREVIEW_COUNT = 3;
+
+/* Quiet header — a thin colour-coded stripe on a neutral card, instead of a full-bleed colour fill. Faded
+   (not-yet-available) tasks are hidden by default, and a section with only faded tasks auto-collapses just
+   like a genuinely empty one — "Show all" reveals both the rest of the list and any faded tasks. */
+function StackedSection({
+  name,
+  tasks,
+  colorBg,
+  rowProps,
+  onDelete,
+  deletable,
+  emptyLabel,
+  dragHandle,
+  highlightTaskId,
+  jumpToSection
+}) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const active = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
+  const faded = useMemo(() => tasks.filter(t => isFadedTask(t, todayStr)), [tasks, todayStr]);
+  const containsHighlight = highlightTaskId && tasks.some(t => t.id === highlightTaskId);
+  const highlightIsFaded = containsHighlight && faded.some(t => t.id === highlightTaskId);
+  const isJumpTarget = jumpToSection === name;
+  const [collapsed, setCollapsed] = useState(() => active.length === 0);
+  const [showFuture, setShowFuture] = useState(false);
+  const userToggled = useRef(false);
+  const sectionRef = useRef(null);
+  useEffect(() => {
+    if (!userToggled.current) setCollapsed(active.length === 0);
+  }, [active.length === 0]);
+  useEffect(() => {
+    if (containsHighlight || isJumpTarget) {
+      if (highlightIsFaded) setShowFuture(true);
+      setCollapsed(false);
+      const t = setTimeout(() => {
+        if (sectionRef.current) sectionRef.current.scrollIntoView({
+          behavior: "smooth",
+          block: "start"
+        });
+      }, 60);
+      return () => clearTimeout(t);
+    }
+  }, [containsHighlight, highlightIsFaded, isJumpTarget]);
+  const toggleHeader = () => {
+    userToggled.current = true;
+    setCollapsed(c => !c);
+  };
+  const stripe = name === "Unassigned" ? C.taupe : colorBg;
+  return /*#__PURE__*/<div style={{
+    marginBottom: 14
+  }} ref={sectionRef}><div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 4,
+      background: C.rule,
+      borderLeft: `4px solid ${stripe}`,
+      border: `1px solid ${isJumpTarget ? C.mustard : C.rule}`,
+      boxShadow: isJumpTarget ? `0 0 0 2px ${C.mustard}` : "none",
+      borderLeftWidth: 4,
+      padding: "7px 10px",
+      borderRadius: 8,
+      marginBottom: 8
+    }}>{dragHandle}<button onClick={toggleHeader} style={{
+        flex: 1,
+        textAlign: "left",
+        background: "none",
+        border: "none",
+        cursor: "pointer",
+        padding: 0,
+        display: "flex",
+        alignItems: "center",
+        gap: 6
+      }}><span style={{
+          fontFamily: "Fraunces, serif",
+          fontSize: 14,
+          fontWeight: 600,
+          color: C.ink
+        }}>{name} <span style={{
+            fontWeight: 400,
+            opacity: 0.65,
+            fontSize: 11
+          }}>({tasks.length})</span></span><span style={{
+          marginLeft: "auto",
+          color: C.inkSoft,
+          fontSize: 11
+        }}>{collapsed ? "▸" : "▾"}</span></button>{deletable && /*#__PURE__*/<SectionDeleteButton onDelete={() => onDelete(name)} />}</div>{!collapsed && /*#__PURE__*/<div>{tasks.length === 0 && /*#__PURE__*/<div style={{
+        color: C.inkSoft,
+        fontSize: 12,
+        textAlign: "center",
+        padding: "10px 0"
+      }}>{emptyLabel}</div>}{active.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} compact={true} highlighted={t.id === highlightTaskId} />)}{faded.length > 0 && !showFuture && /*#__PURE__*/<button onClick={() => setShowFuture(true)} style={{
+        width: "100%",
+        border: `1px dashed ${C.rule}`,
+        background: "transparent",
+        color: C.inkSoft,
+        borderRadius: 8,
+        padding: "6px 0",
+        fontSize: 11.5,
+        cursor: "pointer"
+      }}>Show future tasks/chores ({faded.length}) →</button>}{showFuture && faded.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} compact={true} highlighted={t.id === highlightTaskId} />)}{showFuture && faded.length > 0 && /*#__PURE__*/<button onClick={() => setShowFuture(false)} style={{
+        width: "100%",
+        border: "none",
+        background: "none",
+        color: C.inkSoft,
+        fontSize: 11.5,
+        cursor: "pointer",
+        padding: "4px 0"
+      }}>Hide future tasks/chores ↑</button>}</div>}</div>;
+}
+function SectionStack({
+  baseSections,
+  extraSections,
+  sectionTasksFn,
+  colorBg,
+  rowProps,
+  onAdd,
+  onDelete,
+  onReorderFull,
+  addLabel,
+  emptyLabel,
+  highlightTaskId,
+  jumpToSection
+}) {
+  return /*#__PURE__*/<div style={{
+    padding: "12px 16px 90px",
+    overflowY: "auto",
+    flex: 1
+  }}><DragReorderList items={baseSections} keyFn={name => name} onFinalize={onReorderFull} renderRow={(name, idx, startDrag) => /*#__PURE__*/<StackedSection name={name} tasks={sectionTasksFn(name)} colorBg={colorBg} rowProps={rowProps} onDelete={onDelete} deletable={true} emptyLabel={emptyLabel} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} dragHandle={/*#__PURE__*/<DragHandle onPointerDown={startDrag} />} />} />{extraSections.map(name => /*#__PURE__*/<StackedSection key={name} name={name} tasks={sectionTasksFn(name)} colorBg={colorBg} rowProps={rowProps} onDelete={onDelete} deletable={name !== "Unassigned"} emptyLabel={emptyLabel} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} />)}<AddSectionRow onAdd={onAdd} label={addLabel} /></div>;
+}
+function RoomBoard({
+  tasks,
+  rowProps,
+  baseRooms,
+  extraRooms,
+  onAddRoom,
+  onDeleteRoom,
+  onReorderRoomsFull,
+  colorBg,
+  highlightTaskId,
+  jumpToSection
+}) {
+  return /*#__PURE__*/<SectionStack baseSections={baseRooms} extraSections={extraRooms} sectionTasksFn={room => tasks.filter(t => (t.room || "Unassigned") === room)} colorBg={colorBg} rowProps={rowProps} onAdd={onAddRoom} onDelete={onDeleteRoom} onReorderFull={onReorderRoomsFull} addLabel="room" emptyLabel="No chores here" highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} />;
+}
+function CategoryBoard({
+  tasks,
+  rowProps,
+  baseCategories,
+  extraCategories,
+  onAddCategory,
+  onDeleteCategory,
+  onReorderCategoriesFull,
+  colorBg,
+  highlightTaskId,
+  jumpToSection
+}) {
+  return /*#__PURE__*/<SectionStack baseSections={baseCategories} extraSections={extraCategories} sectionTasksFn={cat => tasks.filter(t => (t.category || "Unassigned") === cat)} colorBg={colorBg} rowProps={rowProps} onAdd={onAddCategory} onDelete={onDeleteCategory} onReorderFull={onReorderCategoriesFull} addLabel="category" emptyLabel="No projects here" highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} />;
+}
+function AddSectionRow({
+  onAdd,
+  label
+}) {
+  const add = () => {
+    const name = window.prompt(`New ${label} name`);
+    if (name && name.trim()) onAdd(name.trim());
+  };
+  return /*#__PURE__*/<button onClick={add} style={{
+    width: "100%",
+    border: `1px dashed ${C.rule}`,
+    background: "transparent",
+    color: C.inkSoft,
+    borderRadius: 8,
+    padding: "10px 0",
+    cursor: "pointer",
+    fontSize: 12.5
+  }}>+ Add section</button>;
+}
+function TaskRow({
+  task,
+  me,
+  onToggle,
+  onEdit,
+  onDelete,
+  onToggleAction,
+  onAddAction,
+  onDeleteAction,
+  onReorderAction,
+  onSetTaskActions,
+  onSetActionDueDate,
+  compact,
+  onSnooze,
+  onAddToToday,
+  onRestore,
+  onToggleManualTodo,
+  highlighted,
+  showAsCompleted
+}) {
+  const [open, setOpen] = useState(false);
+  const [newAction, setNewAction] = useState("");
+  const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const isDone = task.completed || showAsCompleted;
+  const overdue = task.dueDate && task.dueDate < todayStr && !isDone;
+  const notYetAvailable = isFadedTask(task, todayStr);
+  const na = nextAction(task);
+  const progress = actionsProgress(task);
+  const badgePerson = task.scope === "personal" ? task.owner : task.assignee;
+  const commit = () => {
+    if (newAction.trim()) {
+      onAddAction(task.id, newAction);
+      setNewAction("");
+    }
+  };
+  return /*#__PURE__*/<div style={{
+    background: C.card,
+    border: `1px solid ${highlighted ? C.mustard : C.rule}`,
+    boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
+    borderRadius: 10,
+    padding: compact ? "9px 10px" : "11px 12px",
+    marginBottom: 8,
+    opacity: isDone ? 0.55 : notYetAvailable ? 0.5 : 1
+  }}><div style={{
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 10
+    }}><button onClick={() => onToggle(task)} style={{
+        width: 20,
+        height: 20,
+        borderRadius: "50%",
+        border: `2px solid ${imp ? imp.color : C.inkSoft}`,
+        background: isDone ? imp ? imp.color : C.inkSoft : "transparent",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: "pointer",
+        flexShrink: 0,
+        marginTop: 1,
+        color: C.white,
+        fontSize: 11
+      }}>{isDone && "✓"}</button><div style={{
+        flex: 1,
+        minWidth: 0
+      }} onClick={() => onEdit(task)}><div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6
+        }}><PersonBadge person={badgePerson} size={compact ? 16 : 18} /><div style={{
+            fontSize: compact ? 13 : 14,
+            color: C.ink,
+            fontWeight: 600,
+            textDecoration: isDone ? "line-through" : "none"
+          }}>{task.title}</div></div>{!compact && /*#__PURE__*/<div style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 6,
+          marginTop: 5,
+          alignItems: "center"
+        }}>{notYetAvailable && /*#__PURE__*/<Tag color={C.inkSoft}>Not yet — {fmtDate(task.dueDate)}</Tag>}{imp && /*#__PURE__*/<Tag color={imp.color}>{imp.label}</Tag>}{task.dueDate && !notYetAvailable && /*#__PURE__*/<span style={{
+            fontSize: 10.5,
+            fontFamily: "IBM Plex Mono, monospace",
+            color: overdue ? C.plum : C.inkSoft,
+            fontWeight: overdue ? 700 : 500
+          }}>{fmtDate(task.dueDate)}</span>}</div>}{compact && task.dueDate && /*#__PURE__*/<div style={{
+          fontSize: 10,
+          fontFamily: "IBM Plex Mono, monospace",
+          color: overdue ? C.plum : C.inkSoft,
+          marginTop: 3
+        }}>{notYetAvailable ? `Not yet — ${fmtDate(task.dueDate)}` : fmtDate(task.dueDate)}</div>}</div><div style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        alignItems: "stretch",
+        flexShrink: 0
+      }}>{onAddToToday && /*#__PURE__*/<button onClick={e => {
+          e.stopPropagation();
+          onAddToToday(task.id, null);
+        }} style={{
+          border: `1px solid ${C.rule}`,
+          background: C.white,
+          color: C.sageDeep,
+          cursor: "pointer",
+          padding: "2px 8px",
+          fontSize: 11,
+          fontWeight: 600,
+          borderRadius: 6,
+          whiteSpace: "nowrap"
+        }}>+ The plan</button>}{onToggleManualTodo && /*#__PURE__*/<button onClick={e => {
+          e.stopPropagation();
+          onToggleManualTodo(task.id);
+        }} style={{
+          border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
+          background: task.manualTodo ? "#E3EBDD" : C.white,
+          color: C.sageDeep,
+          cursor: "pointer",
+          padding: "2px 8px",
+          fontSize: 11,
+          fontWeight: 600,
+          borderRadius: 6,
+          whiteSpace: "nowrap"
+        }}>{task.manualTodo ? "− To-do list" : "+ To-do list"}</button>}{onRestore && /*#__PURE__*/<button onClick={e => {
+          e.stopPropagation();
+          onRestore();
+        }} style={{
+          border: `1px solid ${C.rule}`,
+          background: C.white,
+          color: C.sageDeep,
+          cursor: "pointer",
+          padding: "2px 8px",
+          fontSize: 11,
+          fontWeight: 600,
+          borderRadius: 6,
+          whiteSpace: "nowrap"
+        }}>Restore</button>}</div></div>{task.notes && !compact && /*#__PURE__*/<div style={{
+      marginLeft: 30,
+      marginTop: 5,
+      fontSize: 11.5,
+      color: C.inkSoft,
+      fontStyle: "italic"
+    }}>{task.notes}</div>}{onSnooze && /*#__PURE__*/<div style={{
+      marginLeft: 30,
+      marginTop: 6
+    }}><SnoozeControl onSnooze={onSnooze} /></div>}<div style={{
+      marginLeft: 30,
+      marginTop: 6
+    }}>{na ? /*#__PURE__*/<button onClick={() => onToggleAction(task.id, na.id)} style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 6,
+        border: "none",
+        background: "none",
+        padding: 0,
+        cursor: "pointer",
+        textAlign: "left"
+      }}><span style={{
+          width: 11,
+          height: 11,
+          borderRadius: "50%",
+          border: `1.5px solid ${C.sageDeep}`,
+          marginTop: 2,
+          flexShrink: 0
+        }} /><span style={{
+          fontSize: compact ? 11 : 12,
+          color: C.sageDeep,
+          fontStyle: "italic",
+          lineHeight: 1.3
+        }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span></button> : progress ? /*#__PURE__*/<span style={{
+        fontSize: 11,
+        color: C.inkSoft
+      }}>All subtasks done</span> : null}{progress && /*#__PURE__*/<button onClick={() => setOpen(o => !o)} style={{
+        border: "none",
+        background: "none",
+        color: C.inkSoft,
+        fontSize: 10.5,
+        cursor: "pointer",
+        padding: 0,
+        marginLeft: na ? 8 : 0
+      }}>{progress} {open ? "▴" : "▾"}</button>}</div>{open && /*#__PURE__*/<div style={{
+      marginLeft: 30,
+      marginTop: 8,
+      borderTop: `1px dashed ${C.rule}`,
+      paddingTop: 8
+    }}><DragReorderList items={task.actions || []} keyFn={a => a.id} onFinalize={arr => onSetTaskActions(task.id, arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 5,
+        marginBottom: 6,
+        flexWrap: "wrap",
+        background: C.card
+      }}><DragHandle onPointerDown={startDrag} /><button onClick={() => onToggleAction(task.id, a.id)} style={{
+          width: 15,
+          height: 15,
+          borderRadius: 4,
+          border: `1.5px solid ${C.sageDeep}`,
+          background: a.completed ? C.sageDeep : "transparent",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          flexShrink: 0,
+          color: C.white,
+          fontSize: 9
+        }}>{a.completed && "✓"}</button><span style={{
+          fontSize: 12,
+          color: C.ink,
+          textDecoration: a.completed ? "line-through" : "none",
+          flex: 1,
+          minWidth: 60
+        }}>{a.title}</span><input type="date" value={a.dueDate || ""} onChange={e => onSetActionDueDate(task.id, a.id, e.target.value)} style={{
+          fontSize: 10,
+          border: `1px solid ${C.rule}`,
+          borderRadius: 5,
+          padding: "2px 4px",
+          color: C.inkSoft,
+          width: 108
+        }} /><button onClick={() => onDeleteAction(task.id, a.id)} style={{
+          border: "none",
+          background: "none",
+          color: C.inkSoft,
+          cursor: "pointer",
+          padding: 0,
+          fontSize: 12
+        }}>×</button></div>} /><div style={{
+        display: "flex",
+        gap: 6,
+        marginTop: 4
+      }}><input value={newAction} onChange={e => setNewAction(capFirst(e.target.value))} onKeyDown={e => {
+          if (e.key === "Enter") commit();
+        }} onBlur={commit} placeholder="Add a subtask…" style={{
+          ...inputStyle,
+          padding: "6px 9px",
+          fontSize: 12
+        }} /><button onClick={commit} style={{
+          border: "none",
+          background: C.sageDeep,
+          color: C.white,
+          borderRadius: 6,
+          padding: "0 10px",
+          cursor: "pointer"
+        }}>+</button></div></div>}</div>;
+}
+function Tag({
+  color,
+  children
+}) {
+  return /*#__PURE__*/<span style={{
+    fontSize: 10,
+    color: C.white,
+    background: color,
+    padding: "2px 7px",
+    borderRadius: 20,
+    display: "inline-flex",
+    alignItems: "center"
+  }}>{children}</span>;
+}
+function MetaTag({
+  children
+}) {
+  return /*#__PURE__*/<span style={{
+    fontSize: 10,
+    color: C.inkSoft,
+    background: "#EAE4D6",
+    padding: "2px 7px",
+    borderRadius: 20,
+    display: "inline-flex",
+    alignItems: "center"
+  }}>{children}</span>;
+}
+
+/* Drag handle — press and drag vertically to reorder. Works with mouse and touch via Pointer Events. */
+function DragHandle({
+  onPointerDown,
+  light
+}) {
+  return /*#__PURE__*/<div onPointerDown={onPointerDown} style={{
+    cursor: "grab",
+    padding: "2px 7px",
+    color: light ? "rgba(255,255,255,0.75)" : C.inkSoft,
+    fontSize: 15,
+    touchAction: "none",
+    userSelect: "none",
+    lineHeight: 1,
+    flexShrink: 0
+  }}>⠿</div>;
+}
+
+/* Generic vertical drag-to-reorder list. Reorders locally (for instant visual feedback) while dragging,
+   and commits once via onFinalize(newOrderArray) on release — never writes mid-drag. */
+function DragReorderList({
+  items,
+  keyFn,
+  onFinalize,
+  renderRow
+}) {
+  const [order, setOrder] = useState(items);
+  const [dragging, setDragging] = useState(null); // { index, offsetY, height }
+  const containerRef = useRef(null);
+  const orderRef = useRef(items);
+  orderRef.current = order;
+  useEffect(() => {
+    if (!dragging) setOrder(items);
+  }, [items]); // eslint-disable-line
+
+  const startDrag = index => e => {
+    if (e.button !== undefined && e.button !== 0) return;
+    e.preventDefault();
+    const container = containerRef.current;
+    const rows = container ? Array.from(container.children) : [];
+    const height = (rows[index] ? rows[index].getBoundingClientRect().height : 44) + 8;
+    const startY = e.clientY;
+    setDragging({
+      index,
+      offsetY: 0,
+      height
+    });
+    const onMove = ev => {
+      setDragging(d => d ? {
+        ...d,
+        offsetY: ev.clientY - startY
+      } : d);
+    };
+    const onEnd = () => {
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onEnd);
+      setDragging(d => {
+        if (!d) return null;
+        const shift = Math.round(d.offsetY / d.height);
+        const from = d.index;
+        const to = Math.max(0, Math.min(orderRef.current.length - 1, from + shift));
+        if (to !== from) {
+          const arr = orderRef.current.slice();
+          const [moved] = arr.splice(from, 1);
+          arr.splice(to, 0, moved);
+          setOrder(arr);
+          onFinalize(arr);
+        }
+        return null;
+      });
+    };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onEnd);
+  };
+  return /*#__PURE__*/<div ref={containerRef}>{order.map((item, index) => {
+      const isDragging = dragging && dragging.index === index;
+      const style = isDragging ? {
+        transform: `translateY(${dragging.offsetY}px)`,
+        position: "relative",
+        zIndex: 5,
+        opacity: 0.94,
+        boxShadow: "0 6px 16px rgba(43,42,40,0.18)"
+      } : {};
+      return /*#__PURE__*/<div key={keyFn(item)} style={style}>{renderRow(item, index, startDrag(index))}</div>;
+    })}</div>;
+}
+
+/* matches the plain Chores/Projects section heading style, but collapsible (closed by default) */
+function CollapsibleSection({
+  title,
+  count,
+  defaultOpen,
+  children
+}) {
+  const [open, setOpen] = useState(!!defaultOpen);
+  return /*#__PURE__*/<div style={{
+    marginBottom: 14
+  }}><button onClick={() => setOpen(o => !o)} style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 6,
+      width: "100%",
+      background: "none",
+      border: "none",
+      padding: 0,
+      cursor: "pointer",
+      marginBottom: open ? 6 : 0
+    }}><span style={{
+        fontSize: 12.5,
+        color: C.inkSoft,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: 0.5
+      }}>{title}{count != null ? ` (${count})` : ""}</span><span style={{
+        color: C.inkSoft,
+        fontSize: 10
+      }}>{open ? "▴" : "▾"}</span></button>{open && children}</div>;
+}
+
+/* ---------- overlay ---------- */
+function Overlay({
+  title,
+  onClose,
+  headerExtra,
+  children
+}) {
+  return /*#__PURE__*/<div style={{
+    position: "absolute",
+    inset: 0,
+    background: "rgba(43,42,40,0.4)",
+    display: "flex",
+    alignItems: "flex-end",
+    zIndex: 10
+  }} onClick={onClose}><div style={{
+      background: C.parchment,
+      width: "100%",
+      maxHeight: "80%",
+      borderRadius: "18px 18px 0 0",
+      display: "flex",
+      flexDirection: "column",
+      overflow: "hidden"
+    }} onClick={e => e.stopPropagation()}><div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "18px 18px 14px",
+        borderBottom: `1px solid ${C.rule}`,
+        flexShrink: 0
+      }}><div style={{
+          fontFamily: "Fraunces, serif",
+          fontSize: 18,
+          fontWeight: 600,
+          color: C.ink
+        }}>{title}</div><div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12
+        }}>{headerExtra}<button onClick={onClose} style={{
+            border: "none",
+            background: "none",
+            cursor: "pointer",
+            color: C.inkSoft,
+            fontSize: 20
+          }}>×</button></div></div><div style={{
+        overflowY: "auto",
+        overflowX: "hidden",
+        padding: 18,
+        flex: 1
+      }}>{children}</div></div></div>;
+}
+
+/* ---------- reusable section (room/category) picker with inline "add new" ---------- */
+function SectionSelect({
+  value,
+  onChange,
+  options,
+  onAddNew
+}) {
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const commit = () => {
+    if (name.trim()) {
+      onAddNew(name.trim());
+      onChange(name.trim());
+    }
+    setAdding(false);
+    setName("");
+  };
+  if (adding) {
+    return /*#__PURE__*/<div style={{
+      display: "flex",
+      gap: 6
+    }}><input autoFocus={true} autoComplete="off" value={name} onChange={e => setName(capFirst(e.target.value))} placeholder="New section name" style={inputStyle} onKeyDown={e => {
+        if (e.key === "Enter") commit();
+      }} onBlur={commit} /><button onClick={commit} style={{
+        border: "none",
+        background: C.sageDeep,
+        color: C.white,
+        borderRadius: 8,
+        padding: "0 12px",
+        cursor: "pointer"
+      }}>Add</button></div>;
+  }
+  return /*#__PURE__*/<select value={value} onChange={e => {
+    if (e.target.value === "__new__") setAdding(true);else onChange(e.target.value);
+  }} style={inputStyle}>{(value && !options.includes(value) ? [value, ...options] : options).map(o => /*#__PURE__*/<option key={o} value={o}>{o}</option>)}<option value="__new__">+ Add new…</option></select>;
+}
+function TaskForm({
+  me,
+  initial,
+  config,
+  onAddRoom,
+  onAddCategory,
+  onClose,
+  onSave,
+  onDelete
+}) {
+  const [t, setT] = useState(() => {
+    const base = initial || {
+      id: uid(),
+      title: "",
+      listType: null,
+      scope: null,
+      owner: me,
+      room: "Unassigned",
+      category: "Unassigned",
+      assignee: null,
+      priority: null,
+      priorityBucket: null,
+      dueDate: null,
+      recurrence: {
+        unit: "none",
+        amount: 1,
+        mode: "rolling"
+      },
+      notes: "",
+      completed: false,
+      gridBucket: {},
+      actions: [],
+      needsDetails: false,
+      createdBy: me,
+      startsOnDue: false,
+      createdAt: Date.now(),
+      completedAt: null
+    };
+    return {
+      ...base,
+      recurrence: normRecurrence(base.recurrence)
+    };
+  });
+  const [deferDetails, setDeferDetails] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(!!(initial && initial.notes));
+  const set = (k, v) => setT(p => ({
+    ...p,
+    [k]: v
+  }));
+  const [newAction, setNewAction] = useState("");
+  const addFormAction = () => {
+    if (!newAction.trim()) return;
+    set("actions", [...(t.actions || []), {
+      id: uid(),
+      title: newAction.trim(),
+      completed: false,
+      dueDate: null
+    }]);
+    setNewAction("");
+  };
+  const removeFormAction = id => set("actions", (t.actions || []).filter(a => a.id !== id));
+  const toggleFormAction = id => set("actions", (t.actions || []).map(a => a.id === id ? {
+    ...a,
+    completed: !a.completed
+  } : a));
+  const setFormActionDate = (id, date) => set("actions", (t.actions || []).map(a => a.id === id ? {
+    ...a,
+    dueDate: date || null
+  } : a));
+  const categoryOptions = ["Unassigned", ...(t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me])];
+  const roomOptions = ["Unassigned", ...config.rooms];
+  const showAssignee = t.scope === "shared";
+  // Title, and (Type + Belongs to) unless explicitly deferred — these have no safe default to silently fall back on
+  const isValid = t.title.trim() && (deferDetails || !!t.listType && !!t.scope);
+  const finishAndSave = () => {
+    const finalActions = newAction.trim() ? [...(t.actions || []), {
+      id: uid(),
+      title: newAction.trim(),
+      completed: false,
+      dueDate: null
+    }] : t.actions || [];
+    const detailsOk = deferDetails || !!t.listType && !!t.scope;
+    if (t.title.trim() && detailsOk) {
+      onSave({
+        ...t,
+        actions: finalActions,
+        listType: t.listType || "chore",
+        scope: t.scope || "shared",
+        owner: t.scope === "personal" ? t.owner || me : null,
+        needsDetails: deferDetails,
+        createdBy: t.createdBy || me
+      });
+    } else {
+      onClose();
+    }
+  };
+  return /*#__PURE__*/<Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave} headerExtra={/*#__PURE__*/<React.Fragment><button onClick={() => setNotesOpen(o => !o)} style={{
+      position: "relative",
+      background: notesOpen ? C.card : "none",
+      border: `1px solid ${notesOpen ? C.rule : "transparent"}`,
+      borderRadius: 8,
+      padding: "5px 7px",
+      cursor: "pointer",
+      fontSize: 15,
+      lineHeight: 1
+    }}>📝{t.notes && /*#__PURE__*/<span style={{
+        position: "absolute",
+        top: 2,
+        right: 2,
+        width: 6,
+        height: 6,
+        borderRadius: "50%",
+        background: C.plum
+      }} />}</button><button disabled={!isValid} onClick={finishAndSave} style={{
+      background: isValid ? C.ink : C.rule,
+      color: C.white,
+      border: "none",
+      borderRadius: 20,
+      padding: "7px 16px",
+      fontSize: 13,
+      fontWeight: 700,
+      cursor: isValid ? "pointer" : "default"
+    }}>Save</button></React.Fragment>}><FormSection first={true}><Field label="Title *"><input value={t.title} onChange={e => set("title", capFirst(e.target.value))} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>{!initial && /*#__PURE__*/<div style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 9,
+        marginBottom: 15,
+        padding: "9px 11px",
+        background: C.card,
+        borderRadius: 8,
+        border: `1px solid ${C.rule}`
+      }}><input type="checkbox" id="defer-details" checked={deferDetails} onChange={e => setDeferDetails(e.target.checked)} style={{
+          marginTop: 2
+        }} /><label htmlFor="defer-details" style={{
+          fontSize: 12,
+          color: C.inkSoft,
+          lineHeight: 1.4
+        }}>Add details later</label></div>}<Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={e => set("dueDate", e.target.value || null)} style={{
+          ...inputStyle,
+          width: 170
+        }} /></Field>{t.dueDate && /*#__PURE__*/<div style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 9,
+        marginBottom: 13,
+        padding: "9px 11px",
+        background: C.card,
+        borderRadius: 8,
+        border: `1px solid ${C.rule}`
+      }}><input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={e => set("startsOnDue", e.target.checked)} style={{
+          marginTop: 2
+        }} /><label htmlFor="starts-on-due" style={{
+          fontSize: 12,
+          color: C.inkSoft,
+          lineHeight: 1.4
+        }}>Due date is do date</label></div>}<Field label="Subtasks"><DragReorderList items={t.actions || []} keyFn={a => a.id} onFinalize={arr => set("actions", arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          marginBottom: 7,
+          flexWrap: "wrap",
+          background: C.white
+        }}><DragHandle onPointerDown={startDrag} /><button onClick={() => toggleFormAction(a.id)} style={{
+            width: 15,
+            height: 15,
+            borderRadius: 4,
+            border: `1.5px solid ${C.sageDeep}`,
+            background: a.completed ? C.sageDeep : "transparent",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: "pointer",
+            flexShrink: 0,
+            color: C.white,
+            fontSize: 9
+          }}>{a.completed && "✓"}</button><span style={{
+            fontSize: 13,
+            color: C.ink,
+            flex: 1,
+            minWidth: 60,
+            textDecoration: a.completed ? "line-through" : "none"
+          }}>{a.title}</span><input type="date" value={a.dueDate || ""} onChange={e => setFormActionDate(a.id, e.target.value)} style={{
+            fontSize: 10,
+            border: `1px solid ${C.rule}`,
+            borderRadius: 5,
+            padding: "3px 5px",
+            color: C.inkSoft,
+            width: 112
+          }} /><button onClick={() => removeFormAction(a.id)} style={{
+            border: "none",
+            background: "none",
+            color: C.inkSoft,
+            cursor: "pointer"
+          }}>×</button></div>} /><div style={{
+          display: "flex",
+          gap: 6
+        }}><input value={newAction} onChange={e => setNewAction(capFirst(e.target.value))} onKeyDown={e => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              addFormAction();
+            }
+          }} onBlur={addFormAction} placeholder="e.g. Buy grout" style={{
+            ...inputStyle,
+            fontSize: 13
+          }} /><button onClick={addFormAction} style={{
+            border: "none",
+            background: C.sageDeep,
+            color: C.white,
+            borderRadius: 8,
+            padding: "0 12px",
+            cursor: "pointer"
+          }}>+</button></div></Field></FormSection>{!deferDetails && /*#__PURE__*/<FormSection title="Details"><Field label="Type *"><SegRow options={[["chore", "Chore"], ["project", "Project"]]} value={t.listType} onChange={v => set("listType", v)} /></Field><Field label="Belongs to *"><SegRow options={[["shared", "Shared"], ["personal", "Personal"]]} value={t.scope} onChange={v => set("scope", v)} /></Field>{t.listType === "chore" && /*#__PURE__*/<Field label="Category"><SectionSelect value={t.room} onChange={v => set("room", v)} options={roomOptions} onAddNew={onAddRoom} /></Field>}{t.listType === "project" && t.scope && /*#__PURE__*/<Field label="Category"><SectionSelect value={t.category} onChange={v => set("category", v)} options={categoryOptions} onAddNew={name => onAddCategory(t.scope, t.owner || me, name)} /></Field>}{showAssignee && /*#__PURE__*/<Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={v => set("assignee", v)} /></Field>}</FormSection>}<FormSection title="Schedule"><Field label="Importance"><SegRow options={[[null, "None"], ...IMPORTANCE.map(p => [p.key, p.label])]} value={t.priority} onChange={v => set("priority", v)} /></Field>{t.listType === "project" && /*#__PURE__*/<Field label="Priority category (doesn't pin automatically)"><SegRow options={[[null, "None"], ...BUCKETS.map(b => [b.key, b.label])]} value={t.priorityBucket} onChange={v => set("priorityBucket", v)} /></Field>}<Field label="Repeats *"><SegRow options={RECUR_UNITS} value={t.recurrence.unit} onChange={v => set("recurrence", {
+          ...t.recurrence,
+          unit: v
+        })} /></Field>{t.recurrence.unit !== "none" && /*#__PURE__*/<React.Fragment><Field label={`Every (${t.recurrence.unit}s)`}><input type="number" min="1" value={t.recurrence.amount} onChange={e => set("recurrence", {
+            ...t.recurrence,
+            amount: Math.max(1, parseInt(e.target.value, 10) || 1)
+          })} style={{
+            ...inputStyle,
+            width: 90
+          }} /></Field><Field label="When completed"><SegRow options={[["rolling", "Restart timer from completion"], ["fixed", "Stick to the schedule"]]} value={t.recurrence.mode} onChange={v => set("recurrence", {
+            ...t.recurrence,
+            mode: v
+          })} /></Field></React.Fragment>}</FormSection>{notesOpen && /*#__PURE__*/<FormSection title="Notes"><Field label="Notes"><textarea value={t.notes || ""} onChange={e => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{
+          ...inputStyle,
+          resize: "vertical",
+          fontFamily: "inherit"
+        }} /></Field></FormSection>}{initial && /*#__PURE__*/<button onClick={() => {
+      if (window.confirm(`Delete "${t.title}"? This can't be undone.`)) onDelete(t.id);
+    }} style={{
+      width: "100%",
+      marginTop: 8,
+      padding: "10px 0",
+      borderRadius: 10,
+      border: `1px solid ${C.plum}`,
+      background: "transparent",
+      color: C.plum,
+      fontSize: 13.5,
+      fontWeight: 600,
+      cursor: "pointer"
+    }}>Delete task</button>}</Overlay>;
+}
+function FormSection({
+  title,
+  first,
+  children
+}) {
+  return /*#__PURE__*/<div style={{
+    marginTop: first ? 0 : 18,
+    paddingTop: first ? 0 : 16,
+    borderTop: first ? "none" : `1px solid ${C.rule}`
+  }}>{title && /*#__PURE__*/<div style={{
+      fontFamily: "Fraunces, serif",
+      fontSize: 13,
+      fontWeight: 600,
+      color: C.sageDeep,
+      marginBottom: 11
+    }}>{title}</div>}{children}</div>;
+}
+function Field({
+  label,
+  children
+}) {
+  return /*#__PURE__*/<div style={{
+    marginBottom: 13
+  }}><div style={{
+      fontSize: 11,
+      color: C.inkSoft,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      marginBottom: 5
+    }}>{label}</div>{children}</div>;
+}
+const inputStyle = {
+  width: "100%",
+  padding: "10px 11px",
+  borderRadius: 8,
+  border: `1px solid ${C.rule}`,
+  background: C.white,
+  fontSize: 14,
+  color: C.ink,
+  outline: "none",
+  boxSizing: "border-box"
+};
+function SegRow({
+  options,
+  value,
+  onChange
+}) {
+  return /*#__PURE__*/<div style={{
+    display: "flex",
+    gap: 6,
+    flexWrap: "wrap"
+  }}>{options.map(([val, label]) => /*#__PURE__*/<button key={String(val)} onClick={() => onChange(val)} style={{
+      padding: "7px 13px",
+      borderRadius: 8,
+      border: `1px solid ${value === val ? C.ink : C.rule}`,
+      background: value === val ? C.ink : C.white,
+      color: value === val ? C.white : C.ink,
+      fontSize: 12.5,
+      cursor: "pointer"
+    }}>{label}</button>)}</div>;
+}
+ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/<App />);
