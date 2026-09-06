@@ -49,8 +49,7 @@
 
 <div id="root"></div>
 
-<script>
-const {
+<script>const {
   useState,
   useEffect,
   useMemo,
@@ -77,7 +76,7 @@ const C = {
   slateTint: "#E1E7EA",
   taupeTint: "#ECE7DC"
 };
-const APP_VERSION = "v40";
+const APP_VERSION = "v41";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -222,6 +221,7 @@ function withOrphans(sections, tasks, field) {
 }
 const TASKS_COLLECTION = "tasks";
 const CONFIG_DOC = db.collection("meta").doc("config");
+const PRESENCE_DOC = db.collection("meta").doc("presence");
 const TODAY_COLLECTION = "today";
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 function sanitizeList(arr, fallback) {
@@ -231,7 +231,6 @@ function sanitizeList(arr, fallback) {
 function App() {
   const [authReady, setAuthReady] = useState(null);
   const [me, setMe] = useState(null);
-  const [tasks, setTasks] = useState(null);
   const [config, setConfig] = useState({
     rooms: DEFAULT_ROOMS,
     sharedCategories: DEFAULT_CATEGORIES,
@@ -269,6 +268,9 @@ function App() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pickerFor, setPickerFor] = useState(null);
+  const [activitySummary, setActivitySummary] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const activityCheckedRef = useRef(false);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const u = params.get("user");
@@ -283,17 +285,78 @@ function App() {
     });
     return unsub;
   }, []);
+  // Two scoped queries instead of one unbounded one: active/recurring tasks are always small and cheap, but
+  // completed one-off tasks accumulate forever with no pruning — capping that fetch keeps load times flat
+  // no matter how many years of history pile up, without deleting anything.
+  const [activeTasksMap, setActiveTasksMap] = useState({});
+  const [recentCompletedMap, setRecentCompletedMap] = useState({});
   useEffect(() => {
     if (authReady !== true) return;
-    const unsub = db.collection(TASKS_COLLECTION).onSnapshot(snap => setTasks(snap.docs.map(d => ({
-      id: d.id,
-      ...d.data()
-    }))), err => {
-      console.error("sync error", err);
-      setTasks([]);
+    const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", false).onSnapshot(snap => {
+      const m = {};
+      snap.docs.forEach(d => {
+        m[d.id] = {
+          id: d.id,
+          ...d.data()
+        };
+      });
+      setActiveTasksMap(m);
+    }, err => {
+      console.error("sync error (active)", err);
+      setActiveTasksMap({});
     });
     return unsub;
   }, [authReady]);
+  useEffect(() => {
+    if (authReady !== true) return;
+    const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", true).orderBy("lastCompletedAt", "desc").limit(150).onSnapshot(snap => {
+      const m = {};
+      snap.docs.forEach(d => {
+        m[d.id] = {
+          id: d.id,
+          ...d.data()
+        };
+      });
+      setRecentCompletedMap(m);
+    }, err => {
+      console.error("sync error (completed) — if this is an index error, Firestore's console link will create it in one click", err);
+      setRecentCompletedMap({});
+    });
+    return unsub;
+  }, [authReady]);
+  const tasks = useMemo(() => {
+    if (authReady !== true) return null;
+    return [...Object.values(activeTasksMap), ...Object.values(recentCompletedMap)];
+  }, [activeTasksMap, recentCompletedMap, authReady]);
+  useEffect(() => {
+    if (activityCheckedRef.current) return;
+    if (!me || tasks === null) return;
+    activityCheckedRef.current = true;
+    PRESENCE_DOC.get().then(snap => {
+      const data = snap.data() || {};
+      const lastVisit = data[me];
+      const now = Date.now();
+      if (lastVisit) {
+        // only shared tasks — the other person's personal tasks should never surface here
+        const shared = tasks.filter(t => t.scope === "shared");
+        const added = shared.filter(t => t.createdBy && t.createdBy !== me && t.createdAt && t.createdAt > lastVisit);
+        const completed = shared.filter(t => t.lastCompletedBy && t.lastCompletedBy !== me && t.lastCompletedAt && t.lastCompletedAt > lastVisit);
+        const notesChanged = shared.filter(t => t.notesUpdatedBy && t.notesUpdatedBy !== me && t.notesUpdatedAt && t.notesUpdatedAt > lastVisit);
+        if (added.length || completed.length || notesChanged.length) {
+          setActivitySummary({
+            added,
+            completed,
+            notesChanged
+          });
+        }
+      }
+      PRESENCE_DOC.set({
+        [me]: now
+      }, {
+        merge: true
+      }).catch(console.error);
+    }).catch(console.error);
+  }, [me, tasks]);
   const [configError, setConfigError] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
@@ -505,17 +568,95 @@ function App() {
       ...data
     } = task;
     const prev = tasks.find(t => t.id === id);
+    const notesChanged = prev ? (data.notes || "") !== (prev.notes || "") : !!(data.notes && data.notes.trim());
     setUndo(prev ? "Edit task" : "New task", () => {
       if (prev) db.collection(TASKS_COLLECTION).doc(id).set(prev).catch(console.error);else db.collection(TASKS_COLLECTION).doc(id).delete().catch(console.error);
     });
     db.collection(TASKS_COLLECTION).doc(id).set({
       ...data,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      ...(notesChanged ? {
+        notesUpdatedAt: Date.now(),
+        notesUpdatedBy: me
+      } : {})
     }).catch(e => console.error("save failed", e));
   };
   const deleteTask = id => {
     captureUndo("Delete task", [id]);
     db.collection(TASKS_COLLECTION).doc(id).delete().catch(e => console.error(e));
+  };
+  // export/import always work against a fresh, full fetch of the tasks collection — not the in-memory `tasks`
+  // state, which is deliberately scoped (active + recent completions only) to keep normal app loads fast.
+  const exportData = async () => {
+    try {
+      const snap = await db.collection(TASKS_COLLECTION).get();
+      const allTasks = snap.docs.map(d => ({
+        id: d.id,
+        ...d.data()
+      }));
+      const payload = {
+        exportedAt: new Date().toISOString(),
+        tasks: allTasks,
+        config
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+        type: "application/json"
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `household-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("export failed", e);
+      window.alert("Export failed: " + e.message);
+    }
+  };
+  const importData = async file => {
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch (e) {
+      window.alert("That file isn't valid JSON.");
+      return;
+    }
+    if (!Array.isArray(payload.tasks)) {
+      window.alert("That file doesn't look like a valid backup.");
+      return;
+    }
+    if (!window.confirm(`This replaces ALL current tasks and sections with the ${payload.tasks.length} tasks in this backup. This can't be undone. Continue?`)) return;
+    try {
+      const existingSnap = await db.collection(TASKS_COLLECTION).get();
+      const ops = [...existingSnap.docs.map(d => ({
+        type: "delete",
+        ref: d.ref
+      })), ...payload.tasks.map(t => ({
+        type: "set",
+        ref: db.collection(TASKS_COLLECTION).doc(t.id),
+        data: t
+      }))];
+      for (let i = 0; i < ops.length; i += 450) {
+        const batch = db.batch();
+        ops.slice(i, i + 450).forEach(op => {
+          if (op.type === "delete") batch.delete(op.ref);else {
+            const {
+              id,
+              ...data
+            } = op.data;
+            batch.set(op.ref, data);
+          }
+        });
+        await batch.commit();
+      }
+      if (payload.config) await CONFIG_DOC.set(payload.config);
+      window.alert("Import complete.");
+    } catch (e) {
+      console.error("import failed", e);
+      window.alert("Import failed: " + e.message);
+    }
   };
   const toggleComplete = task => {
     captureUndo("Toggle complete", [task.id]);
@@ -529,14 +670,16 @@ function App() {
         dueDate: nextDue,
         completed: false,
         completedAt: null,
-        lastCompletedAt: Date.now()
+        lastCompletedAt: Date.now(),
+        lastCompletedBy: me
       }).catch(console.error);
     } else {
       const nowCompleting = !task.completed;
       ref.update({
         completed: nowCompleting,
         completedAt: nowCompleting ? Date.now() : null,
-        lastCompletedAt: nowCompleting ? Date.now() : null
+        lastCompletedAt: nowCompleting ? Date.now() : null,
+        lastCompletedBy: nowCompleting ? me : null
       }).catch(console.error);
     }
   };
@@ -659,12 +802,12 @@ function App() {
     return visibleTasks.filter(t => t.title.toLowerCase().includes(q)).slice(0, 8);
   }, [searchQuery, visibleTasks]);
   const needsDetailsTasks = useMemo(() => (tasks || []).filter(t => t.needsDetails && t.createdBy === me), [tasks, me]);
-  if (authReady === null) return /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
+  if (authReady === null) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
     style: centerMsg
   }, "Loading…"));
-  if (authReady === false) return /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(PinGate, null));
+  if (authReady === false) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(PinGate, null));
   if (!me) {
-    return /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         flexDirection: "column",
@@ -693,16 +836,19 @@ function App() {
         display: "flex",
         gap: 12
       }
-    }, Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/React.createElement("button", {
+    }, Object.entries(PEOPLE).map(([key, label]) =>
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("button", {
       key: key,
       onClick: () => setMe(key),
       style: btnStyle(PERSON_COLOR[key])
     }, label)))));
   }
-  if (tasks === null) return /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
+  if (tasks === null) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
     style: centerMsg
   }, "Loading the list…"));
-  return /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(Header, {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(Header, {
     me: me,
     view: view,
     setView: setView,
@@ -724,8 +870,12 @@ function App() {
         setProjectFilter("all");
       }
       setHighlightTaskId(t.id);
-    }
-  }), configError && /*#__PURE__*/React.createElement("div", {
+    },
+    onOpenSettings: () => setShowSettings(true)
+  }), configError &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       background: C.plum,
       color: C.white,
@@ -733,7 +883,10 @@ function App() {
       padding: "6px 16px",
       textAlign: "center"
     }
-  }, "Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too."), view === "grid" ? /*#__PURE__*/React.createElement(PriorityGrid, {
+  }, "Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too."), view === "grid" ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(PriorityGrid, {
     tasks: tasks,
     me: me,
     viewingPerson: priorityViewPerson || me,
@@ -745,7 +898,10 @@ function App() {
       setEditing(t);
       setShowForm(true);
     }
-  }) : view === "todo" ? /*#__PURE__*/React.createElement(ToDoList, {
+  }) : view === "todo" ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(ToDoList, {
     tasks: visibleTasks,
     onToggle: toggleComplete,
     onEdit: t => {
@@ -775,7 +931,10 @@ function App() {
     onResetToday: resetToday,
     onSetTodayBucket: setTodayBucket,
     onToggleTodayTaskDone: toggleTodayTaskDone
-  }) : /*#__PURE__*/React.createElement(QueueView, {
+  }) :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(QueueView, {
     tasks: visibleTasks,
     me: me,
     filter: filter,
@@ -832,7 +991,10 @@ function App() {
       fontSize: 24
     },
     "aria-label": "Add task"
-  }, "+"), showForm && /*#__PURE__*/React.createElement(TaskForm, {
+  }, "+"), showForm &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(TaskForm, {
     me: me,
     initial: editing,
     config: config,
@@ -847,7 +1009,10 @@ function App() {
       deleteTask(id);
       setShowForm(false);
     }
-  }), showNeedsDetails && /*#__PURE__*/React.createElement(NeedsDetailsList, {
+  }), showNeedsDetails &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(NeedsDetailsList, {
     tasks: needsDetailsTasks,
     onClose: () => setShowNeedsDetails(false),
     onPick: t => {
@@ -855,13 +1020,29 @@ function App() {
       setShowForm(true);
       setShowNeedsDetails(false);
     }
-  }), pickerFor && /*#__PURE__*/React.createElement(BucketPicker, {
+  }), pickerFor &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(BucketPicker, {
     tasks: tasks.filter(t => t.listType === "project" && !t.completed && (pickerFor.scope === "shared" ? t.scope === "shared" && (t.assignee === pickerFor.person || !t.assignee) : t.scope === "personal" && t.owner === pickerFor.person) && (!t.priorityBucket || t.priorityBucket === pickerFor.bucket)),
     onPick: taskId => {
       setBucket(taskId, pickerFor.person, pickerFor.bucket, pickerFor.scope);
       setPickerFor(null);
     },
     onClose: () => setPickerFor(null)
+  }), activitySummary &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(ActivitySummary, {
+    summary: activitySummary,
+    onClose: () => setActivitySummary(null)
+  }), showSettings &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(SettingsPanel, {
+    onClose: () => setShowSettings(false),
+    onExport: exportData,
+    onImport: importData
   }));
 }
 const centerMsg = {
@@ -884,7 +1065,7 @@ function PinGate() {
     setError("");
     auth.signInWithEmailAndPassword(HOUSEHOLD_EMAIL, pin).catch(() => setError("Wrong PIN — try again.")).finally(() => setBusy(false));
   };
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -917,7 +1098,10 @@ function PinGate() {
       letterSpacing: 4,
       fontSize: 18
     }
-  }), error && /*#__PURE__*/React.createElement("div", {
+  }), error &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       color: C.plum,
       fontSize: 12.5
@@ -936,7 +1120,7 @@ function PinGate() {
 function Shell({
   children
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     className: "app-shell-height",
     style: {
       position: "relative",
@@ -974,9 +1158,10 @@ function Header({
   searchQuery,
   setSearchQuery,
   searchResults,
-  onSelectSearchResult
+  onSelectSearchResult,
+  onOpenSettings
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "18px 18px 10px",
       borderBottom: `1px solid ${C.rule}`,
@@ -1001,7 +1186,10 @@ function Header({
       alignItems: "center",
       gap: 8
     }
-  }, needsDetailsCount > 0 && /*#__PURE__*/React.createElement("button", {
+  }, needsDetailsCount > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: onOpenNeedsDetails,
     style: {
       border: "none",
@@ -1013,7 +1201,18 @@ function Header({
       fontWeight: 700,
       cursor: "pointer"
     }
-  }, needsDetailsCount, " need details"), /*#__PURE__*/React.createElement("div", {
+  }, needsDetailsCount, " need details"), /*#__PURE__*/React.createElement("button", {
+    onClick: onOpenSettings,
+    "aria-label": "Settings",
+    style: {
+      border: "none",
+      background: "none",
+      color: C.inkSoft,
+      fontSize: 15,
+      cursor: "pointer",
+      padding: "2px 4px"
+    }
+  }, "⚙"), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: 11,
       color: C.inkSoft
@@ -1067,7 +1266,10 @@ function Header({
       outline: "none",
       boxSizing: "border-box"
     }
-  })), searchQuery.trim() && /*#__PURE__*/React.createElement("div", {
+  })), searchQuery.trim() &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       position: "absolute",
       left: 18,
@@ -1082,14 +1284,20 @@ function Header({
       maxHeight: 260,
       overflowY: "auto"
     }
-  }, searchResults.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, searchResults.length === 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       padding: "12px",
       fontSize: 12.5,
       color: C.inkSoft,
       textAlign: "center"
     }
-  }, "No matches."), searchResults.map(t => /*#__PURE__*/React.createElement("button", {
+  }, "No matches."), searchResults.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     key: t.id,
     onMouseDown: e => e.preventDefault(),
     onClick: () => onSelectSearchResult(t),
@@ -1140,7 +1348,7 @@ function TabButton({
   onClick,
   label
 }) {
-  return /*#__PURE__*/React.createElement("button", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
     onClick: onClick,
     style: {
       flex: 1,
@@ -1159,7 +1367,7 @@ function PersonBadge({
   person,
   size = 20
 }) {
-  if (!person) return /*#__PURE__*/React.createElement("span", {
+  if (!person) return /*#__PURE__*/ /*#__PURE__*/React.createElement("span", {
     style: {
       width: size,
       height: size,
@@ -1169,7 +1377,7 @@ function PersonBadge({
       display: "inline-block"
     }
   });
-  return /*#__PURE__*/React.createElement("span", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: size <= 20 ? 9 : 10,
       fontWeight: 700,
@@ -1194,7 +1402,7 @@ function FilterChip({
 }) {
   const c = activeColor || C.ink;
   const tint = activeTint || C.card;
-  return /*#__PURE__*/React.createElement("button", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
     onClick: onClick,
     style: {
       flex: 1,
@@ -1222,7 +1430,7 @@ function PriorityGrid({
   onEditTask
 }) {
   const other = viewingPerson === "jade" ? "john" : "jade";
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "16px 16px 12px",
       height: "calc(100% - 150px)",
@@ -1249,7 +1457,10 @@ function PriorityGrid({
       fontWeight: 600,
       color: C.ink
     }
-  }, PEOPLE[viewingPerson]), viewingPerson === me && /*#__PURE__*/React.createElement("span", {
+  }, PEOPLE[viewingPerson]), viewingPerson === me &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
     style: {
       fontSize: 10,
       background: C.sage,
@@ -1271,7 +1482,10 @@ function PriorityGrid({
       marginBottom: 6,
       flexShrink: 0
     }
-  }, /*#__PURE__*/React.createElement("div", null), [["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) => /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", null), [["personal", "Personal"], ["shared", "Shared"]].map(([scope, label]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     key: scope,
     style: {
       fontSize: 9.5,
@@ -1289,7 +1503,10 @@ function PriorityGrid({
       gap: 8,
       minHeight: 0
     }
-  }, BUCKETS.map(b => /*#__PURE__*/React.createElement("div", {
+  }, BUCKETS.map(b =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     key: b.key,
     style: {
       display: "grid",
@@ -1314,7 +1531,10 @@ function PriorityGrid({
       writingMode: "vertical-rl",
       transform: "rotate(180deg)"
     }
-  }, b.label)), [["personal"], ["shared"]].map(([scope]) => /*#__PURE__*/React.createElement(GridCell, {
+  }, b.label)), [["personal"], ["shared"]].map(([scope]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(GridCell, {
     key: scope,
     bucket: b,
     scope: scope,
@@ -1338,7 +1558,7 @@ function GridCell({
 }) {
   const pinned = tasks.find(t => t.gridBucket && t.gridBucket[person] === bucket.key && (scope === "shared" ? t.scope === "shared" : t.scope === "personal" && t.owner === person));
   const incomplete = pinned ? (pinned.actions || []).filter(a => !a.completed) : [];
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.card,
       border: `1px solid ${C.rule}`,
@@ -1349,7 +1569,10 @@ function GridCell({
       flexDirection: "column",
       overflow: "hidden"
     }
-  }, pinned ? /*#__PURE__*/React.createElement("div", {
+  }, pinned ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       display: "flex",
       flexDirection: "column",
@@ -1383,7 +1606,10 @@ function GridCell({
       WebkitLineClamp: 2,
       WebkitBoxOrient: "vertical"
     }
-  }, pinned.title)), incomplete.length > 0 ? /*#__PURE__*/React.createElement("div", {
+  }, pinned.title)), incomplete.length > 0 ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       marginTop: 5,
       flex: 1,
@@ -1408,12 +1634,18 @@ function GridCell({
       fontWeight: 700,
       lineHeight: 1.3
     }
-  }, "Next: ", incomplete[0].title), incomplete[0].dueDate && /*#__PURE__*/React.createElement("span", {
+  }, "Next: ", incomplete[0].title), incomplete[0].dueDate &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
     style: {
       fontSize: 9.5,
       color: C.inkSoft
     }
-  }, " · ", fmtDate(incomplete[0].dueDate))), incomplete.slice(1).map(a => /*#__PURE__*/React.createElement("div", {
+  }, " · ", fmtDate(incomplete[0].dueDate))), incomplete.slice(1).map(a =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     key: a.id,
     onClick: () => onToggleAction(pinned.id, a.id),
     style: {
@@ -1424,17 +1656,26 @@ function GridCell({
       cursor: "pointer",
       lineHeight: 1.3
     }
-  }, a.title))) : (pinned.actions || []).length > 0 ? /*#__PURE__*/React.createElement("div", {
+  }, a.title))) : (pinned.actions || []).length > 0 ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       fontSize: 10,
       color: C.inkSoft,
       marginTop: 4
     }
-  }, "All subtasks done") : /*#__PURE__*/React.createElement("div", {
+  }, "All subtasks done") :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       flex: 1
     }
-  }), pinned.notes && /*#__PURE__*/React.createElement("div", {
+  }), pinned.notes &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       fontSize: 9.5,
       color: C.inkSoft,
@@ -1472,7 +1713,10 @@ function GridCell({
       padding: 0,
       fontSize: 13
     }
-  }, "×"))) : /*#__PURE__*/React.createElement("button", {
+  }, "×"))) :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => onOpenPicker({
       person,
       scope,
@@ -1499,7 +1743,7 @@ function BucketPicker({
   onPick,
   onClose
 }) {
-  return /*#__PURE__*/React.createElement(Overlay, {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(Overlay, {
     title: "Pin to this slot",
     onClose: onClose
   }, /*#__PURE__*/React.createElement("div", {
@@ -1508,13 +1752,19 @@ function BucketPicker({
       color: C.inkSoft,
       marginBottom: 10
     }
-  }, "Showing projects already tagged for this bucket, or untagged ones. Chores don't appear here."), tasks.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, "Showing projects already tagged for this bucket, or untagged ones. Chores don't appear here."), tasks.length === 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 13,
       padding: "8px 0"
     }
-  }, "Nothing matches yet. Add or tag a project first."), tasks.map(t => /*#__PURE__*/React.createElement("button", {
+  }, "Nothing matches yet. Add or tag a project first."), tasks.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     key: t.id,
     onClick: () => onPick(t.id),
     style: {
@@ -1543,7 +1793,7 @@ function NeedsDetailsList({
   onPick,
   onClose
 }) {
-  return /*#__PURE__*/React.createElement(Overlay, {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(Overlay, {
     title: "Finish these off",
     onClose: onClose
   }, /*#__PURE__*/React.createElement("div", {
@@ -1552,7 +1802,10 @@ function NeedsDetailsList({
       color: C.inkSoft,
       marginBottom: 10
     }
-  }, "Tasks you added without full details. Tap one to fill it in properly."), tasks.map(t => /*#__PURE__*/React.createElement("button", {
+  }, "Tasks you added without full details. Tap one to fill it in properly."), tasks.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     key: t.id,
     onClick: () => onPick(t),
     style: {
@@ -1574,6 +1827,123 @@ function NeedsDetailsList({
       marginTop: 2
     }
   }, t.listType === "chore" ? "Chore" : "Project"))));
+}
+
+/* ---------- while-you-were-away summary: everything the OTHER person did on shared tasks since your last visit ---------- */
+function ActivitySummary({
+  summary,
+  onClose
+}) {
+  const {
+    added,
+    completed,
+    notesChanged
+  } = summary;
+  const Section = ({
+    title,
+    items
+  }) => items.length === 0 ? null :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      fontWeight: 700,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+      marginBottom: 6
+    }
+  }, title), items.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    key: t.id,
+    style: {
+      fontSize: 13.5,
+      color: C.ink,
+      padding: "7px 0",
+      borderBottom: `1px solid ${C.rule}`
+    }
+  }, t.title)));
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(Overlay, {
+    title: "While you were away",
+    onClose: onClose
+  }, /*#__PURE__*/React.createElement(Section, {
+    title: "Added",
+    items: added
+  }), /*#__PURE__*/React.createElement(Section, {
+    title: "Completed",
+    items: completed
+  }), /*#__PURE__*/React.createElement(Section, {
+    title: "Notes updated",
+    items: notesChanged
+  }));
+}
+function SettingsPanel({
+  onClose,
+  onExport,
+  onImport
+}) {
+  const fileInputRef = useRef(null);
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(Overlay, {
+    title: "Settings",
+    onClose: onClose
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 20
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      marginBottom: 8,
+      lineHeight: 1.4
+    }
+  }, "Download everything as a JSON file — a safety copy you can keep, separate from Firestore."), /*#__PURE__*/React.createElement("button", {
+    onClick: onExport,
+    style: {
+      ...btnStyle(C.ink),
+      width: "100%"
+    }
+  }, "Export data")), /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      marginBottom: 8,
+      lineHeight: 1.4
+    }
+  }, "Restore from a previously exported file. This replaces everything currently in the app — can't be undone."), /*#__PURE__*/React.createElement("input", {
+    type: "file",
+    accept: "application/json",
+    ref: fileInputRef,
+    style: {
+      display: "none"
+    },
+    onChange: e => {
+      if (e.target.files[0]) {
+        onImport(e.target.files[0]);
+        e.target.value = "";
+      }
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: () => fileInputRef.current.click(),
+    style: {
+      width: "100%",
+      padding: "10px 0",
+      borderRadius: 10,
+      border: `1px solid ${C.plum}`,
+      background: "transparent",
+      color: C.plum,
+      fontSize: 13.5,
+      fontWeight: 600,
+      cursor: "pointer"
+    }
+  }, "Import data")));
 }
 
 /* ---------- to-do list: a simple first pass — urgent/pressing items across everything visible to me ---------- */
@@ -1622,7 +1992,7 @@ function ActionAsRow({
 }) {
   const overdue = action.dueDate && action.dueDate < new Date().toISOString().slice(0, 10);
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.card,
       border: `1px solid ${C.rule}`,
@@ -1681,7 +2051,10 @@ function ActionAsRow({
       marginTop: 5,
       alignItems: "center"
     }
-  }, imp && /*#__PURE__*/React.createElement(Tag, {
+  }, imp &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Tag, {
     color: imp.color
   }, imp.label), /*#__PURE__*/React.createElement("span", {
     style: {
@@ -1690,7 +2063,10 @@ function ActionAsRow({
       color: overdue ? C.plum : C.inkSoft,
       fontWeight: overdue ? 700 : 500
     }
-  }, fmtDate(action.dueDate || task.dueDate)))), onSnooze && /*#__PURE__*/React.createElement("div", {
+  }, fmtDate(action.dueDate || task.dueDate)))), onSnooze &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       marginTop: 6
     }
@@ -1704,7 +2080,10 @@ function ActionAsRow({
       alignItems: "stretch",
       flexShrink: 0
     }
-  }, onAddToToday && /*#__PURE__*/React.createElement("button", {
+  }, onAddToToday &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => onAddToToday(task.id, action.id),
     style: {
       border: `1px solid ${C.rule}`,
@@ -1717,7 +2096,10 @@ function ActionAsRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, "+ The plan"), onToggleManualTodo && /*#__PURE__*/React.createElement("button", {
+  }, "+ The plan"), onToggleManualTodo &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => onToggleManualTodo(task.id),
     style: {
       border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
@@ -1730,7 +2112,10 @@ function ActionAsRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onRestore && /*#__PURE__*/React.createElement("button", {
+  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onRestore &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => onRestore(),
     style: {
       border: `1px solid ${C.rule}`,
@@ -1776,7 +2161,10 @@ function SnoozeControl({
     fontWeight: 600,
     cursor: "pointer"
   };
-  const closeBtn = onClick => /*#__PURE__*/React.createElement("button", {
+  const closeBtn = onClick =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: onClick,
     style: {
       background: C.ink,
@@ -1795,7 +2183,7 @@ function SnoozeControl({
     }
   }, "×");
   if (mode === "closed") {
-    return /*#__PURE__*/React.createElement("button", {
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
       onClick: () => setMode("options"),
       style: {
         background: C.ink,
@@ -1810,7 +2198,7 @@ function SnoozeControl({
     }, "Not today");
   }
   if (mode === "custom") {
-    return /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 6,
@@ -1843,14 +2231,17 @@ function SnoozeControl({
       }
     }, "Set"), closeBtn(() => setMode("closed")));
   }
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
       flexWrap: "wrap",
       alignItems: "center"
     }
-  }, [["tomorrow", "Tomorrow"], ["next-weekend", "Next weekend"], ["next-month", "Next month"]].map(([k, l]) => /*#__PURE__*/React.createElement("button", {
+  }, [["tomorrow", "Tomorrow"], ["next-weekend", "Next weekend"], ["next-month", "Next month"]].map(([k, l]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     key: k,
     onClick: () => {
       onSnooze(snoozeTarget(k));
@@ -1877,7 +2268,7 @@ function HeroCard({
   const title = driving ? driving.title : task.title;
   const dueDate = driving ? driving.dueDate || task.dueDate : effectiveDueDate(task);
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.ink,
       color: C.white,
@@ -1895,7 +2286,10 @@ function HeroCard({
       textTransform: "uppercase",
       letterSpacing: 1
     }
-  }, "Most pressing right now"), driving && /*#__PURE__*/React.createElement("div", {
+  }, "Most pressing right now"), driving &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       fontSize: 11,
       opacity: 0.6,
@@ -1903,7 +2297,10 @@ function HeroCard({
       textTransform: "uppercase",
       letterSpacing: 0.5
     }
-  }, "from ", task.title), imp && /*#__PURE__*/React.createElement("div", {
+  }, "from ", task.title), imp &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       display: "inline-block",
       fontSize: 10,
@@ -2189,7 +2586,7 @@ function ToDoList({
     });
     return m;
   }, [tasks]);
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       height: "calc(100% - 120px)",
       overflowY: "auto",
@@ -2209,7 +2606,10 @@ function ToDoList({
       cursor: "pointer",
       marginBottom: 12
     }
-  }, overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"), overwhelmed && topPick && /*#__PURE__*/React.createElement(HeroCard, {
+  }, overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"), overwhelmed && topPick &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(HeroCard, {
     pick: topPick,
     onToggle: wrappedToggle,
     onToggleAction: onToggleAction,
@@ -2236,20 +2636,29 @@ function ToDoList({
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onToggleTodayTaskDone: onToggleTodayTaskDone
-  }), displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }), displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 13,
       textAlign: "center",
       marginTop: 40
     }
-  }, "Nothing pressing right now."), displayChores.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+  }, "Nothing pressing right now."), displayChores.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(CollapsibleSection, {
     title: "Chores",
     count: displayChores.length,
     defaultOpen: true
   }, displayChores.map(t => {
     const driving = drivingSubtask(t);
-    return driving ? /*#__PURE__*/React.createElement(ActionAsRow, {
+    return driving ?
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(ActionAsRow, {
       key: t.id,
       task: t,
       action: driving,
@@ -2258,7 +2667,10 @@ function ToDoList({
       onSnooze: overwhelmed ? dateStr => snoozeProjectAction(t, driving, dateStr) : undefined,
       onAddToToday: inPlan(t.id, driving.id) ? undefined : onAddTaskToToday,
       onToggleManualTodo: t.manualTodo ? onToggleManualTodo : undefined
-    }) : /*#__PURE__*/React.createElement(TaskRow, {
+    }) :
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(TaskRow, {
       key: t.id,
       task: t,
       ...rowProps,
@@ -2266,7 +2678,10 @@ function ToDoList({
       onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday,
       onToggleManualTodo: t.manualTodo ? onToggleManualTodo : undefined
     });
-  })), displayProjects.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+  })), displayProjects.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(CollapsibleSection, {
     title: "Priority Projects",
     count: displayProjects.length,
     defaultOpen: true
@@ -2276,32 +2691,44 @@ function ToDoList({
   }) => {
     const d = action && action.dueDate || task.dueDate;
     const notYetDue = !!d && d > today;
-    return /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
       key: task.id + (action ? action.id : ""),
       style: notYetDue ? {
         opacity: 0.55
       } : undefined
-    }, action ? /*#__PURE__*/React.createElement(ActionAsRow, {
+    }, action ?
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(ActionAsRow, {
       task: task,
       action: action,
       onToggleAction: onToggleAction,
       onEdit: onEdit,
       onSnooze: overwhelmed ? kind => snoozeProjectAction(task, action, kind) : undefined,
       onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday
-    }) : /*#__PURE__*/React.createElement(TaskRow, {
+    }) :
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(TaskRow, {
       task: task,
       ...rowProps,
       onSnooze: overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined,
       onAddToToday: inPlan(task.id, null) ? undefined : onAddTaskToToday
     }));
-  })), displayOtherProjects.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+  })), displayOtherProjects.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(CollapsibleSection, {
     title: "Other Projects",
     count: displayOtherProjects.length,
     defaultOpen: true
   }, displayOtherProjects.map(({
     task,
     action
-  }) => action ? /*#__PURE__*/React.createElement(ActionAsRow, {
+  }) => action ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(ActionAsRow, {
     key: task.id + action.id,
     task: task,
     action: action,
@@ -2310,7 +2737,10 @@ function ToDoList({
     onSnooze: overwhelmed ? dateStr => snoozeProjectAction(task, action, dateStr) : undefined,
     onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday,
     onToggleManualTodo: onToggleManualTodo
-  }) : /*#__PURE__*/React.createElement(TaskRow, {
+  }) :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(TaskRow, {
     key: task.id,
     task: task,
     ...rowProps,
@@ -2327,14 +2757,20 @@ function ToDoList({
       color: C.inkSoft,
       marginBottom: 6
     }
-  }, "Marked \"not today\" — still overdue if they were, just out of the way until the date you picked."), postponedChores.length === 0 && postponedProjectItems.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, "Marked \"not today\" — still overdue if they were, just out of the way until the date you picked."), postponedChores.length === 0 && postponedProjectItems.length === 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 12,
       textAlign: "center",
       padding: "10px 0"
     }
-  }, "Nothing postponed right now."), postponedChores.map(t => /*#__PURE__*/React.createElement(TaskRow, {
+  }, "Nothing postponed right now."), postponedChores.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(TaskRow, {
     key: t.id,
     task: t,
     ...rowProps,
@@ -2343,7 +2779,10 @@ function ToDoList({
   })), postponedProjectItems.map(({
     task,
     action
-  }) => /*#__PURE__*/React.createElement(ActionAsRow, {
+  }) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(ActionAsRow, {
     key: task.id + action.id,
     task: task,
     action: action,
@@ -2361,23 +2800,35 @@ function ToDoList({
       color: C.inkSoft,
       marginBottom: 6
     }
-  }, "Recurring, can't-start-early tasks whose window is approaching."), upcoming.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, "Recurring, can't-start-early tasks whose window is approaching."), upcoming.length === 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 12,
       textAlign: "center",
       padding: "10px 0"
     }
-  }, "Nothing coming up yet."), upcoming.map(t => /*#__PURE__*/React.createElement(TaskRow, {
+  }, "Nothing coming up yet."), upcoming.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(TaskRow, {
     key: t.id,
     task: t,
     ...rowProps,
     onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday
-  }))), justDone.length > 0 && /*#__PURE__*/React.createElement(CollapsibleSection, {
+  }))), justDone.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(CollapsibleSection, {
     title: "Recently completed",
     count: justDone.length,
     defaultOpen: false
-  }, justDone.map(t => /*#__PURE__*/React.createElement(TaskRow, {
+  }, justDone.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(TaskRow, {
     key: t.id,
     task: t,
     ...rowProps,
@@ -2422,7 +2873,7 @@ function TodayItemRow({
     completed = false;
     onCheck = () => {};
   }
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
@@ -2430,7 +2881,10 @@ function TodayItemRow({
       padding: "6px 0",
       background: C.card
     }
-  }, startDrag && /*#__PURE__*/React.createElement(DragHandle, {
+  }, startDrag &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(DragHandle, {
     onPointerDown: startDrag
   }), /*#__PURE__*/React.createElement("button", {
     onClick: onCheck,
@@ -2505,7 +2959,7 @@ function TodayPlanSection({
   const nowItems = items.filter(it => it.bucket !== "later");
   const laterItems = items.filter(it => it.bucket === "later");
   const keyFn = item => item.type + item.id;
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.card,
       border: `1px solid ${C.rule}`,
@@ -2529,7 +2983,10 @@ function TodayPlanSection({
       fontSize: 16,
       color: C.ink
     }
-  }, "The plan"), !resetting ? /*#__PURE__*/React.createElement("button", {
+  }, "The plan"), !resetting ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => setResetting(true),
     style: {
       border: `1px solid ${C.plum}`,
@@ -2541,7 +2998,10 @@ function TodayPlanSection({
       fontWeight: 600,
       cursor: "pointer"
     }
-  }, "Reset") : /*#__PURE__*/React.createElement("button", {
+  }, "Reset") :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => {
       onReset();
       setResetting(false);
@@ -2560,7 +3020,10 @@ function TodayPlanSection({
     style: {
       flex: 1
     }
-  }, nowItems.length === 0 && /*#__PURE__*/React.createElement("div", {
+  }, nowItems.length === 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 12.5,
@@ -2571,7 +3034,10 @@ function TodayPlanSection({
     items: nowItems,
     keyFn: keyFn,
     onFinalize: arr => onReorderBucketFull("now", arr),
-    renderRow: (item, idx, startDrag) => /*#__PURE__*/React.createElement(TodayItemRow, {
+    renderRow: (item, idx, startDrag) =>
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(TodayItemRow, {
       item: item,
       tasksById: tasksById,
       onToggleSundry: onToggleSundry,
@@ -2585,7 +3051,10 @@ function TodayPlanSection({
       moveLabel: "↓ Later",
       startDrag: startDrag
     })
-  }), laterItems.length > 0 && /*#__PURE__*/React.createElement("div", {
+  }), laterItems.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       marginTop: 14,
       paddingTop: 10,
@@ -2604,7 +3073,10 @@ function TodayPlanSection({
     items: laterItems,
     keyFn: keyFn,
     onFinalize: arr => onReorderBucketFull("later", arr),
-    renderRow: (item, idx, startDrag) => /*#__PURE__*/React.createElement(TodayItemRow, {
+    renderRow: (item, idx, startDrag) =>
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(TodayItemRow, {
       item: item,
       tasksById: tasksById,
       onToggleSundry: onToggleSundry,
@@ -2738,7 +3210,7 @@ function QueueView(props) {
     const t = setTimeout(() => setJumpToSection(null), 4000);
     return () => clearTimeout(t);
   }, [jumpToSection]);
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       height: "calc(100% - 150px)",
       display: "flex",
@@ -2756,7 +3228,10 @@ function QueueView(props) {
       gap: 6,
       padding: "10px 16px 0"
     }
-  }, [["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => /*#__PURE__*/React.createElement("button", {
+  }, [["chore", "Chores"], ["project", "Projects"]].map(([k, l]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     key: k,
     onClick: () => setTypeFilter(k),
     style: {
@@ -2783,20 +3258,29 @@ function QueueView(props) {
       cursor: "pointer",
       flexShrink: 0
     }
-  }, "☰")), typeFilter === "chore" && /*#__PURE__*/React.createElement("div", {
+  }, "☰")), typeFilter === "chore" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
       padding: "8px 16px 0"
     }
-  }, [["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/React.createElement(FilterChip, {
+  }, [["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(FilterChip, {
     key: k,
     active: choreFilter === k,
     onClick: () => setChoreFilter(k),
     label: l,
     activeColor: filterColor(k),
     activeTint: filterTint(k)
-  }))), typeFilter === "project" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
+  }))), typeFilter === "project" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "8px 16px 0"
     }
@@ -2822,20 +3306,29 @@ function QueueView(props) {
       opacity: 0.6,
       fontSize: 11
     }
-  }, "⇄"))), projectScope === "shared" && /*#__PURE__*/React.createElement("div", {
+  }, "⇄"))), projectScope === "shared" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
       padding: "8px 16px 0"
     }
-  }, [["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/React.createElement(FilterChip, {
+  }, [["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(FilterChip, {
     key: k,
     active: projectFilter === k,
     onClick: () => setProjectFilter(k),
     label: l,
     activeColor: filterColor(k),
     activeTint: filterTint(k)
-  }))))), typeFilter === "chore" ? /*#__PURE__*/React.createElement(RoomBoard, {
+  }))))), typeFilter === "chore" ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(RoomBoard, {
     tasks: sorted,
     rowProps: rowProps,
     baseRooms: config.rooms,
@@ -2848,7 +3341,7 @@ function QueueView(props) {
     jumpToSection: jumpToSection
   }) : (() => {
     const catList = catListForNav;
-    return /*#__PURE__*/React.createElement(CategoryBoard, {
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement(CategoryBoard, {
       tasks: sorted,
       rowProps: rowProps,
       baseCategories: catList,
@@ -2860,13 +3353,19 @@ function QueueView(props) {
       highlightTaskId: highlightTaskId,
       jumpToSection: jumpToSection
     });
-  })(), showNav && /*#__PURE__*/React.createElement(Overlay, {
+  })(), showNav &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Overlay, {
     title: typeFilter === "chore" ? "Rooms" : "Categories",
     onClose: () => setShowNav(false)
   }, navSections.map(({
     name,
     count
-  }) => /*#__PURE__*/React.createElement("button", {
+  }) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     key: name,
     onClick: () => {
       setJumpToSection(name);
@@ -2905,7 +3404,7 @@ function SectionDeleteButton({
 }) {
   const [confirming, setConfirming] = useState(false);
   if (confirming) {
-    return /*#__PURE__*/React.createElement("button", {
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
       onClick: e => {
         e.stopPropagation();
         onDelete();
@@ -2923,7 +3422,7 @@ function SectionDeleteButton({
       }
     }, "Confirm?");
   }
-  return /*#__PURE__*/React.createElement("button", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       setConfirming(true);
@@ -2987,7 +3486,7 @@ function StackedSection({
     setCollapsed(c => !c);
   };
   const stripe = name === "Unassigned" ? C.taupe : colorBg;
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14
     },
@@ -3038,22 +3537,37 @@ function StackedSection({
       color: C.inkSoft,
       fontSize: 11
     }
-  }, collapsed ? "▸" : "▾")), deletable && /*#__PURE__*/React.createElement(SectionDeleteButton, {
+  }, collapsed ? "▸" : "▾")), deletable &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(SectionDeleteButton, {
     onDelete: () => onDelete(name)
-  })), !collapsed && /*#__PURE__*/React.createElement("div", null, tasks.length === 0 && /*#__PURE__*/React.createElement("div", {
+  })), !collapsed &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", null, tasks.length === 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       color: C.inkSoft,
       fontSize: 12,
       textAlign: "center",
       padding: "10px 0"
     }
-  }, emptyLabel), active.map(t => /*#__PURE__*/React.createElement(TaskRow, {
+  }, emptyLabel), active.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(TaskRow, {
     key: t.id,
     task: t,
     ...rowProps,
     compact: true,
     highlighted: t.id === highlightTaskId
-  })), faded.length > 0 && !showFuture && /*#__PURE__*/React.createElement("button", {
+  })), faded.length > 0 && !showFuture &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => setShowFuture(true),
     style: {
       width: "100%",
@@ -3065,13 +3579,19 @@ function StackedSection({
       fontSize: 11.5,
       cursor: "pointer"
     }
-  }, "Show future tasks/chores (", faded.length, ") →"), showFuture && faded.map(t => /*#__PURE__*/React.createElement(TaskRow, {
+  }, "Show future tasks/chores (", faded.length, ") →"), showFuture && faded.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(TaskRow, {
     key: t.id,
     task: t,
     ...rowProps,
     compact: true,
     highlighted: t.id === highlightTaskId
-  })), showFuture && faded.length > 0 && /*#__PURE__*/React.createElement("button", {
+  })), showFuture && faded.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => setShowFuture(false),
     style: {
       width: "100%",
@@ -3098,7 +3618,7 @@ function SectionStack({
   highlightTaskId,
   jumpToSection
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "12px 16px 90px",
       overflowY: "auto",
@@ -3108,7 +3628,10 @@ function SectionStack({
     items: baseSections,
     keyFn: name => name,
     onFinalize: onReorderFull,
-    renderRow: (name, idx, startDrag) => /*#__PURE__*/React.createElement(StackedSection, {
+    renderRow: (name, idx, startDrag) =>
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(StackedSection, {
       name: name,
       tasks: sectionTasksFn(name),
       colorBg: colorBg,
@@ -3118,11 +3641,17 @@ function SectionStack({
       emptyLabel: emptyLabel,
       highlightTaskId: highlightTaskId,
       jumpToSection: jumpToSection,
-      dragHandle: /*#__PURE__*/React.createElement(DragHandle, {
+      dragHandle:
+      /*#__PURE__*/
+      /*#__PURE__*/
+      React.createElement(DragHandle, {
         onPointerDown: startDrag
       })
     })
-  }), extraSections.map(name => /*#__PURE__*/React.createElement(StackedSection, {
+  }), extraSections.map(name =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(StackedSection, {
     key: name,
     name: name,
     tasks: sectionTasksFn(name),
@@ -3150,7 +3679,7 @@ function RoomBoard({
   highlightTaskId,
   jumpToSection
 }) {
-  return /*#__PURE__*/React.createElement(SectionStack, {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(SectionStack, {
     baseSections: baseRooms,
     extraSections: extraRooms,
     sectionTasksFn: room => tasks.filter(t => (t.room || "Unassigned") === room),
@@ -3177,7 +3706,7 @@ function CategoryBoard({
   highlightTaskId,
   jumpToSection
 }) {
-  return /*#__PURE__*/React.createElement(SectionStack, {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(SectionStack, {
     baseSections: baseCategories,
     extraSections: extraCategories,
     sectionTasksFn: cat => tasks.filter(t => (t.category || "Unassigned") === cat),
@@ -3200,7 +3729,7 @@ function AddSectionRow({
     const name = window.prompt(`New ${label} name`);
     if (name && name.trim()) onAdd(name.trim());
   };
-  return /*#__PURE__*/React.createElement("button", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
     onClick: add,
     style: {
       width: "100%",
@@ -3250,7 +3779,7 @@ function TaskRow({
       setNewAction("");
     }
   };
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       background: C.card,
       border: `1px solid ${highlighted ? C.mustard : C.rule}`,
@@ -3305,7 +3834,10 @@ function TaskRow({
       fontWeight: 600,
       textDecoration: isDone ? "line-through" : "none"
     }
-  }, task.title)), !compact && /*#__PURE__*/React.createElement("div", {
+  }, task.title)), !compact &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       display: "flex",
       flexWrap: "wrap",
@@ -3313,18 +3845,30 @@ function TaskRow({
       marginTop: 5,
       alignItems: "center"
     }
-  }, notYetAvailable && /*#__PURE__*/React.createElement(Tag, {
+  }, notYetAvailable &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Tag, {
     color: C.inkSoft
-  }, "Not yet — ", fmtDate(task.dueDate)), imp && /*#__PURE__*/React.createElement(Tag, {
+  }, "Not yet — ", fmtDate(task.dueDate)), imp &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Tag, {
     color: imp.color
-  }, imp.label), task.dueDate && !notYetAvailable && /*#__PURE__*/React.createElement("span", {
+  }, imp.label), task.dueDate && !notYetAvailable &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
     style: {
       fontSize: 10.5,
       fontFamily: "IBM Plex Mono, monospace",
       color: overdue ? C.plum : C.inkSoft,
       fontWeight: overdue ? 700 : 500
     }
-  }, fmtDate(task.dueDate))), compact && task.dueDate && /*#__PURE__*/React.createElement("div", {
+  }, fmtDate(task.dueDate))), compact && task.dueDate &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       fontSize: 10,
       fontFamily: "IBM Plex Mono, monospace",
@@ -3339,7 +3883,10 @@ function TaskRow({
       alignItems: "stretch",
       flexShrink: 0
     }
-  }, onAddToToday && /*#__PURE__*/React.createElement("button", {
+  }, onAddToToday &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       onAddToToday(task.id, null);
@@ -3355,7 +3902,10 @@ function TaskRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, "+ The plan"), onToggleManualTodo && /*#__PURE__*/React.createElement("button", {
+  }, "+ The plan"), onToggleManualTodo &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       onToggleManualTodo(task.id);
@@ -3371,7 +3921,10 @@ function TaskRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onRestore && /*#__PURE__*/React.createElement("button", {
+  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onRestore &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: e => {
       e.stopPropagation();
       onRestore();
@@ -3387,7 +3940,10 @@ function TaskRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, "Restore"))), task.notes && !compact && /*#__PURE__*/React.createElement("div", {
+  }, "Restore"))), task.notes && !compact &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       marginLeft: 30,
       marginTop: 5,
@@ -3395,7 +3951,10 @@ function TaskRow({
       color: C.inkSoft,
       fontStyle: "italic"
     }
-  }, task.notes), onSnooze && /*#__PURE__*/React.createElement("div", {
+  }, task.notes), onSnooze &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       marginLeft: 30,
       marginTop: 6
@@ -3407,7 +3966,10 @@ function TaskRow({
       marginLeft: 30,
       marginTop: 6
     }
-  }, na ? /*#__PURE__*/React.createElement("button", {
+  }, na ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => onToggleAction(task.id, na.id),
     style: {
       display: "flex",
@@ -3435,12 +3997,18 @@ function TaskRow({
       fontStyle: "italic",
       lineHeight: 1.3
     }
-  }, "Next: ", na.title, na.dueDate ? ` · ${fmtDate(na.dueDate)}` : "")) : progress ? /*#__PURE__*/React.createElement("span", {
+  }, "Next: ", na.title, na.dueDate ? ` · ${fmtDate(na.dueDate)}` : "")) : progress ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
     style: {
       fontSize: 11,
       color: C.inkSoft
     }
-  }, "All subtasks done") : null, progress && /*#__PURE__*/React.createElement("button", {
+  }, "All subtasks done") : null, progress &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => setOpen(o => !o),
     style: {
       border: "none",
@@ -3451,7 +4019,10 @@ function TaskRow({
       padding: 0,
       marginLeft: na ? 8 : 0
     }
-  }, progress, " ", open ? "▴" : "▾")), open && /*#__PURE__*/React.createElement("div", {
+  }, progress, " ", open ? "▴" : "▾")), open &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       marginLeft: 30,
       marginTop: 8,
@@ -3462,7 +4033,10 @@ function TaskRow({
     items: task.actions || [],
     keyFn: a => a.id,
     onFinalize: arr => onSetTaskActions(task.id, arr),
-    renderRow: (a, idx, startDrag) => /*#__PURE__*/React.createElement("div", {
+    renderRow: (a, idx, startDrag) =>
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -3555,7 +4129,7 @@ function Tag({
   color,
   children
 }) {
-  return /*#__PURE__*/React.createElement("span", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: C.white,
@@ -3570,7 +4144,7 @@ function Tag({
 function MetaTag({
   children
 }) {
-  return /*#__PURE__*/React.createElement("span", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10,
       color: C.inkSoft,
@@ -3588,7 +4162,7 @@ function DragHandle({
   onPointerDown,
   light
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     onPointerDown: onPointerDown,
     style: {
       cursor: "grab",
@@ -3659,7 +4233,7 @@ function DragReorderList({
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onEnd);
   };
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     ref: containerRef
   }, order.map((item, index) => {
     const isDragging = dragging && dragging.index === index;
@@ -3670,7 +4244,7 @@ function DragReorderList({
       opacity: 0.94,
       boxShadow: "0 6px 16px rgba(43,42,40,0.18)"
     } : {};
-    return /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
       key: keyFn(item),
       style: style
     }, renderRow(item, index, startDrag(index)));
@@ -3685,7 +4259,7 @@ function CollapsibleSection({
   children
 }) {
   const [open, setOpen] = useState(!!defaultOpen);
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14
     }
@@ -3725,7 +4299,7 @@ function Overlay({
   headerExtra,
   children
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
       inset: 0,
@@ -3805,7 +4379,7 @@ function SectionSelect({
     setName("");
   };
   if (adding) {
-    return /*#__PURE__*/React.createElement("div", {
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
       style: {
         display: "flex",
         gap: 6
@@ -3833,13 +4407,16 @@ function SectionSelect({
       }
     }, "Add"));
   }
-  return /*#__PURE__*/React.createElement("select", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("select", {
     value: value,
     onChange: e => {
       if (e.target.value === "__new__") setAdding(true);else onChange(e.target.value);
     },
     style: inputStyle
-  }, (value && !options.includes(value) ? [value, ...options] : options).map(o => /*#__PURE__*/React.createElement("option", {
+  }, (value && !options.includes(value) ? [value, ...options] : options).map(o =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("option", {
     key: o,
     value: o
   }, o)), /*#__PURE__*/React.createElement("option", {
@@ -3942,10 +4519,13 @@ function TaskForm({
       onClose();
     }
   };
-  return /*#__PURE__*/React.createElement(Overlay, {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement(Overlay, {
     title: initial ? "Edit task" : "New task",
     onClose: finishAndSave,
-    headerExtra: /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
+    headerExtra:
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement("button", {
       onClick: () => setNotesOpen(o => !o),
       style: {
         position: "relative",
@@ -3957,7 +4537,10 @@ function TaskForm({
         fontSize: 15,
         lineHeight: 1
       }
-    }, "📝", t.notes && /*#__PURE__*/React.createElement("span", {
+    }, "📝", t.notes &&
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("span", {
       style: {
         position: "absolute",
         top: 2,
@@ -3990,7 +4573,10 @@ function TaskForm({
     onChange: e => set("title", capFirst(e.target.value)),
     placeholder: "e.g. Clean shower screen",
     style: inputStyle
-  })), !initial && /*#__PURE__*/React.createElement("div", {
+  })), !initial &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "flex-start",
@@ -4026,7 +4612,10 @@ function TaskForm({
       ...inputStyle,
       width: 170
     }
-  })), t.dueDate && /*#__PURE__*/React.createElement("div", {
+  })), t.dueDate &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "flex-start",
@@ -4058,7 +4647,10 @@ function TaskForm({
     items: t.actions || [],
     keyFn: a => a.id,
     onFinalize: arr => set("actions", arr),
-    renderRow: (a, idx, startDrag) => /*#__PURE__*/React.createElement("div", {
+    renderRow: (a, idx, startDrag) =>
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement("div", {
       style: {
         display: "flex",
         alignItems: "center",
@@ -4144,7 +4736,10 @@ function TaskForm({
       padding: "0 12px",
       cursor: "pointer"
     }
-  }, "+")))), !deferDetails && /*#__PURE__*/React.createElement(FormSection, {
+  }, "+")))), !deferDetails &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(FormSection, {
     title: "Details"
   }, /*#__PURE__*/React.createElement(Field, {
     label: "Type *"
@@ -4158,21 +4753,30 @@ function TaskForm({
     options: [["shared", "Shared"], ["personal", "Personal"]],
     value: t.scope,
     onChange: v => set("scope", v)
-  })), t.listType === "chore" && /*#__PURE__*/React.createElement(Field, {
+  })), t.listType === "chore" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Field, {
     label: "Category"
   }, /*#__PURE__*/React.createElement(SectionSelect, {
     value: t.room,
     onChange: v => set("room", v),
     options: roomOptions,
     onAddNew: onAddRoom
-  })), t.listType === "project" && t.scope && /*#__PURE__*/React.createElement(Field, {
+  })), t.listType === "project" && t.scope &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Field, {
     label: "Category"
   }, /*#__PURE__*/React.createElement(SectionSelect, {
     value: t.category,
     onChange: v => set("category", v),
     options: categoryOptions,
     onAddNew: name => onAddCategory(t.scope, t.owner || me, name)
-  })), showAssignee && /*#__PURE__*/React.createElement(Field, {
+  })), showAssignee &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Field, {
     label: "Assign to"
   }, /*#__PURE__*/React.createElement(SegRow, {
     options: [[null, "Anyone"], ["jade", "Jade"], ["john", "John"]],
@@ -4186,7 +4790,10 @@ function TaskForm({
     options: [[null, "None"], ...IMPORTANCE.map(p => [p.key, p.label])],
     value: t.priority,
     onChange: v => set("priority", v)
-  })), t.listType === "project" && /*#__PURE__*/React.createElement(Field, {
+  })), t.listType === "project" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Field, {
     label: "Priority category (doesn't pin automatically)"
   }, /*#__PURE__*/React.createElement(SegRow, {
     options: [[null, "None"], ...BUCKETS.map(b => [b.key, b.label])],
@@ -4201,7 +4808,10 @@ function TaskForm({
       ...t.recurrence,
       unit: v
     })
-  })), t.recurrence.unit !== "none" && /*#__PURE__*/React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Field, {
+  })), t.recurrence.unit !== "none" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(React.Fragment, null, /*#__PURE__*/React.createElement(Field, {
     label: `Every (${t.recurrence.unit}s)`
   }, /*#__PURE__*/React.createElement("input", {
     type: "number",
@@ -4224,7 +4834,10 @@ function TaskForm({
       ...t.recurrence,
       mode: v
     })
-  })))), notesOpen && /*#__PURE__*/React.createElement(FormSection, {
+  })))), notesOpen &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(FormSection, {
     title: "Notes"
   }, /*#__PURE__*/React.createElement(Field, {
     label: "Notes"
@@ -4238,7 +4851,10 @@ function TaskForm({
       resize: "vertical",
       fontFamily: "inherit"
     }
-  }))), initial && /*#__PURE__*/React.createElement("button", {
+  }))), initial &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: () => {
       if (window.confirm(`Delete "${t.title}"? This can't be undone.`)) onDelete(t.id);
     },
@@ -4261,13 +4877,16 @@ function FormSection({
   first,
   children
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: first ? 0 : 18,
       paddingTop: first ? 0 : 16,
       borderTop: first ? "none" : `1px solid ${C.rule}`
     }
-  }, title && /*#__PURE__*/React.createElement("div", {
+  }, title &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
     style: {
       fontFamily: "Fraunces, serif",
       fontSize: 13,
@@ -4281,7 +4900,7 @@ function Field({
   label,
   children
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 13
     }
@@ -4311,13 +4930,16 @@ function SegRow({
   value,
   onChange
 }) {
-  return /*#__PURE__*/React.createElement("div", {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       gap: 6,
       flexWrap: "wrap"
     }
-  }, options.map(([val, label]) => /*#__PURE__*/React.createElement("button", {
+  }, options.map(([val, label]) =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     key: String(val),
     onClick: () => onChange(val),
     style: {
@@ -4331,7 +4953,10 @@ function SegRow({
     }
   }, label)));
 }
-ReactDOM.createRoot(document.getElementById("root")).render(/*#__PURE__*/React.createElement(App, null));</script>
+ReactDOM.createRoot(document.getElementById("root")).render(
+/*#__PURE__*/
+/*#__PURE__*/
+React.createElement(App, null));</script>
 
 </body>
 </html>

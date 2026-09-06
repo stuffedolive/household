@@ -25,7 +25,7 @@ const C = {
   slateTint: "#E1E7EA",
   taupeTint: "#ECE7DC"
 };
-const APP_VERSION = "v40";
+const APP_VERSION = "v41";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -170,6 +170,7 @@ function withOrphans(sections, tasks, field) {
 }
 const TASKS_COLLECTION = "tasks";
 const CONFIG_DOC = db.collection("meta").doc("config");
+const PRESENCE_DOC = db.collection("meta").doc("presence");
 const TODAY_COLLECTION = "today";
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 function sanitizeList(arr, fallback) {
@@ -179,7 +180,6 @@ function sanitizeList(arr, fallback) {
 function App() {
   const [authReady, setAuthReady] = useState(null);
   const [me, setMe] = useState(null);
-  const [tasks, setTasks] = useState(null);
   const [config, setConfig] = useState({
     rooms: DEFAULT_ROOMS,
     sharedCategories: DEFAULT_CATEGORIES,
@@ -217,6 +217,10 @@ function App() {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pickerFor, setPickerFor] = useState(null);
+  const [activitySummary, setActivitySummary] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const activityCheckedRef = useRef(false);
+
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const u = params.get("user");
@@ -231,17 +235,54 @@ function App() {
     });
     return unsub;
   }, []);
+  // Two scoped queries instead of one unbounded one: active/recurring tasks are always small and cheap, but
+  // completed one-off tasks accumulate forever with no pruning — capping that fetch keeps load times flat
+  // no matter how many years of history pile up, without deleting anything.
+  const [activeTasksMap, setActiveTasksMap] = useState({});
+  const [recentCompletedMap, setRecentCompletedMap] = useState({});
   useEffect(() => {
     if (authReady !== true) return;
-    const unsub = db.collection(TASKS_COLLECTION).onSnapshot(snap => setTasks(snap.docs.map(d => ({
-      id: d.id,
-      ...d.data()
-    }))), err => {
-      console.error("sync error", err);
-      setTasks([]);
-    });
+    const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", false).onSnapshot(snap => {
+      const m = {};
+      snap.docs.forEach(d => { m[d.id] = { id: d.id, ...d.data() }; });
+      setActiveTasksMap(m);
+    }, err => { console.error("sync error (active)", err); setActiveTasksMap({}); });
     return unsub;
   }, [authReady]);
+  useEffect(() => {
+    if (authReady !== true) return;
+    const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", true).orderBy("lastCompletedAt", "desc").limit(150).onSnapshot(snap => {
+      const m = {};
+      snap.docs.forEach(d => { m[d.id] = { id: d.id, ...d.data() }; });
+      setRecentCompletedMap(m);
+    }, err => { console.error("sync error (completed) — if this is an index error, Firestore's console link will create it in one click", err); setRecentCompletedMap({}); });
+    return unsub;
+  }, [authReady]);
+  const tasks = useMemo(() => {
+    if (authReady !== true) return null;
+    return [...Object.values(activeTasksMap), ...Object.values(recentCompletedMap)];
+  }, [activeTasksMap, recentCompletedMap, authReady]);
+  useEffect(() => {
+    if (activityCheckedRef.current) return;
+    if (!me || tasks === null) return;
+    activityCheckedRef.current = true;
+    PRESENCE_DOC.get().then(snap => {
+      const data = snap.data() || {};
+      const lastVisit = data[me];
+      const now = Date.now();
+      if (lastVisit) {
+        // only shared tasks — the other person's personal tasks should never surface here
+        const shared = tasks.filter(t => t.scope === "shared");
+        const added = shared.filter(t => t.createdBy && t.createdBy !== me && t.createdAt && t.createdAt > lastVisit);
+        const completed = shared.filter(t => t.lastCompletedBy && t.lastCompletedBy !== me && t.lastCompletedAt && t.lastCompletedAt > lastVisit);
+        const notesChanged = shared.filter(t => t.notesUpdatedBy && t.notesUpdatedBy !== me && t.notesUpdatedAt && t.notesUpdatedAt > lastVisit);
+        if (added.length || completed.length || notesChanged.length) {
+          setActivitySummary({ added, completed, notesChanged });
+        }
+      }
+      PRESENCE_DOC.set({ [me]: now }, { merge: true }).catch(console.error);
+    }).catch(console.error);
+  }, [me, tasks]);
   const [configError, setConfigError] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
@@ -453,17 +494,77 @@ function App() {
       ...data
     } = task;
     const prev = tasks.find(t => t.id === id);
+    const notesChanged = prev ? (data.notes || "") !== (prev.notes || "") : !!(data.notes && data.notes.trim());
     setUndo(prev ? "Edit task" : "New task", () => {
       if (prev) db.collection(TASKS_COLLECTION).doc(id).set(prev).catch(console.error);else db.collection(TASKS_COLLECTION).doc(id).delete().catch(console.error);
     });
     db.collection(TASKS_COLLECTION).doc(id).set({
       ...data,
-      updatedAt: Date.now()
+      updatedAt: Date.now(),
+      ...(notesChanged ? { notesUpdatedAt: Date.now(), notesUpdatedBy: me } : {})
     }).catch(e => console.error("save failed", e));
   };
   const deleteTask = id => {
     captureUndo("Delete task", [id]);
     db.collection(TASKS_COLLECTION).doc(id).delete().catch(e => console.error(e));
+  };
+  // export/import always work against a fresh, full fetch of the tasks collection — not the in-memory `tasks`
+  // state, which is deliberately scoped (active + recent completions only) to keep normal app loads fast.
+  const exportData = async () => {
+    try {
+      const snap = await db.collection(TASKS_COLLECTION).get();
+      const allTasks = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      const payload = { exportedAt: new Date().toISOString(), tasks: allTasks, config };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `household-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("export failed", e);
+      window.alert("Export failed: " + e.message);
+    }
+  };
+  const importData = async file => {
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch (e) {
+      window.alert("That file isn't valid JSON.");
+      return;
+    }
+    if (!Array.isArray(payload.tasks)) {
+      window.alert("That file doesn't look like a valid backup.");
+      return;
+    }
+    if (!window.confirm(`This replaces ALL current tasks and sections with the ${payload.tasks.length} tasks in this backup. This can't be undone. Continue?`)) return;
+    try {
+      const existingSnap = await db.collection(TASKS_COLLECTION).get();
+      const ops = [
+        ...existingSnap.docs.map(d => ({ type: "delete", ref: d.ref })),
+        ...payload.tasks.map(t => ({ type: "set", ref: db.collection(TASKS_COLLECTION).doc(t.id), data: t }))
+      ];
+      for (let i = 0; i < ops.length; i += 450) {
+        const batch = db.batch();
+        ops.slice(i, i + 450).forEach(op => {
+          if (op.type === "delete") batch.delete(op.ref);
+          else {
+            const { id, ...data } = op.data;
+            batch.set(op.ref, data);
+          }
+        });
+        await batch.commit();
+      }
+      if (payload.config) await CONFIG_DOC.set(payload.config);
+      window.alert("Import complete.");
+    } catch (e) {
+      console.error("import failed", e);
+      window.alert("Import failed: " + e.message);
+    }
   };
   const toggleComplete = task => {
     captureUndo("Toggle complete", [task.id]);
@@ -477,14 +578,16 @@ function App() {
         dueDate: nextDue,
         completed: false,
         completedAt: null,
-        lastCompletedAt: Date.now()
+        lastCompletedAt: Date.now(),
+        lastCompletedBy: me
       }).catch(console.error);
     } else {
       const nowCompleting = !task.completed;
       ref.update({
         completed: nowCompleting,
         completedAt: nowCompleting ? Date.now() : null,
-        lastCompletedAt: nowCompleting ? Date.now() : null
+        lastCompletedAt: nowCompleting ? Date.now() : null,
+        lastCompletedBy: nowCompleting ? me : null
       }).catch(console.error);
     }
   };
@@ -645,7 +748,7 @@ function App() {
         setProjectFilter("all");
       }
       setHighlightTaskId(t.id);
-    }} />{configError && /*#__PURE__*/<div style={{
+    }} onOpenSettings={() => setShowSettings(true)} />{configError && /*#__PURE__*/<div style={{
       background: C.plum,
       color: C.white,
       fontSize: 11,
@@ -692,7 +795,7 @@ function App() {
     }} />}{pickerFor && /*#__PURE__*/<BucketPicker tasks={tasks.filter(t => t.listType === "project" && !t.completed && (pickerFor.scope === "shared" ? t.scope === "shared" && (t.assignee === pickerFor.person || !t.assignee) : t.scope === "personal" && t.owner === pickerFor.person) && (!t.priorityBucket || t.priorityBucket === pickerFor.bucket))} onPick={taskId => {
       setBucket(taskId, pickerFor.person, pickerFor.bucket, pickerFor.scope);
       setPickerFor(null);
-    }} onClose={() => setPickerFor(null)} />}</Shell>;
+    }} onClose={() => setPickerFor(null)} />}{activitySummary && /*#__PURE__*/<ActivitySummary summary={activitySummary} onClose={() => setActivitySummary(null)} />}{showSettings && /*#__PURE__*/<SettingsPanel onClose={() => setShowSettings(false)} onExport={exportData} onImport={importData} />}</Shell>;
 }
 const centerMsg = {
   display: "flex",
@@ -783,7 +886,8 @@ function Header({
   searchQuery,
   setSearchQuery,
   searchResults,
-  onSelectSearchResult
+  onSelectSearchResult,
+  onOpenSettings
 }) {
   return /*#__PURE__*/<div style={{
     padding: "18px 18px 10px",
@@ -811,7 +915,14 @@ function Header({
           fontSize: 10.5,
           fontWeight: 700,
           cursor: "pointer"
-        }}>{needsDetailsCount} need details</button>}<div style={{
+        }}>{needsDetailsCount} need details</button>}<button onClick={onOpenSettings} aria-label="Settings" style={{
+          border: "none",
+          background: "none",
+          color: C.inkSoft,
+          fontSize: 15,
+          cursor: "pointer",
+          padding: "2px 4px"
+        }}>⚙</button><div style={{
           fontSize: 11,
           color: C.inkSoft
         }}>viewing as {PEOPLE[me]}</div></div></div><div style={{
@@ -1223,6 +1334,40 @@ function NeedsDetailsList({
         color: C.inkSoft,
         marginTop: 2
       }}>{t.listType === "chore" ? "Chore" : "Project"}</div></button>)}</Overlay>;
+}
+
+/* ---------- while-you-were-away summary: everything the OTHER person did on shared tasks since your last visit ---------- */
+function ActivitySummary({ summary, onClose }) {
+  const { added, completed, notesChanged } = summary;
+  const Section = ({ title, items }) => items.length === 0 ? null : /*#__PURE__*/<div style={{ marginBottom: 16 }}>
+    <div style={{ fontSize: 11, color: C.inkSoft, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>{title}</div>
+    {items.map(t => /*#__PURE__*/<div key={t.id} style={{ fontSize: 13.5, color: C.ink, padding: "7px 0", borderBottom: `1px solid ${C.rule}` }}>{t.title}</div>)}
+  </div>;
+  return /*#__PURE__*/<Overlay title="While you were away" onClose={onClose}>
+    <Section title="Added" items={added} />
+    <Section title="Completed" items={completed} />
+    <Section title="Notes updated" items={notesChanged} />
+  </Overlay>;
+}
+
+function SettingsPanel({ onClose, onExport, onImport }) {
+  const fileInputRef = useRef(null);
+  return /*#__PURE__*/<Overlay title="Settings" onClose={onClose}>
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 8, lineHeight: 1.4 }}>Download everything as a JSON file — a safety copy you can keep, separate from Firestore.</div>
+      <button onClick={onExport} style={{ ...btnStyle(C.ink), width: "100%" }}>Export data</button>
+    </div>
+    <div>
+      <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 8, lineHeight: 1.4 }}>Restore from a previously exported file. This replaces everything currently in the app — can't be undone.</div>
+      <input type="file" accept="application/json" ref={fileInputRef} style={{ display: "none" }} onChange={e => {
+        if (e.target.files[0]) {
+          onImport(e.target.files[0]);
+          e.target.value = "";
+        }
+      }} />
+      <button onClick={() => fileInputRef.current.click()} style={{ width: "100%", padding: "10px 0", borderRadius: 10, border: `1px solid ${C.plum}`, background: "transparent", color: C.plum, fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>Import data</button>
+    </div>
+  </Overlay>;
 }
 
 /* ---------- to-do list: a simple first pass — urgent/pressing items across everything visible to me ---------- */
