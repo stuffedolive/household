@@ -57,7 +57,7 @@ const SECTION_LABELS = {
   shared: "Shared projects",
   personal: "Personal projects"
 };
-const APP_VERSION = "v43";
+const APP_VERSION = "v44";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -489,35 +489,15 @@ function App() {
   };
   const todayKey = it => it.type + it.id + (it.subtaskId || "");
   const todayBucket = it => it.bucket === "later" ? "later" : "now";
-  // Quick add from the plan: makes a REAL task (flagged "add details later") and puts it on this person's plan.
-  // Only this path auto-adds to the plan; the normal New task form never does.
-  const quickAddToday = title => {
-    const id = uid();
-    upsertTask({
-      id,
-      title: capFirst(title.trim()),
-      listType: "chore",
-      scope: "shared",
-      owner: null,
-      room: "Unassigned",
-      category: "Unassigned",
-      assignee: null,
-      priority: null,
-      priorityBucket: null,
-      dueDate: null,
-      recurrence: { unit: "none", amount: 1, mode: "rolling" },
-      notes: "",
-      completed: false,
-      gridBucket: {},
-      actions: [],
-      needsDetails: true,
-      createdBy: me,
-      startsOnDue: false,
-      createdAt: Date.now(),
-      completedAt: null
-    });
-    addTaskToToday(id, null);
-  };
+  // Quick add from the plan: a private one-off note on this person's plan (not a real task). Matching real tasks are
+  // suggested in the UI so people tap those instead of re-typing; real tasks come from the + button.
+  const addSundry = title => saveToday("Add to the plan", [...todayItems, {
+    type: "sundry",
+    id: uid(),
+    title: title.trim(),
+    completed: false,
+    bucket: "now"
+  }]);
   const toggleSundry = id => saveToday("Toggle sundry", todayItems.map(it => it.id === id ? {
     ...it,
     completed: !it.completed
@@ -848,7 +828,7 @@ function App() {
     }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
-    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={quickAddToday} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
+    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
     }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onToggleManualTodo={toggleManualTodo} />}<button onClick={() => {
@@ -2148,24 +2128,17 @@ function TodayPlanSection({
 }) {
   const [newSundry, setNewSundry] = useState("");
   const [resetting, setResetting] = useState(false);
-  const [confirmNew, setConfirmNew] = useState(false);
   const candidates = useMemo(() => Object.values(tasksById).filter(t => !t.completed), [tasksById]);
   const similar = useMemo(() => findSimilarTasks(newSundry, candidates), [newSundry, candidates]);
   const inPlanIds = useMemo(() => new Set(items.filter(it => it.type === "task" && !it.subtaskId).map(it => it.id)), [items]);
-  const createNew = () => {
-    if (newSundry.trim()) onAddSundry(newSundry.trim());
-    setNewSundry("");
-    setConfirmNew(false);
-  };
-  // with similar tasks showing, adding needs a second confirmation so duplicates aren't made by accident
   const commitSundry = () => {
     if (!newSundry.trim()) return;
-    if (similar.length) setConfirmNew(true);else createNew();
+    onAddSundry(newSundry.trim());
+    setNewSundry("");
   };
   const useExisting = t => {
     if (!inPlanIds.has(t.id)) onAddExisting(t.id, null);
     setNewSundry("");
-    setConfirmNew(false);
   };
   const nowItems = items.filter(it => it.bucket !== "later");
   const laterItems = items.filter(it => it.bucket === "later");
@@ -2234,7 +2207,6 @@ function TodayPlanSection({
         gap: 6
       }}><input value={newSundry} onChange={e => {
           setNewSundry(capFirst(e.target.value));
-          setConfirmNew(false);
         }} onKeyDown={e => {
           if (e.key === "Enter") commitSundry();
         }} onBlur={() => {
@@ -2281,37 +2253,7 @@ function TodayPlanSection({
             fontSize: 11,
             color: C.inkSoft,
             flexShrink: 0
-          }}>{inPlanIds.has(t.id) ? "On today's plan" : SECTION_LABELS[sectionForTask(t)]}</span></button>)}</div>}{confirmNew && /*#__PURE__*/<div style={{
-        marginTop: 8,
-        padding: "9px 10px",
-        borderRadius: 8,
-        background: C.white,
-        border: `1px solid ${C.ink}`,
-        display: "flex",
-        alignItems: "center",
-        gap: 8
-      }}><span style={{
-          flex: 1,
-          fontSize: 12.5,
-          color: C.ink
-        }}>Create a new task anyway?</span><button onClick={createNew} style={{
-          border: "none",
-          background: C.ink,
-          color: C.white,
-          borderRadius: 8,
-          padding: "6px 12px",
-          fontSize: 12,
-          fontWeight: 600,
-          cursor: "pointer"
-        }}>Create new</button><button onClick={() => setConfirmNew(false)} style={{
-          border: `1px solid ${C.rule}`,
-          background: C.white,
-          color: C.ink,
-          borderRadius: 8,
-          padding: "6px 12px",
-          fontSize: 12,
-          cursor: "pointer"
-        }}>Cancel</button></div>}</div></div>;
+          }}>{inPlanIds.has(t.id) ? "On today's plan" : SECTION_LABELS[sectionForTask(t)]}</span></button>)}</div>}</div></div>;
 }
 /* landing screen for the All tasks tab: four full-page buttons, one per list */
 function SectionIcon({ kind }) {
