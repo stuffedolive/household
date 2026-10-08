@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v48";
+const APP_VERSION = "v49";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -2191,6 +2191,7 @@ function TodayItemRow({
   const task = item.type === "task" ? tasksById[item.id] : null;
   const subtask = task && item.subtaskId ? (task.actions || []).find(a => a.id === item.subtaskId) : null;
   let title, completed, onCheck;
+  const isNote = item.type === "sundry"; // quick-add notes look quieter than real tasks
   if (item.type === "sundry") {
     title = item.title;
     completed = item.completed;
@@ -2218,9 +2219,9 @@ function TodayItemRow({
   }}>{startDrag && /*#__PURE__*/<DragHandle onPointerDown={startDrag} />}<button onClick={onCheck} style={{
       width: 18,
       height: 18,
-      borderRadius: "50%",
-      border: `2px solid ${C.sage}`,
-      background: completed ? C.sage : "transparent",
+      borderRadius: isNote ? 4 : "50%",
+      border: `2px solid ${isNote ? C.inkSoft : C.sage}`,
+      background: completed ? isNote ? C.inkSoft : C.sage : "transparent",
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
@@ -2231,10 +2232,20 @@ function TodayItemRow({
     }}>{completed && "✓"}</button><span onClick={task ? () => onEdit(task) : undefined} style={{
       flex: 1,
       fontSize: 13.5,
-      color: C.ink,
+      color: isNote ? C.inkSoft : C.ink,
+      fontStyle: isNote ? "italic" : "normal",
       textDecoration: completed ? "line-through" : "none",
       cursor: task ? "pointer" : "default"
-    }}>{title}{task && task.needsDetails && /*#__PURE__*/<span style={{
+    }}>{title}{isNote && /*#__PURE__*/<span style={{
+        marginLeft: 7,
+        fontSize: 9.5,
+        fontStyle: "normal",
+        textTransform: "uppercase",
+        letterSpacing: 0.6,
+        color: C.inkSoft,
+        opacity: 0.7,
+        verticalAlign: "middle"
+      }}>note</span>}{task && task.needsDetails && /*#__PURE__*/<span style={{
         marginLeft: 6,
         verticalAlign: "middle"
       }}><Tag color={C.inkSoft}>needs details</Tag></span>}</span><button onClick={onMove} style={{
