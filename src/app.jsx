@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v51";
+const APP_VERSION = "v52";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1278,22 +1278,22 @@ function GridCell({
       display: "flex",
       flexDirection: "column",
       height: "100%"
-    }}><div style={{
+    }}><button onClick={() => onEditTask(pinned)} style={{
+        width: "100%",
         background: C.rule,
-        borderRadius: 6,
-        padding: "5px 7px",
-        height: 34,
+        borderRadius: 10,
+        padding: "6px 8px",
+        minHeight: 46,
         flexShrink: 0,
         display: "flex",
-        alignItems: "center"
-      }}><button onClick={() => onEditTask(pinned)} style={{
-          width: "100%",
-          textAlign: "left",
-          border: "none",
-          background: "none",
-          padding: 0,
-          cursor: "pointer",
-          fontSize: 11.5,
+        alignItems: "center",
+        justifyContent: "center",
+        border: "none",
+        cursor: "pointer"
+      }}><span style={{
+          textAlign: "center",
+          fontFamily: "Fraunces, serif",
+          fontSize: 15,
           color: C.ink,
           fontWeight: 700,
           lineHeight: 1.2,
@@ -1301,7 +1301,7 @@ function GridCell({
           display: "-webkit-box",
           WebkitLineClamp: 2,
           WebkitBoxOrient: "vertical"
-        }}>{pinned.title}</button></div>{incomplete.length > 0 ? /*#__PURE__*/<div style={{
+        }}>{pinned.title}</span></button>{incomplete.length > 0 ? /*#__PURE__*/<div style={{
         marginTop: 5,
         flex: 1,
         overflowY: "auto",
@@ -2947,10 +2947,10 @@ function TaskRow({
   const rowStyle = flat ? {
     background: lateWash,
     border: "none",
-    borderBottom: `1px solid ${C.rule}`,
+    borderBottom: `1px solid ${C.rule}66`,
     boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
     borderRadius: highlighted || overdue ? 6 : 0,
-    padding: "9px 6px",
+    padding: "5px 4px",
     marginBottom: 0
   } : {
     background: C.card,
@@ -3004,7 +3004,7 @@ function TaskRow({
             fontFamily: "IBM Plex Mono, monospace",
             color: overdue ? C.plum : C.inkSoft,
             fontWeight: overdue ? 700 : 500
-          }}>{fmtDate(task.dueDate)}</span>}</div>}{compact && task.dueDate && /*#__PURE__*/<div style={{
+          }}>{fmtDate(task.dueDate)}</span>}</div>}{compact && !flat && task.dueDate && /*#__PURE__*/<div style={{
           fontSize: 10,
           fontFamily: "IBM Plex Mono, monospace",
           color: overdue && !flat ? C.plum : C.inkSoft,
@@ -3093,7 +3093,7 @@ function TaskRow({
         }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span></button> : progress ? /*#__PURE__*/<span style={{
         fontSize: 11,
         color: C.inkSoft
-      }}>All subtasks done</span> : null}{(progress || hasNotesToShow) && /*#__PURE__*/<button onClick={() => setOpen(o => !o)} style={{
+      }}>All subtasks done</span> : null}{(flat ? hasNotesToShow : progress || hasNotesToShow) && /*#__PURE__*/<button onClick={() => setOpen(o => !o)} style={{
         border: "none",
         background: "none",
         color: C.inkSoft,
@@ -3101,7 +3101,7 @@ function TaskRow({
         cursor: "pointer",
         padding: 0,
         marginLeft: na ? 8 : 0
-      }}>{progress || "notes"} {open ? "▴" : "▾"}</button>}</div>{open && /*#__PURE__*/<div style={{
+      }}>{flat ? "notes" : progress || "notes"} {open ? "▴" : "▾"}</button>}</div>{open && /*#__PURE__*/<div style={{
       marginLeft: 30,
       marginTop: 8,
       borderTop: flat ? "none" : `1px dashed ${C.rule}`,
