@@ -57,7 +57,7 @@ const SECTION_LABELS = {
   personal: "Personal projects"
 };
 const TYPE_CHOICES = ["household", "personalTasks", "shared", "personal"].map(k => [k, SECTION_LABELS[k]]);
-const APP_VERSION = "v45";
+const APP_VERSION = "v46";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -211,7 +211,12 @@ function sanitizeList(arr, fallback) {
 }
 function App() {
   const [authReady, setAuthReady] = useState(null);
-  const [me, setMe] = useState(null);
+  // realMe = whoever actually opened the app (from their bookmarked ?user= link). viewAs lets either of you flip the whole
+  // app to the other person's view; it always starts as null (= your own view) on every load. `me` is the person being
+  // viewed and is what everything displays and records as; only the "while you were away" check uses realMe.
+  const [realMe, setRealMe] = useState(null);
+  const [viewAs, setViewAs] = useState(null);
+  const me = viewAs || realMe;
   const [config, setConfig] = useState({
     rooms: DEFAULT_ROOMS,
     sharedCategories: DEFAULT_CATEGORIES,
@@ -234,7 +239,6 @@ function App() {
       setLastUndo(null);
     }
   };
-  const [priorityViewPerson, setPriorityViewPerson] = useState(null);
   const [filter, setFilter] = useState("all");
   const [choreFilter, setChoreFilter] = useState("all");
   const [projectFilter, setProjectFilter] = useState("all");
@@ -260,7 +264,7 @@ function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const u = params.get("user");
-    if (u && PEOPLE[u]) setMe(u);
+    if (u && PEOPLE[u]) setRealMe(u);
   }, []);
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(user => {
@@ -311,37 +315,37 @@ function App() {
   // The moment the app is hidden we stamp "last seen" so the next check compares from when you actually left.
   const runActivityCheck = useCallback(() => {
     const list = tasksRef.current;
-    if (!me || list === null) return;
+    if (!realMe || list === null) return;
     PRESENCE_DOC.get().then(snap => {
       const data = snap.data() || {};
-      const lastVisit = data[me];
+      const lastVisit = data[realMe];
       const now = Date.now();
       if (lastVisit) {
         // only shared tasks — the other person's personal tasks should never surface here
         const shared = list.filter(t => t.scope === "shared");
-        const added = shared.filter(t => t.createdBy && t.createdBy !== me && t.createdAt && t.createdAt > lastVisit);
-        const completed = shared.filter(t => t.lastCompletedBy && t.lastCompletedBy !== me && t.lastCompletedAt && t.lastCompletedAt > lastVisit);
-        const notesChanged = shared.filter(t => t.notesUpdatedBy && t.notesUpdatedBy !== me && t.notesUpdatedAt && t.notesUpdatedAt > lastVisit);
+        const added = shared.filter(t => t.createdBy && t.createdBy !== realMe && t.createdAt && t.createdAt > lastVisit);
+        const completed = shared.filter(t => t.lastCompletedBy && t.lastCompletedBy !== realMe && t.lastCompletedAt && t.lastCompletedAt > lastVisit);
+        const notesChanged = shared.filter(t => t.notesUpdatedBy && t.notesUpdatedBy !== realMe && t.notesUpdatedAt && t.notesUpdatedAt > lastVisit);
         if (added.length || completed.length || notesChanged.length) {
           setActivitySummary({ added, completed, notesChanged });
         }
       }
-      PRESENCE_DOC.set({ [me]: now }, { merge: true }).catch(console.error);
+      PRESENCE_DOC.set({ [realMe]: now }, { merge: true }).catch(console.error);
     }).catch(console.error);
-  }, [me]);
+  }, [realMe]);
   useEffect(() => {
     if (activityCheckedRef.current) return;
-    if (!me || tasks === null) return;
+    if (!realMe || tasks === null) return;
     activityCheckedRef.current = true;
     runActivityCheck();
-  }, [me, tasks, runActivityCheck]);
+  }, [realMe, tasks, runActivityCheck]);
   useEffect(() => {
-    if (!me) return;
+    if (!realMe) return;
     let hiddenAt = null;
     const onVis = () => {
       if (document.visibilityState === "hidden") {
         hiddenAt = Date.now();
-        if (activityCheckedRef.current) PRESENCE_DOC.set({ [me]: hiddenAt }, { merge: true }).catch(() => {});
+        if (activityCheckedRef.current) PRESENCE_DOC.set({ [realMe]: hiddenAt }, { merge: true }).catch(() => {});
       } else if (hiddenAt && Date.now() - hiddenAt > 30 * 60 * 1000) {
         hiddenAt = null;
         // give the live listeners a moment to catch up after waking before comparing
@@ -352,7 +356,7 @@ function App() {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [me, runActivityCheck]);
+  }, [realMe, runActivityCheck]);
   const [configError, setConfigError] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
@@ -806,10 +810,10 @@ function App() {
         }}>Bookmark this page with <code>?user=jade</code> or <code>?user=john</code> on the end of the URL to always land on your view.</div><div style={{
           display: "flex",
           gap: 12
-        }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
+        }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setRealMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
   }
   if (tasks === null) return /*#__PURE__*/<Shell><div style={centerMsg}>Loading the list…</div></Shell>;
-  return /*#__PURE__*/<Shell><Header me={me} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
+  return /*#__PURE__*/<Shell><Header me={me} realMe={realMe} onViewAs={k => setViewAs(k === realMe ? null : k)} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
       setSearchQuery("");
       setView("queue");
       setQueueSection(sectionForTask(t));
@@ -822,7 +826,7 @@ function App() {
       fontSize: 11,
       padding: "6px 16px",
       textAlign: "center"
-    }}>Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too.</div>}{view === "grid" ? /*#__PURE__*/<PriorityGrid tasks={tasks} me={me} viewingPerson={priorityViewPerson || me} setViewingPerson={setPriorityViewPerson} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={t => {
+    }}>Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too.</div>}{view === "grid" ? /*#__PURE__*/<PriorityGrid tasks={tasks} me={me} viewingPerson={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={t => {
       setEditing(t);
       setShowForm(true);
     }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={t => {
@@ -945,6 +949,8 @@ function btnStyle(bg) {
 }
 function Header({
   me,
+  realMe,
+  onViewAs,
   view,
   setView,
   needsDetailsCount,
@@ -960,6 +966,8 @@ function Header({
   return /*#__PURE__*/<div style={{
     padding: "18px 18px 10px",
     borderBottom: `1px solid ${C.rule}`,
+    // a coloured strip along the bottom edge shows at a glance when you're looking at the other person's view
+    boxShadow: me !== realMe ? `inset 0 -3px 0 ${PERSON_COLOR[me]}` : "none",
     position: "relative"
   }}><div style={{
       display: "flex",
@@ -990,10 +998,23 @@ function Header({
           fontSize: 15,
           cursor: "pointer",
           padding: "2px 4px"
-        }}>⚙</button><div style={{
-          fontSize: 11,
-          color: C.inkSoft
-        }}>viewing as {PEOPLE[me]}</div></div></div><div style={{
+        }}>⚙</button><div role="group" aria-label="View as" style={{
+          display: "flex",
+          border: `1px solid ${C.rule}`,
+          borderRadius: 20,
+          overflow: "hidden"
+        }}>{Object.entries(PEOPLE).map(([k, label]) => {
+          const active = me === k;
+          return /*#__PURE__*/<button key={k} onClick={() => onViewAs(k)} aria-pressed={active} style={{
+            border: "none",
+            padding: "3px 10px",
+            fontSize: 11,
+            fontWeight: active ? 700 : 500,
+            cursor: "pointer",
+            background: active ? PERSON_COLOR[k] : C.white,
+            color: active ? C.white : C.inkSoft
+          }}>{label}{k === realMe ? " · you" : ""}</button>;
+        })}</div></div></div><div style={{
       position: "absolute",
       top: 4,
       right: 8,
@@ -1140,44 +1161,24 @@ function PriorityGrid({
   tasks,
   me,
   viewingPerson,
-  setViewingPerson,
   onOpenPicker,
   onClearBucket,
   onToggleAction,
   onEditTask
 }) {
-  const other = viewingPerson === "jade" ? "john" : "jade";
   return /*#__PURE__*/<div style={{
     padding: "16px 16px 12px",
     height: "calc(100% - 150px)",
     display: "flex",
     flexDirection: "column"
-  }}><button onClick={() => setViewingPerson(other)} style={{
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      border: "none",
-      background: "none",
-      padding: 0,
-      cursor: "pointer",
+  }}><div style={{
+      fontFamily: "Fraunces, serif",
+      fontSize: 20,
+      fontWeight: 600,
+      color: C.ink,
       marginBottom: 14,
       flexShrink: 0
-    }}><span style={{
-        fontFamily: "Fraunces, serif",
-        fontSize: 20,
-        fontWeight: 600,
-        color: C.ink
-      }}>{PEOPLE[viewingPerson]}</span>{viewingPerson === me && /*#__PURE__*/<span style={{
-        fontSize: 10,
-        background: C.sage,
-        color: C.white,
-        padding: "2px 7px",
-        borderRadius: 20
-      }}>you</span>}<span style={{
-        fontSize: 11,
-        color: C.inkSoft,
-        textDecoration: "underline"
-      }}>switch to {PEOPLE[other]}</span></button><div style={{
+    }}>{PEOPLE[viewingPerson]}'s priorities</div><div style={{
       display: "grid",
       gridTemplateColumns: "26px repeat(2, 1fr)",
       gap: 6,
@@ -1558,7 +1559,7 @@ function ActionAsRow({
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
-        }}>{task.manualTodo ? "− To-do list" : "+ To-do list"}</button>}{onRestore && /*#__PURE__*/<button onClick={() => onRestore()} style={{
+        }}>{task.manualTodo ? "− List" : "+ List"}</button>}{onRestore && /*#__PURE__*/<button onClick={() => onRestore()} style={{
           border: `1px solid ${C.rule}`,
           background: C.white,
           color: C.sageDeep,
@@ -2529,7 +2530,8 @@ function StackedSection({
   emptyLabel,
   dragHandle,
   highlightTaskId,
-  jumpToSection
+  jumpToSection,
+  muted
 }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const active = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
@@ -2561,21 +2563,18 @@ function StackedSection({
     userToggled.current = true;
     setCollapsed(c => !c);
   };
-  const stripe = name === "Unassigned" ? C.taupe : colorBg;
   return /*#__PURE__*/<div style={{
-    marginBottom: 14
+    marginBottom: 16,
+    opacity: muted ? 0.55 : 1
   }} ref={sectionRef}><div style={{
       display: "flex",
       alignItems: "center",
       gap: 4,
-      background: C.rule,
-      borderLeft: `4px solid ${stripe}`,
-      border: `1px solid ${isJumpTarget ? C.mustard : C.rule}`,
-      boxShadow: isJumpTarget ? `0 0 0 2px ${C.mustard}` : "none",
-      borderLeftWidth: 4,
-      padding: "7px 10px",
-      borderRadius: 8,
-      marginBottom: 8
+      background: "transparent",
+      borderBottom: `1.5px solid ${isJumpTarget ? C.mustard : C.ink}`,
+      boxShadow: isJumpTarget ? `0 2px 0 ${C.mustard}` : "none",
+      padding: "6px 2px",
+      marginBottom: 2
     }}>{dragHandle}<button onClick={toggleHeader} style={{
         flex: 1,
         textAlign: "left",
@@ -2588,7 +2587,7 @@ function StackedSection({
         gap: 6
       }}><span style={{
           fontFamily: "Fraunces, serif",
-          fontSize: 14,
+          fontSize: 16,
           fontWeight: 600,
           color: C.ink
         }}>{name} <span style={{
@@ -2604,7 +2603,7 @@ function StackedSection({
         fontSize: 12,
         textAlign: "center",
         padding: "10px 0"
-      }}>{emptyLabel}</div>}{active.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} compact={true} highlighted={t.id === highlightTaskId} />)}{faded.length > 0 && !showFuture && /*#__PURE__*/<button onClick={() => setShowFuture(true)} style={{
+      }}>{emptyLabel}</div>}{active.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} compact={true} flat={true} highlighted={t.id === highlightTaskId} />)}{faded.length > 0 && !showFuture && /*#__PURE__*/<button onClick={() => setShowFuture(true)} style={{
         width: "100%",
         border: `1px dashed ${C.rule}`,
         background: "transparent",
@@ -2613,7 +2612,7 @@ function StackedSection({
         padding: "6px 0",
         fontSize: 11.5,
         cursor: "pointer"
-      }}>Show future tasks/chores ({faded.length}) →</button>}{showFuture && faded.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} compact={true} highlighted={t.id === highlightTaskId} />)}{showFuture && faded.length > 0 && /*#__PURE__*/<button onClick={() => setShowFuture(false)} style={{
+      }}>Show future tasks/chores ({faded.length}) →</button>}{showFuture && faded.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} compact={true} flat={true} highlighted={t.id === highlightTaskId} />)}{showFuture && faded.length > 0 && /*#__PURE__*/<button onClick={() => setShowFuture(false)} style={{
         width: "100%",
         border: "none",
         background: "none",
@@ -2637,11 +2636,48 @@ function SectionStack({
   highlightTaskId,
   jumpToSection
 }) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  // a section is "empty" when nothing in it is currently visible (postponed / not-yet-available tasks don't count)
+  const hasVisible = name => sectionTasksFn(name).some(t => !isFadedTask(t, todayStr));
+  const activeBase = baseSections.filter(hasVisible);
+  const emptyBase = baseSections.filter(n => !hasVisible(n));
+  const activeExtra = extraSections.filter(hasVisible);
+  const emptyExtra = extraSections.filter(n => !hasVisible(n));
+  // dragging reorders only the visible group; the new order is slotted back into the positions those sections held,
+  // so empty sections keep their place in the saved order
+  const finalizeActive = arr => {
+    const activeSet = new Set(activeBase);
+    let i = 0;
+    onReorderFull(baseSections.map(n => activeSet.has(n) ? arr[i++] : n));
+  };
+  const hasEmpty = emptyBase.length + emptyExtra.length > 0;
+  const common = {
+    colorBg,
+    rowProps,
+    onDelete,
+    emptyLabel,
+    highlightTaskId,
+    jumpToSection
+  };
   return /*#__PURE__*/<div style={{
     padding: "12px 16px 90px",
     overflowY: "auto",
     flex: 1
-  }}><DragReorderList items={baseSections} keyFn={name => name} onFinalize={onReorderFull} renderRow={(name, idx, startDrag) => /*#__PURE__*/<StackedSection name={name} tasks={sectionTasksFn(name)} colorBg={colorBg} rowProps={rowProps} onDelete={onDelete} deletable={true} emptyLabel={emptyLabel} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} dragHandle={/*#__PURE__*/<DragHandle onPointerDown={startDrag} />} />} />{extraSections.map(name => /*#__PURE__*/<StackedSection key={name} name={name} tasks={sectionTasksFn(name)} colorBg={colorBg} rowProps={rowProps} onDelete={onDelete} deletable={name !== "Unassigned"} emptyLabel={emptyLabel} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} />)}<AddSectionRow onAdd={onAdd} label={addLabel} /></div>;
+  }}><DragReorderList items={activeBase} keyFn={name => name} onFinalize={finalizeActive} renderRow={(name, idx, startDrag) => /*#__PURE__*/<StackedSection name={name} tasks={sectionTasksFn(name)} {...common} deletable={true} dragHandle={/*#__PURE__*/<DragHandle onPointerDown={startDrag} />} />} />{activeExtra.map(name => /*#__PURE__*/<StackedSection key={name} name={name} tasks={sectionTasksFn(name)} {...common} deletable={name !== "Unassigned"} />)}{hasEmpty && /*#__PURE__*/<div style={{
+      margin: "6px 0 10px",
+      fontSize: 10.5,
+      color: C.inkSoft,
+      textTransform: "uppercase",
+      letterSpacing: 0.6,
+      fontWeight: 700,
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }}><span>Nothing right now</span><span style={{
+        flex: 1,
+        height: 1,
+        background: C.rule
+      }} /></div>}{[...emptyBase, ...emptyExtra].map(name => /*#__PURE__*/<StackedSection key={name} name={name} tasks={sectionTasksFn(name)} {...common} muted={true} deletable={name !== "Unassigned"} />)}<AddSectionRow onAdd={onAdd} label={addLabel} /></div>;
 }
 function RoomBoard({
   tasks,
@@ -2708,7 +2744,8 @@ function TaskRow({
   onRestore,
   onToggleManualTodo,
   highlighted,
-  showAsCompleted
+  showAsCompleted,
+  flat
 }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
@@ -2726,13 +2763,26 @@ function TaskRow({
       setNewAction("");
     }
   };
-  return /*#__PURE__*/<div style={{
+  const hasNotesToShow = !!(flat && task.notes);
+  // flat = the quiet All tasks look: no card, no box, just a hairline between tasks
+  const rowStyle = flat ? {
+    background: "transparent",
+    border: "none",
+    borderBottom: `1px solid ${C.rule}`,
+    boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
+    borderRadius: highlighted ? 6 : 0,
+    padding: "9px 2px",
+    marginBottom: 0
+  } : {
     background: C.card,
     border: `1px solid ${highlighted ? C.mustard : C.rule}`,
     boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
     borderRadius: 10,
     padding: compact ? "9px 10px" : "11px 12px",
-    marginBottom: 8,
+    marginBottom: 8
+  };
+  return /*#__PURE__*/<div style={{
+    ...rowStyle,
     opacity: isDone ? 0.55 : notYetAvailable ? 0.5 : 1
   }}><div style={{
       display: "flex",
@@ -2812,7 +2862,7 @@ function TaskRow({
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
-        }}>{task.manualTodo ? "− To-do list" : "+ To-do list"}</button>}{onRestore && /*#__PURE__*/<button onClick={e => {
+        }}>{task.manualTodo ? "− List" : "+ List"}</button>}{onRestore && /*#__PURE__*/<button onClick={e => {
           e.stopPropagation();
           onRestore();
         }} style={{
@@ -2861,7 +2911,7 @@ function TaskRow({
         }}>Next: {na.title}{na.dueDate ? ` · ${fmtDate(na.dueDate)}` : ""}</span></button> : progress ? /*#__PURE__*/<span style={{
         fontSize: 11,
         color: C.inkSoft
-      }}>All subtasks done</span> : null}{progress && /*#__PURE__*/<button onClick={() => setOpen(o => !o)} style={{
+      }}>All subtasks done</span> : null}{(progress || hasNotesToShow) && /*#__PURE__*/<button onClick={() => setOpen(o => !o)} style={{
         border: "none",
         background: "none",
         color: C.inkSoft,
@@ -2869,18 +2919,24 @@ function TaskRow({
         cursor: "pointer",
         padding: 0,
         marginLeft: na ? 8 : 0
-      }}>{progress} {open ? "▴" : "▾"}</button>}</div>{open && /*#__PURE__*/<div style={{
+      }}>{progress || "notes"} {open ? "▴" : "▾"}</button>}</div>{open && /*#__PURE__*/<div style={{
       marginLeft: 30,
       marginTop: 8,
-      borderTop: `1px dashed ${C.rule}`,
-      paddingTop: 8
-    }}><DragReorderList items={task.actions || []} keyFn={a => a.id} onFinalize={arr => onSetTaskActions(task.id, arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
+      borderTop: flat ? "none" : `1px dashed ${C.rule}`,
+      paddingTop: flat ? 2 : 8
+    }}>{hasNotesToShow && /*#__PURE__*/<div style={{
+        fontSize: 12,
+        color: C.inkSoft,
+        fontStyle: "italic",
+        marginBottom: 8,
+        whiteSpace: "pre-wrap"
+      }}>{task.notes}</div>}<DragReorderList items={task.actions || []} keyFn={a => a.id} onFinalize={arr => onSetTaskActions(task.id, arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
         display: "flex",
         alignItems: "center",
         gap: 5,
         marginBottom: 6,
         flexWrap: "wrap",
-        background: C.card
+        background: flat ? "transparent" : C.card
       }}><DragHandle onPointerDown={startDrag} /><button onClick={() => onToggleAction(task.id, a.id)} style={{
           width: 15,
           height: 15,

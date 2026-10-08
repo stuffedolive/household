@@ -108,7 +108,7 @@ const SECTION_LABELS = {
   personal: "Personal projects"
 };
 const TYPE_CHOICES = ["household", "personalTasks", "shared", "personal"].map(k => [k, SECTION_LABELS[k]]);
-const APP_VERSION = "v45";
+const APP_VERSION = "v46";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -262,7 +262,12 @@ function sanitizeList(arr, fallback) {
 }
 function App() {
   const [authReady, setAuthReady] = useState(null);
-  const [me, setMe] = useState(null);
+  // realMe = whoever actually opened the app (from their bookmarked ?user= link). viewAs lets either of you flip the whole
+  // app to the other person's view; it always starts as null (= your own view) on every load. `me` is the person being
+  // viewed and is what everything displays and records as; only the "while you were away" check uses realMe.
+  const [realMe, setRealMe] = useState(null);
+  const [viewAs, setViewAs] = useState(null);
+  const me = viewAs || realMe;
   const [config, setConfig] = useState({
     rooms: DEFAULT_ROOMS,
     sharedCategories: DEFAULT_CATEGORIES,
@@ -285,7 +290,6 @@ function App() {
       setLastUndo(null);
     }
   };
-  const [priorityViewPerson, setPriorityViewPerson] = useState(null);
   const [filter, setFilter] = useState("all");
   const [choreFilter, setChoreFilter] = useState("all");
   const [projectFilter, setProjectFilter] = useState("all");
@@ -310,7 +314,7 @@ function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const u = params.get("user");
-    if (u && PEOPLE[u]) setMe(u);
+    if (u && PEOPLE[u]) setRealMe(u);
   }, []);
   useEffect(() => {
     const unsub = auth.onAuthStateChanged(user => {
@@ -379,17 +383,17 @@ function App() {
   // The moment the app is hidden we stamp "last seen" so the next check compares from when you actually left.
   const runActivityCheck = useCallback(() => {
     const list = tasksRef.current;
-    if (!me || list === null) return;
+    if (!realMe || list === null) return;
     PRESENCE_DOC.get().then(snap => {
       const data = snap.data() || {};
-      const lastVisit = data[me];
+      const lastVisit = data[realMe];
       const now = Date.now();
       if (lastVisit) {
         // only shared tasks — the other person's personal tasks should never surface here
         const shared = list.filter(t => t.scope === "shared");
-        const added = shared.filter(t => t.createdBy && t.createdBy !== me && t.createdAt && t.createdAt > lastVisit);
-        const completed = shared.filter(t => t.lastCompletedBy && t.lastCompletedBy !== me && t.lastCompletedAt && t.lastCompletedAt > lastVisit);
-        const notesChanged = shared.filter(t => t.notesUpdatedBy && t.notesUpdatedBy !== me && t.notesUpdatedAt && t.notesUpdatedAt > lastVisit);
+        const added = shared.filter(t => t.createdBy && t.createdBy !== realMe && t.createdAt && t.createdAt > lastVisit);
+        const completed = shared.filter(t => t.lastCompletedBy && t.lastCompletedBy !== realMe && t.lastCompletedAt && t.lastCompletedAt > lastVisit);
+        const notesChanged = shared.filter(t => t.notesUpdatedBy && t.notesUpdatedBy !== realMe && t.notesUpdatedAt && t.notesUpdatedAt > lastVisit);
         if (added.length || completed.length || notesChanged.length) {
           setActivitySummary({
             added,
@@ -399,26 +403,26 @@ function App() {
         }
       }
       PRESENCE_DOC.set({
-        [me]: now
+        [realMe]: now
       }, {
         merge: true
       }).catch(console.error);
     }).catch(console.error);
-  }, [me]);
+  }, [realMe]);
   useEffect(() => {
     if (activityCheckedRef.current) return;
-    if (!me || tasks === null) return;
+    if (!realMe || tasks === null) return;
     activityCheckedRef.current = true;
     runActivityCheck();
-  }, [me, tasks, runActivityCheck]);
+  }, [realMe, tasks, runActivityCheck]);
   useEffect(() => {
-    if (!me) return;
+    if (!realMe) return;
     let hiddenAt = null;
     const onVis = () => {
       if (document.visibilityState === "hidden") {
         hiddenAt = Date.now();
         if (activityCheckedRef.current) PRESENCE_DOC.set({
-          [me]: hiddenAt
+          [realMe]: hiddenAt
         }, {
           merge: true
         }).catch(() => {});
@@ -432,7 +436,7 @@ function App() {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => document.removeEventListener("visibilitychange", onVis);
-  }, [me, runActivityCheck]);
+  }, [realMe, runActivityCheck]);
   const [configError, setConfigError] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
@@ -919,7 +923,7 @@ function App() {
     /*#__PURE__*/
     React.createElement("button", {
       key: key,
-      onClick: () => setMe(key),
+      onClick: () => setRealMe(key),
       style: btnStyle(PERSON_COLOR[key])
     }, label)))));
   }
@@ -928,6 +932,8 @@ function App() {
   }, "Loading the list…"));
   return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(Header, {
     me: me,
+    realMe: realMe,
+    onViewAs: k => setViewAs(k === realMe ? null : k),
     view: view,
     setView: goView,
     needsDetailsCount: needsDetailsTasks.length,
@@ -963,8 +969,7 @@ function App() {
   React.createElement(PriorityGrid, {
     tasks: tasks,
     me: me,
-    viewingPerson: priorityViewPerson || me,
-    setViewingPerson: setPriorityViewPerson,
+    viewingPerson: me,
     onOpenPicker: setPickerFor,
     onClearBucket: clearBucket,
     onToggleAction: toggleAction,
@@ -1221,6 +1226,8 @@ function btnStyle(bg) {
 }
 function Header({
   me,
+  realMe,
+  onViewAs,
   view,
   setView,
   needsDetailsCount,
@@ -1237,6 +1244,8 @@ function Header({
     style: {
       padding: "18px 18px 10px",
       borderBottom: `1px solid ${C.rule}`,
+      // a coloured strip along the bottom edge shows at a glance when you're looking at the other person's view
+      boxShadow: me !== realMe ? `inset 0 -3px 0 ${PERSON_COLOR[me]}` : "none",
       position: "relative"
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -1285,11 +1294,31 @@ function Header({
       padding: "2px 4px"
     }
   }, "⚙"), /*#__PURE__*/React.createElement("div", {
+    role: "group",
+    "aria-label": "View as",
     style: {
-      fontSize: 11,
-      color: C.inkSoft
+      display: "flex",
+      border: `1px solid ${C.rule}`,
+      borderRadius: 20,
+      overflow: "hidden"
     }
-  }, "viewing as ", PEOPLE[me]))), /*#__PURE__*/React.createElement("div", {
+  }, Object.entries(PEOPLE).map(([k, label]) => {
+    const active = me === k;
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
+      key: k,
+      onClick: () => onViewAs(k),
+      "aria-pressed": active,
+      style: {
+        border: "none",
+        padding: "3px 10px",
+        fontSize: 11,
+        fontWeight: active ? 700 : 500,
+        cursor: "pointer",
+        background: active ? PERSON_COLOR[k] : C.white,
+        color: active ? C.white : C.inkSoft
+      }
+    }, label, k === realMe ? " · you" : "");
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
       position: "absolute",
       top: 4,
@@ -1495,13 +1524,11 @@ function PriorityGrid({
   tasks,
   me,
   viewingPerson,
-  setViewingPerson,
   onOpenPicker,
   onClearBucket,
   onToggleAction,
   onEditTask
 }) {
-  const other = viewingPerson === "jade" ? "john" : "jade";
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "16px 16px 12px",
@@ -1509,44 +1536,16 @@ function PriorityGrid({
       display: "flex",
       flexDirection: "column"
     }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setViewingPerson(other),
-    style: {
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      border: "none",
-      background: "none",
-      padding: 0,
-      cursor: "pointer",
-      marginBottom: 14,
-      flexShrink: 0
-    }
-  }, /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "Fraunces, serif",
       fontSize: 20,
       fontWeight: 600,
-      color: C.ink
+      color: C.ink,
+      marginBottom: 14,
+      flexShrink: 0
     }
-  }, PEOPLE[viewingPerson]), viewingPerson === me &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement("span", {
-    style: {
-      fontSize: 10,
-      background: C.sage,
-      color: C.white,
-      padding: "2px 7px",
-      borderRadius: 20
-    }
-  }, "you"), /*#__PURE__*/React.createElement("span", {
-    style: {
-      fontSize: 11,
-      color: C.inkSoft,
-      textDecoration: "underline"
-    }
-  }, "switch to ", PEOPLE[other])), /*#__PURE__*/React.createElement("div", {
+  }, PEOPLE[viewingPerson], "'s priorities"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "grid",
       gridTemplateColumns: "26px repeat(2, 1fr)",
@@ -2184,7 +2183,7 @@ function ActionAsRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onRestore &&
+  }, task.manualTodo ? "− List" : "+ List"), onRestore &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
@@ -3712,7 +3711,8 @@ function StackedSection({
   emptyLabel,
   dragHandle,
   highlightTaskId,
-  jumpToSection
+  jumpToSection,
+  muted
 }) {
   const todayStr = new Date().toISOString().slice(0, 10);
   const active = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
@@ -3744,10 +3744,10 @@ function StackedSection({
     userToggled.current = true;
     setCollapsed(c => !c);
   };
-  const stripe = name === "Unassigned" ? C.taupe : colorBg;
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
-      marginBottom: 14
+      marginBottom: 16,
+      opacity: muted ? 0.55 : 1
     },
     ref: sectionRef
   }, /*#__PURE__*/React.createElement("div", {
@@ -3755,14 +3755,11 @@ function StackedSection({
       display: "flex",
       alignItems: "center",
       gap: 4,
-      background: C.rule,
-      borderLeft: `4px solid ${stripe}`,
-      border: `1px solid ${isJumpTarget ? C.mustard : C.rule}`,
-      boxShadow: isJumpTarget ? `0 0 0 2px ${C.mustard}` : "none",
-      borderLeftWidth: 4,
-      padding: "7px 10px",
-      borderRadius: 8,
-      marginBottom: 8
+      background: "transparent",
+      borderBottom: `1.5px solid ${isJumpTarget ? C.mustard : C.ink}`,
+      boxShadow: isJumpTarget ? `0 2px 0 ${C.mustard}` : "none",
+      padding: "6px 2px",
+      marginBottom: 2
     }
   }, dragHandle, /*#__PURE__*/React.createElement("button", {
     onClick: toggleHeader,
@@ -3780,7 +3777,7 @@ function StackedSection({
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: "Fraunces, serif",
-      fontSize: 14,
+      fontSize: 16,
       fontWeight: 600,
       color: C.ink
     }
@@ -3822,6 +3819,7 @@ function StackedSection({
     task: t,
     ...rowProps,
     compact: true,
+    flat: true,
     highlighted: t.id === highlightTaskId
   })), faded.length > 0 && !showFuture &&
   /*#__PURE__*/
@@ -3846,6 +3844,7 @@ function StackedSection({
     task: t,
     ...rowProps,
     compact: true,
+    flat: true,
     highlighted: t.id === highlightTaskId
   })), showFuture && faded.length > 0 &&
   /*#__PURE__*/
@@ -3877,6 +3876,29 @@ function SectionStack({
   highlightTaskId,
   jumpToSection
 }) {
+  const todayStr = new Date().toISOString().slice(0, 10);
+  // a section is "empty" when nothing in it is currently visible (postponed / not-yet-available tasks don't count)
+  const hasVisible = name => sectionTasksFn(name).some(t => !isFadedTask(t, todayStr));
+  const activeBase = baseSections.filter(hasVisible);
+  const emptyBase = baseSections.filter(n => !hasVisible(n));
+  const activeExtra = extraSections.filter(hasVisible);
+  const emptyExtra = extraSections.filter(n => !hasVisible(n));
+  // dragging reorders only the visible group; the new order is slotted back into the positions those sections held,
+  // so empty sections keep their place in the saved order
+  const finalizeActive = arr => {
+    const activeSet = new Set(activeBase);
+    let i = 0;
+    onReorderFull(baseSections.map(n => activeSet.has(n) ? arr[i++] : n));
+  };
+  const hasEmpty = emptyBase.length + emptyExtra.length > 0;
+  const common = {
+    colorBg,
+    rowProps,
+    onDelete,
+    emptyLabel,
+    highlightTaskId,
+    jumpToSection
+  };
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "12px 16px 90px",
@@ -3884,22 +3906,17 @@ function SectionStack({
       flex: 1
     }
   }, /*#__PURE__*/React.createElement(DragReorderList, {
-    items: baseSections,
+    items: activeBase,
     keyFn: name => name,
-    onFinalize: onReorderFull,
+    onFinalize: finalizeActive,
     renderRow: (name, idx, startDrag) =>
     /*#__PURE__*/
     /*#__PURE__*/
     React.createElement(StackedSection, {
       name: name,
       tasks: sectionTasksFn(name),
-      colorBg: colorBg,
-      rowProps: rowProps,
-      onDelete: onDelete,
+      ...common,
       deletable: true,
-      emptyLabel: emptyLabel,
-      highlightTaskId: highlightTaskId,
-      jumpToSection: jumpToSection,
       dragHandle:
       /*#__PURE__*/
       /*#__PURE__*/
@@ -3907,20 +3924,46 @@ function SectionStack({
         onPointerDown: startDrag
       })
     })
-  }), extraSections.map(name =>
+  }), activeExtra.map(name =>
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(StackedSection, {
     key: name,
     name: name,
     tasks: sectionTasksFn(name),
-    colorBg: colorBg,
-    rowProps: rowProps,
-    onDelete: onDelete,
-    deletable: name !== "Unassigned",
-    emptyLabel: emptyLabel,
-    highlightTaskId: highlightTaskId,
-    jumpToSection: jumpToSection
+    ...common,
+    deletable: name !== "Unassigned"
+  })), hasEmpty &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      margin: "6px 0 10px",
+      fontSize: 10.5,
+      color: C.inkSoft,
+      textTransform: "uppercase",
+      letterSpacing: 0.6,
+      fontWeight: 700,
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", null, "Nothing right now"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      flex: 1,
+      height: 1,
+      background: C.rule
+    }
+  })), [...emptyBase, ...emptyExtra].map(name =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(StackedSection, {
+    key: name,
+    name: name,
+    tasks: sectionTasksFn(name),
+    ...common,
+    muted: true,
+    deletable: name !== "Unassigned"
   })), /*#__PURE__*/React.createElement(AddSectionRow, {
     onAdd: onAdd,
     label: addLabel
@@ -4020,7 +4063,8 @@ function TaskRow({
   onRestore,
   onToggleManualTodo,
   highlighted,
-  showAsCompleted
+  showAsCompleted,
+  flat
 }) {
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
@@ -4038,14 +4082,27 @@ function TaskRow({
       setNewAction("");
     }
   };
+  const hasNotesToShow = !!(flat && task.notes);
+  // flat = the quiet All tasks look: no card, no box, just a hairline between tasks
+  const rowStyle = flat ? {
+    background: "transparent",
+    border: "none",
+    borderBottom: `1px solid ${C.rule}`,
+    boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
+    borderRadius: highlighted ? 6 : 0,
+    padding: "9px 2px",
+    marginBottom: 0
+  } : {
+    background: C.card,
+    border: `1px solid ${highlighted ? C.mustard : C.rule}`,
+    boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
+    borderRadius: 10,
+    padding: compact ? "9px 10px" : "11px 12px",
+    marginBottom: 8
+  };
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
-      background: C.card,
-      border: `1px solid ${highlighted ? C.mustard : C.rule}`,
-      boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
-      borderRadius: 10,
-      padding: compact ? "9px 10px" : "11px 12px",
-      marginBottom: 8,
+      ...rowStyle,
       opacity: isDone ? 0.55 : notYetAvailable ? 0.5 : 1
     }
   }, /*#__PURE__*/React.createElement("div", {
@@ -4185,7 +4242,7 @@ function TaskRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, task.manualTodo ? "− To-do list" : "+ To-do list"), onRestore &&
+  }, task.manualTodo ? "− List" : "+ List"), onRestore &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
@@ -4269,7 +4326,7 @@ function TaskRow({
       fontSize: 11,
       color: C.inkSoft
     }
-  }, "All subtasks done") : null, progress &&
+  }, "All subtasks done") : null, (progress || hasNotesToShow) &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
@@ -4283,17 +4340,28 @@ function TaskRow({
       padding: 0,
       marginLeft: na ? 8 : 0
     }
-  }, progress, " ", open ? "▴" : "▾")), open &&
+  }, progress || "notes", " ", open ? "▴" : "▾")), open &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
     style: {
       marginLeft: 30,
       marginTop: 8,
-      borderTop: `1px dashed ${C.rule}`,
-      paddingTop: 8
+      borderTop: flat ? "none" : `1px dashed ${C.rule}`,
+      paddingTop: flat ? 2 : 8
     }
-  }, /*#__PURE__*/React.createElement(DragReorderList, {
+  }, hasNotesToShow &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.inkSoft,
+      fontStyle: "italic",
+      marginBottom: 8,
+      whiteSpace: "pre-wrap"
+    }
+  }, task.notes), /*#__PURE__*/React.createElement(DragReorderList, {
     items: task.actions || [],
     keyFn: a => a.id,
     onFinalize: arr => onSetTaskActions(task.id, arr),
@@ -4307,7 +4375,7 @@ function TaskRow({
         gap: 5,
         marginBottom: 6,
         flexWrap: "wrap",
-        background: C.card
+        background: flat ? "transparent" : C.card
       }
     }, /*#__PURE__*/React.createElement(DragHandle, {
       onPointerDown: startDrag
