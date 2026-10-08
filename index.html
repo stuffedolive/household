@@ -129,7 +129,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v49";
+const APP_VERSION = "v51";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -327,6 +327,7 @@ function App() {
   }, [highlightTaskId]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [convertNote, setConvertNote] = useState(null); // plan note being turned into a real task
   const [pickerFor, setPickerFor] = useState(null);
   const [activitySummary, setActivitySummary] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -602,10 +603,8 @@ function App() {
     completed: false,
     bucket: "now"
   }]);
-  const toggleSundry = id => saveToday("Toggle sundry", todayItems.map(it => it.id === id ? {
-    ...it,
-    completed: !it.completed
-  } : it));
+  // ticking off a quick-add note just removes it (it's a private reminder, not a record)
+  const toggleSundry = id => saveToday("Tick off note", todayItems.filter(it => it.id !== id));
   const deleteSundry = id => saveToday("Delete sundry", todayItems.filter(it => it.id !== id));
   const addTaskToToday = (taskId, subtaskId) => {
     if (todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null))) return;
@@ -1029,7 +1028,12 @@ function App() {
     onReorderTodayBucketFull: reorderTodayBucketFull,
     onResetToday: resetToday,
     onSetTodayBucket: setTodayBucket,
-    onToggleTodayTaskDone: toggleTodayTaskDone
+    onToggleTodayTaskDone: toggleTodayTaskDone,
+    onConvertNote: n => {
+      setEditing(null);
+      setConvertNote(n);
+      setShowForm(true);
+    }
   }) :
   /*#__PURE__*/
   /*#__PURE__*/
@@ -1094,12 +1098,26 @@ function App() {
   React.createElement(TaskForm, {
     me: me,
     initial: editing,
+    prefillTitle: !editing && convertNote ? convertNote.title : "",
     config: config,
     onAddRoom: addRoom,
     onAddCategory: addCategory,
-    onClose: () => setShowForm(false),
+    onClose: () => {
+      setShowForm(false);
+      setConvertNote(null);
+    },
     onSave: t => {
       upsertTask(t);
+      if (convertNote && !editing) {
+        // swap the note for the real task in the same spot on the plan
+        saveToday("Turn note into task", todayItems.map(it => it.type === "sundry" && it.id === convertNote.id ? {
+          type: "task",
+          id: t.id,
+          subtaskId: null,
+          bucket: it.bucket || "now"
+        } : it));
+      }
+      setConvertNote(null);
       setShowForm(false);
     },
     onDelete: id => {
@@ -2601,7 +2619,8 @@ function ToDoList({
   onReorderTodayBucketFull,
   onResetToday,
   onSetTodayBucket,
-  onToggleTodayTaskDone
+  onToggleTodayTaskDone,
+  onConvertNote
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
   const [skipped, setSkipped] = useState(() => loadSkipped(me));
@@ -2784,6 +2803,10 @@ function ToDoList({
     setSkipped(next);
     saveSkipped(me, next);
   };
+  const resetSkips = () => {
+    setSkipped([]);
+    saveSkipped(me, []);
+  };
   const planPick = pick => {
     if (pick.kind === "chore") onAddTaskToToday(pick.item.id, (drivingSubtask(pick.item) || {}).id || null);else onAddTaskToToday(pick.item.task.id, pick.item.action ? pick.item.action.id : null);
   };
@@ -2824,7 +2847,26 @@ function ToDoList({
       cursor: "pointer",
       marginBottom: 12
     }
-  }, overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"), overwhelmed && !topPick &&
+  }, overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"), overwhelmed && skipped.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      textAlign: "center",
+      marginTop: -6,
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: resetSkips,
+    style: {
+      border: "none",
+      background: "none",
+      color: C.inkSoft,
+      fontSize: 11.5,
+      textDecoration: "underline",
+      cursor: "pointer"
+    }
+  }, "Start over (", skipped.length, " skipped)")), overwhelmed && !topPick &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -2871,7 +2913,8 @@ function ToDoList({
     onToggle: onToggle,
     onToggleAction: onToggleAction,
     onEdit: onEdit,
-    onToggleTodayTaskDone: onToggleTodayTaskDone
+    onToggleTodayTaskDone: onToggleTodayTaskDone,
+    onConvertNote: onConvertNote
   }), displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 &&
   /*#__PURE__*/
   /*#__PURE__*/
@@ -3086,12 +3129,13 @@ function TodayItemRow({
   onMove,
   moveLabel,
   onToggleTodayTaskDone,
+  onConvertNote,
   startDrag
 }) {
   const task = item.type === "task" ? tasksById[item.id] : null;
   const subtask = task && item.subtaskId ? (task.actions || []).find(a => a.id === item.subtaskId) : null;
   let title, completed, onCheck;
-  const isNote = item.type === "sundry"; // quick-add notes look quieter than real tasks
+  const isNote = item.type === "sundry"; // quick-add notes: italic text and a grey circle, nothing else differs
   if (item.type === "sundry") {
     title = item.title;
     completed = item.completed;
@@ -3128,7 +3172,7 @@ function TodayItemRow({
     style: {
       width: 18,
       height: 18,
-      borderRadius: isNote ? 4 : "50%",
+      borderRadius: "50%",
       border: `2px solid ${isNote ? C.inkSoft : C.sage}`,
       background: completed ? isNote ? C.inkSoft : C.sage : "transparent",
       display: "flex",
@@ -3140,30 +3184,16 @@ function TodayItemRow({
       flexShrink: 0
     }
   }, completed && "✓"), /*#__PURE__*/React.createElement("span", {
-    onClick: task ? () => onEdit(task) : undefined,
+    onClick: task ? () => onEdit(task) : isNote && onConvertNote ? () => onConvertNote(item) : undefined,
     style: {
       flex: 1,
       fontSize: 13.5,
-      color: isNote ? C.inkSoft : C.ink,
+      color: C.ink,
       fontStyle: isNote ? "italic" : "normal",
       textDecoration: completed ? "line-through" : "none",
-      cursor: task ? "pointer" : "default"
+      cursor: task || isNote ? "pointer" : "default"
     }
-  }, title, isNote &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement("span", {
-    style: {
-      marginLeft: 7,
-      fontSize: 9.5,
-      fontStyle: "normal",
-      textTransform: "uppercase",
-      letterSpacing: 0.6,
-      color: C.inkSoft,
-      opacity: 0.7,
-      verticalAlign: "middle"
-    }
-  }, "note"), task && task.needsDetails &&
+  }, title, task && task.needsDetails &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("span", {
@@ -3209,7 +3239,8 @@ function TodayPlanSection({
   onToggle,
   onToggleAction,
   onEdit,
-  onToggleTodayTaskDone
+  onToggleTodayTaskDone,
+  onConvertNote
 }) {
   const [newSundry, setNewSundry] = useState("");
   const [resetting, setResetting] = useState(false);
@@ -3316,6 +3347,7 @@ function TodayPlanSection({
       onToggleAction: onToggleAction,
       onEdit: onEdit,
       onToggleTodayTaskDone: onToggleTodayTaskDone,
+      onConvertNote: onConvertNote,
       onMove: () => onSetBucket(item, "later"),
       moveLabel: "↓ Later",
       startDrag: startDrag
@@ -3355,6 +3387,7 @@ function TodayPlanSection({
       onToggleAction: onToggleAction,
       onEdit: onEdit,
       onToggleTodayTaskDone: onToggleTodayTaskDone,
+      onConvertNote: onConvertNote,
       onMove: () => onSetBucket(item, "now"),
       moveLabel: "↑ Today",
       startDrag: startDrag
@@ -4949,6 +4982,7 @@ function SectionSelect({
 function TaskForm({
   me,
   initial,
+  prefillTitle,
   config,
   onAddRoom,
   onAddCategory,
@@ -4959,7 +4993,7 @@ function TaskForm({
   const [t, setT] = useState(() => {
     const base = initial || {
       id: uid(),
-      title: "",
+      title: prefillTitle || "",
       listType: null,
       scope: null,
       owner: me,

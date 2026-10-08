@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v49";
+const APP_VERSION = "v51";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -276,6 +276,7 @@ function App() {
   }, [highlightTaskId]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [convertNote, setConvertNote] = useState(null); // plan note being turned into a real task
   const [pickerFor, setPickerFor] = useState(null);
   const [activitySummary, setActivitySummary] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -522,10 +523,8 @@ function App() {
     completed: false,
     bucket: "now"
   }]);
-  const toggleSundry = id => saveToday("Toggle sundry", todayItems.map(it => it.id === id ? {
-    ...it,
-    completed: !it.completed
-  } : it));
+  // ticking off a quick-add note just removes it (it's a private reminder, not a record)
+  const toggleSundry = id => saveToday("Tick off note", todayItems.filter(it => it.id !== id));
   const deleteSundry = id => saveToday("Delete sundry", todayItems.filter(it => it.id !== id));
   const addTaskToToday = (taskId, subtaskId) => {
     if (todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null))) return;
@@ -852,7 +851,11 @@ function App() {
     }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
-    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
+    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} onConvertNote={n => {
+      setEditing(null);
+      setConvertNote(n);
+      setShowForm(true);
+    }} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
     }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onToggleManualTodo={toggleManualTodo} />}<button onClick={() => {
@@ -874,8 +877,21 @@ function App() {
       boxShadow: "0 6px 16px rgba(43,42,40,0.28)",
       cursor: "pointer",
       fontSize: 24
-    }} aria-label="Add task">+</button>{showForm && /*#__PURE__*/<TaskForm me={me} initial={editing} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => setShowForm(false)} onSave={t => {
+    }} aria-label="Add task">+</button>{showForm && /*#__PURE__*/<TaskForm me={me} initial={editing} prefillTitle={!editing && convertNote ? convertNote.title : ""} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => {
+      setShowForm(false);
+      setConvertNote(null);
+    }} onSave={t => {
       upsertTask(t);
+      if (convertNote && !editing) {
+        // swap the note for the real task in the same spot on the plan
+        saveToday("Turn note into task", todayItems.map(it => it.type === "sundry" && it.id === convertNote.id ? {
+          type: "task",
+          id: t.id,
+          subtaskId: null,
+          bucket: it.bucket || "now"
+        } : it));
+      }
+      setConvertNote(null);
       setShowForm(false);
     }} onDelete={id => {
       deleteTask(id);
@@ -1895,7 +1911,8 @@ function ToDoList({
   onReorderTodayBucketFull,
   onResetToday,
   onSetTodayBucket,
-  onToggleTodayTaskDone
+  onToggleTodayTaskDone,
+  onConvertNote
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
   const [skipped, setSkipped] = useState(() => loadSkipped(me));
@@ -2078,6 +2095,10 @@ function ToDoList({
     setSkipped(next);
     saveSkipped(me, next);
   };
+  const resetSkips = () => {
+    setSkipped([]);
+    saveSkipped(me, []);
+  };
   const planPick = pick => {
     if (pick.kind === "chore") onAddTaskToToday(pick.item.id, (drivingSubtask(pick.item) || {}).id || null);else onAddTaskToToday(pick.item.task.id, pick.item.action ? pick.item.action.id : null);
   };
@@ -2113,7 +2134,18 @@ function ToDoList({
       fontWeight: 600,
       cursor: "pointer",
       marginBottom: 12
-    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button>{overwhelmed && !topPick && /*#__PURE__*/<div style={{
+    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button>{overwhelmed && skipped.length > 0 && /*#__PURE__*/<div style={{
+      textAlign: "center",
+      marginTop: -6,
+      marginBottom: 12
+    }}><button onClick={resetSkips} style={{
+        border: "none",
+        background: "none",
+        color: C.inkSoft,
+        fontSize: 11.5,
+        textDecoration: "underline",
+        cursor: "pointer"
+      }}>Start over ({skipped.length} skipped)</button></div>}{overwhelmed && !topPick && /*#__PURE__*/<div style={{
       background: C.ink,
       color: C.white,
       borderRadius: 20,
@@ -2129,7 +2161,7 @@ function ToDoList({
       }
       const driving = drivingSubtask(topPick.item);
       if (driving) snoozeProjectAction(topPick.item, driving, dateStr);else snoozeChore(topPick.item, dateStr);
-    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} />{displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/<div style={{
+    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} />{displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/<div style={{
       color: C.inkSoft,
       fontSize: 13,
       textAlign: "center",
@@ -2186,12 +2218,13 @@ function TodayItemRow({
   onMove,
   moveLabel,
   onToggleTodayTaskDone,
+  onConvertNote,
   startDrag
 }) {
   const task = item.type === "task" ? tasksById[item.id] : null;
   const subtask = task && item.subtaskId ? (task.actions || []).find(a => a.id === item.subtaskId) : null;
   let title, completed, onCheck;
-  const isNote = item.type === "sundry"; // quick-add notes look quieter than real tasks
+  const isNote = item.type === "sundry"; // quick-add notes: italic text and a grey circle, nothing else differs
   if (item.type === "sundry") {
     title = item.title;
     completed = item.completed;
@@ -2219,7 +2252,7 @@ function TodayItemRow({
   }}>{startDrag && /*#__PURE__*/<DragHandle onPointerDown={startDrag} />}<button onClick={onCheck} style={{
       width: 18,
       height: 18,
-      borderRadius: isNote ? 4 : "50%",
+      borderRadius: "50%",
       border: `2px solid ${isNote ? C.inkSoft : C.sage}`,
       background: completed ? isNote ? C.inkSoft : C.sage : "transparent",
       display: "flex",
@@ -2229,23 +2262,14 @@ function TodayItemRow({
       color: C.white,
       fontSize: 10,
       flexShrink: 0
-    }}>{completed && "✓"}</button><span onClick={task ? () => onEdit(task) : undefined} style={{
+    }}>{completed && "✓"}</button><span onClick={task ? () => onEdit(task) : isNote && onConvertNote ? () => onConvertNote(item) : undefined} style={{
       flex: 1,
       fontSize: 13.5,
-      color: isNote ? C.inkSoft : C.ink,
+      color: C.ink,
       fontStyle: isNote ? "italic" : "normal",
       textDecoration: completed ? "line-through" : "none",
-      cursor: task ? "pointer" : "default"
-    }}>{title}{isNote && /*#__PURE__*/<span style={{
-        marginLeft: 7,
-        fontSize: 9.5,
-        fontStyle: "normal",
-        textTransform: "uppercase",
-        letterSpacing: 0.6,
-        color: C.inkSoft,
-        opacity: 0.7,
-        verticalAlign: "middle"
-      }}>note</span>}{task && task.needsDetails && /*#__PURE__*/<span style={{
+      cursor: task || isNote ? "pointer" : "default"
+    }}>{title}{task && task.needsDetails && /*#__PURE__*/<span style={{
         marginLeft: 6,
         verticalAlign: "middle"
       }}><Tag color={C.inkSoft}>needs details</Tag></span>}</span><button onClick={onMove} style={{
@@ -2278,7 +2302,8 @@ function TodayPlanSection({
   onToggle,
   onToggleAction,
   onEdit,
-  onToggleTodayTaskDone
+  onToggleTodayTaskDone,
+  onConvertNote
 }) {
   const [newSundry, setNewSundry] = useState("");
   const [resetting, setResetting] = useState(false);
@@ -2343,7 +2368,7 @@ function TodayPlanSection({
         fontSize: 12.5,
         textAlign: "center",
         padding: "6px 0 4px"
-      }}>Nothing planned yet.</div>}<DragReorderList items={nowItems} keyFn={keyFn} onFinalize={arr => onReorderBucketFull("now", arr)} renderRow={(item, idx, startDrag) => /*#__PURE__*/<TodayItemRow item={item} tasksById={tasksById} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onRemoveTask={onRemoveTask} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onMove={() => onSetBucket(item, "later")} moveLabel="↓ Later" startDrag={startDrag} />} />{laterItems.length > 0 && /*#__PURE__*/<div style={{
+      }}>Nothing planned yet.</div>}<DragReorderList items={nowItems} keyFn={keyFn} onFinalize={arr => onReorderBucketFull("now", arr)} renderRow={(item, idx, startDrag) => /*#__PURE__*/<TodayItemRow item={item} tasksById={tasksById} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onRemoveTask={onRemoveTask} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} onMove={() => onSetBucket(item, "later")} moveLabel="↓ Later" startDrag={startDrag} />} />{laterItems.length > 0 && /*#__PURE__*/<div style={{
         marginTop: 14,
         paddingTop: 10,
         borderTop: `1px dashed ${C.rule}`
@@ -2354,7 +2379,7 @@ function TodayPlanSection({
           textTransform: "uppercase",
           letterSpacing: 0.5,
           marginBottom: 4
-        }}>Later</div><DragReorderList items={laterItems} keyFn={keyFn} onFinalize={arr => onReorderBucketFull("later", arr)} renderRow={(item, idx, startDrag) => /*#__PURE__*/<TodayItemRow item={item} tasksById={tasksById} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onRemoveTask={onRemoveTask} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onMove={() => onSetBucket(item, "now")} moveLabel="↑ Today" startDrag={startDrag} />} /></div>}</div><div style={{
+        }}>Later</div><DragReorderList items={laterItems} keyFn={keyFn} onFinalize={arr => onReorderBucketFull("later", arr)} renderRow={(item, idx, startDrag) => /*#__PURE__*/<TodayItemRow item={item} tasksById={tasksById} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onRemoveTask={onRemoveTask} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} onMove={() => onSetBucket(item, "now")} moveLabel="↑ Today" startDrag={startDrag} />} /></div>}</div><div style={{
       marginTop: 14
     }}><div style={{
         display: "flex",
@@ -3383,6 +3408,7 @@ function SectionSelect({
 function TaskForm({
   me,
   initial,
+  prefillTitle,
   config,
   onAddRoom,
   onAddCategory,
@@ -3393,7 +3419,7 @@ function TaskForm({
   const [t, setT] = useState(() => {
     const base = initial || {
       id: uid(),
-      title: "",
+      title: prefillTitle || "",
       listType: null,
       scope: null,
       owner: me,
