@@ -59,11 +59,13 @@ const SECTION_LABELS = {
 const TYPE_CHOICES = ["household", "personalTasks", "shared", "personal"].map(k => [k, SECTION_LABELS[k]]);
 /* "Skip" in overwhelmed mode only hides a card until local midnight — remembered on this device, per person, and never
    touches the task itself. The key includes the local date so it resets by itself the next day. */
-const localDateStr = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-};
-const skipStorageKey = person => `lifelist-skipped-${person}-${localDateStr()}`;
+/* All dates in the app are Adelaide dates. "Today" is read in Australia/Adelaide time (not UTC, which runs up to 10.5h
+   behind and used to make "today" flip at ~10:30am), and date arithmetic round-trips through local components only. */
+const adelaideToday = () => new Date().toLocaleDateString("en-CA", {
+  timeZone: "Australia/Adelaide"
+});
+const ymdLocal = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const skipStorageKey = person => `lifelist-skipped-${person}-${adelaideToday()}`;
 const loadSkipped = person => {
   try {
     return JSON.parse(localStorage.getItem(skipStorageKey(person)) || "[]");
@@ -76,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v47";
+const APP_VERSION = "v48";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -194,13 +196,12 @@ function recurrenceLabel(rec) {
 function addInterval(dateStr, unit, amount) {
   const d = new Date(dateStr + "T00:00:00");
   if (unit === "day") d.setDate(d.getDate() + amount);else if (unit === "week") d.setDate(d.getDate() + amount * 7);else if (unit === "month") d.setMonth(d.getMonth() + amount);
-  return d.toISOString().slice(0, 10);
+  return ymdLocal(d);
 }
 function fmtDate(dateStr) {
   if (!dateStr) return "No date";
   const d = new Date(dateStr + "T00:00:00");
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = new Date(adelaideToday() + "T00:00:00");
   const diff = Math.round((d - today) / 86400000);
   if (diff === 0) return "Today";
   if (diff === 1) return "Tomorrow";
@@ -614,7 +615,7 @@ function App() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `household-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `household-backup-${adelaideToday()}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -666,7 +667,7 @@ function App() {
     const ref = db.collection(TASKS_COLLECTION).doc(task.id);
     const rec = normRecurrence(task.recurrence);
     if (!task.completed && rec.unit !== "none" && task.dueDate) {
-      const todayStr = new Date().toISOString().slice(0, 10);
+      const todayStr = adelaideToday();
       const base = rec.mode === "fixed" ? task.dueDate : todayStr;
       const nextDue = addInterval(base, rec.unit, rec.amount);
       ref.update({
@@ -1502,7 +1503,7 @@ function ActionAsRow({
   onRestore,
   onToggleManualTodo
 }) {
-  const overdue = action.dueDate && action.dueDate < new Date().toISOString().slice(0, 10);
+  const overdue = action.dueDate && action.dueDate < adelaideToday();
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
   return /*#__PURE__*/<div style={{
     background: C.card,
@@ -1591,13 +1592,13 @@ function ActionAsRow({
         }}>Restore</button>}</div></div></div>;
 }
 function snoozeTarget(kind) {
-  const d = new Date();
+  const d = new Date(adelaideToday() + "T00:00:00");
   if (kind === "tomorrow") d.setDate(d.getDate() + 1);else if (kind === "next-weekend") {
     const day = d.getDay();
     const diff = (6 - day + 7) % 7 || 7;
     d.setDate(d.getDate() + diff);
   } else if (kind === "next-month") d.setMonth(d.getMonth() + 1);
-  return d.toISOString().slice(0, 10);
+  return ymdLocal(d);
 }
 const notStartableYet = (t, todayStr) => {
   const eff = effectiveDueDate(t);
@@ -1735,13 +1736,13 @@ function HeroCard({
   };
   const shift = leaving === "plan" ? 520 : leaving === "skip" ? -520 : dx;
   const strength = Math.min(Math.abs(shift) / THRESHOLD, 1);
-  const actionBtn = {
+  // Skip / Plan: present but quiet, tucked toward the card's edges (swiping is the main way to use them)
+  const quietBtn = {
     background: "transparent",
-    color: C.white,
-    border: "1px solid rgba(255,255,255,0.4)",
-    borderRadius: 10,
-    padding: "11px 14px",
-    fontSize: 14,
+    color: "rgba(255,255,255,0.55)",
+    border: "none",
+    padding: "8px 8px",
+    fontSize: 12,
     cursor: "pointer"
   };
   return /*#__PURE__*/<div style={{
@@ -1827,12 +1828,14 @@ function HeroCard({
       fontSize: 10.5,
       opacity: 0.5,
       marginBottom: 14
-    }}>← skip until tomorrow · swipe · add to plan →</div><div style={{
+    }} /><div style={{
       display: "flex",
-      gap: 8,
-      justifyContent: "center",
-      marginBottom: 18
-    }}><button onClick={() => finish("skip")} style={actionBtn}>← Skip</button><button onClick={() => driving ? onToggleAction(task.id, driving.id) : onToggle(task)} style={{
+      alignItems: "center",
+      justifyContent: "space-between",
+      marginBottom: 18,
+      marginLeft: -10,
+      marginRight: -10
+    }}><button onClick={() => finish("skip")} style={quietBtn}>← Skip</button><button onClick={() => driving ? onToggleAction(task.id, driving.id) : onToggle(task)} style={{
         background: C.white,
         color: C.ink,
         border: "none",
@@ -1841,7 +1844,7 @@ function HeroCard({
         fontWeight: 700,
         fontSize: 14,
         cursor: "pointer"
-      }}>Done</button><button onClick={() => finish("plan")} style={actionBtn}>Plan →</button></div><div style={{
+      }}>Done</button><button onClick={() => finish("plan")} style={quietBtn}>Plan →</button></div><div style={{
       display: "flex",
       justifyContent: "center"
     }}><SnoozeControl onSnooze={onSnooze} /></div></div>;
@@ -1899,7 +1902,7 @@ function ToDoList({
   useEffect(() => {
     setSkipped(loadSkipped(me));
   }, [me]);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = adelaideToday();
   const now = Date.now();
 
   // "just checked off" linger: keep a task looking done, in its original spot, for ~5s before it actually
@@ -2674,7 +2677,7 @@ function StackedSection({
   jumpToSection,
   muted
 }) {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = adelaideToday();
   const active = useMemo(() => tasks.filter(t => !isFadedTask(t, todayStr)), [tasks, todayStr]);
   const faded = useMemo(() => tasks.filter(t => isFadedTask(t, todayStr)), [tasks, todayStr]);
   const containsHighlight = highlightTaskId && tasks.some(t => t.id === highlightTaskId);
@@ -2712,11 +2715,11 @@ function StackedSection({
       alignItems: "center",
       gap: 4,
       background: "transparent",
-      borderBottom: `1.5px solid ${isJumpTarget ? C.mustard : C.ink}`,
+      borderBottom: `1px solid ${isJumpTarget ? C.mustard : C.ink}`,
       boxShadow: isJumpTarget ? `0 2px 0 ${C.mustard}` : "none",
       padding: "6px 2px",
       marginBottom: 2
-    }}>{dragHandle}<button onClick={toggleHeader} style={{
+    }}><button onClick={toggleHeader} style={{
         flex: 1,
         textAlign: "left",
         background: "none",
@@ -2731,11 +2734,7 @@ function StackedSection({
           fontSize: 16,
           fontWeight: 600,
           color: C.ink
-        }}>{name} <span style={{
-            fontWeight: 400,
-            opacity: 0.65,
-            fontSize: 11
-          }}>({tasks.length})</span></span><span style={{
+        }}>{name}</span><span style={{
           marginLeft: "auto",
           color: C.inkSoft,
           fontSize: 11
@@ -2777,7 +2776,7 @@ function SectionStack({
   highlightTaskId,
   jumpToSection
 }) {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = adelaideToday();
   // a section is "empty" when nothing in it is currently visible (postponed / not-yet-available tasks don't count)
   const hasVisible = name => sectionTasksFn(name).some(t => !isFadedTask(t, todayStr));
   const activeBase = baseSections.filter(hasVisible);
@@ -2891,7 +2890,7 @@ function TaskRow({
   const [open, setOpen] = useState(false);
   const [newAction, setNewAction] = useState("");
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = adelaideToday();
   const isDone = task.completed || showAsCompleted;
   const overdue = task.dueDate && task.dueDate < todayStr && !isDone;
   const notYetAvailable = isFadedTask(task, todayStr);
@@ -2905,14 +2904,17 @@ function TaskRow({
     }
   };
   const hasNotesToShow = !!(flat && task.notes);
+  // flat (All tasks) look: overdue tasks get a soft pink wash instead of "N days ago" text — a little deeper once a week late
+  const daysLate = overdue ? Math.round((new Date(todayStr + "T00:00:00") - new Date(task.dueDate + "T00:00:00")) / 86400000) : 0;
+  const lateWash = !flat || !overdue ? "transparent" : daysLate >= 7 ? "rgba(214, 120, 140, 0.22)" : "rgba(214, 120, 140, 0.11)";
   // flat = the quiet All tasks look: no card, no box, just a hairline between tasks
   const rowStyle = flat ? {
-    background: "transparent",
+    background: lateWash,
     border: "none",
     borderBottom: `1px solid ${C.rule}`,
     boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
-    borderRadius: highlighted ? 6 : 0,
-    padding: "9px 2px",
+    borderRadius: highlighted || overdue ? 6 : 0,
+    padding: "9px 6px",
     marginBottom: 0
   } : {
     background: C.card,
@@ -2950,7 +2952,7 @@ function TaskRow({
           display: "flex",
           alignItems: "center",
           gap: 6
-        }}><PersonBadge person={badgePerson} size={compact ? 16 : 18} /><div style={{
+        }}>{!flat && /*#__PURE__*/<PersonBadge person={badgePerson} size={compact ? 16 : 18} />}<div style={{
             fontSize: compact ? 13 : 14,
             color: C.ink,
             fontWeight: 600,
@@ -2969,15 +2971,18 @@ function TaskRow({
           }}>{fmtDate(task.dueDate)}</span>}</div>}{compact && task.dueDate && /*#__PURE__*/<div style={{
           fontSize: 10,
           fontFamily: "IBM Plex Mono, monospace",
-          color: overdue ? C.plum : C.inkSoft,
+          color: overdue && !flat ? C.plum : C.inkSoft,
           marginTop: 3
-        }}>{notYetAvailable ? `Not yet — ${fmtDate(task.dueDate)}` : fmtDate(task.dueDate)}</div>}</div><div style={{
+        }}>{notYetAvailable ? `Not yet — ${fmtDate(task.dueDate)}` : flat && overdue ? new Date(task.dueDate + "T00:00:00").toLocaleDateString("en-AU", {
+            day: "numeric",
+            month: "short"
+          }) : fmtDate(task.dueDate)}</div>}</div><div style={{
         display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        alignItems: "stretch",
+        flexDirection: flat ? "row" : "column",
+        gap: flat ? 8 : 4,
+        alignItems: flat ? "center" : "stretch",
         flexShrink: 0
-      }}>{onAddToToday && /*#__PURE__*/<button onClick={e => {
+      }}>{flat && badgePerson && /*#__PURE__*/<PersonBadge person={badgePerson} size={18} />}{onAddToToday && /*#__PURE__*/<button onClick={e => {
           e.stopPropagation();
           onAddToToday(task.id, null);
         }} style={{
