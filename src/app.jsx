@@ -57,7 +57,26 @@ const SECTION_LABELS = {
   personal: "Personal projects"
 };
 const TYPE_CHOICES = ["household", "personalTasks", "shared", "personal"].map(k => [k, SECTION_LABELS[k]]);
-const APP_VERSION = "v46";
+/* "Skip" in overwhelmed mode only hides a card until local midnight — remembered on this device, per person, and never
+   touches the task itself. The key includes the local date so it resets by itself the next day. */
+const localDateStr = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const skipStorageKey = person => `lifelist-skipped-${person}-${localDateStr()}`;
+const loadSkipped = person => {
+  try {
+    return JSON.parse(localStorage.getItem(skipStorageKey(person)) || "[]");
+  } catch (e) {
+    return [];
+  }
+};
+const saveSkipped = (person, list) => {
+  try {
+    localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
+  } catch (e) {}
+};
+const APP_VERSION = "v47";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1663,9 +1682,12 @@ function SnoozeControl({
     }} style={pillStyle}>{l}</button>)}<button onClick={() => setMode("custom")} style={pillStyle}>Custom date</button>{closeBtn(() => setMode("closed"))}</div>;
 }
 
-/* prominent hero card for "overwhelmed" mode — visually set apart from everything else */
+/* prominent card for "overwhelmed" mode — swipe right to put it on The Plan, left to skip it until midnight.
+   The buttons underneath do the same thing for anyone who'd rather tap. */
 function HeroCard({
   pick,
+  onPlan,
+  onSkip,
   onToggle,
   onToggleAction,
   onEdit,
@@ -1677,6 +1699,51 @@ function HeroCard({
   const title = driving ? driving.title : task.title;
   const dueDate = driving ? driving.dueDate || task.dueDate : effectiveDueDate(task);
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
+  const THRESHOLD = 90;
+  const [dx, setDx] = useState(0);
+  const [leaving, setLeaving] = useState(null); // "plan" | "skip" while the card flies off
+  const drag = useRef(null);
+  const moved = useRef(false);
+  const finish = dir => {
+    setLeaving(dir);
+    setTimeout(() => {
+      if (dir === "plan") onPlan();else onSkip();
+    }, 190);
+  };
+  const onDown = e => {
+    if (leaving) return;
+    if (e.target.closest && e.target.closest("button, input, select")) return;
+    drag.current = {
+      x: e.clientX,
+      id: e.pointerId
+    };
+    moved.current = false;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch (err) {}
+  };
+  const onMove = e => {
+    if (!drag.current) return;
+    const d = e.clientX - drag.current.x;
+    if (Math.abs(d) > 6) moved.current = true;
+    setDx(d);
+  };
+  const onUp = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    if (dx > THRESHOLD) finish("plan");else if (dx < -THRESHOLD) finish("skip");else setDx(0);
+  };
+  const shift = leaving === "plan" ? 520 : leaving === "skip" ? -520 : dx;
+  const strength = Math.min(Math.abs(shift) / THRESHOLD, 1);
+  const actionBtn = {
+    background: "transparent",
+    color: C.white,
+    border: "1px solid rgba(255,255,255,0.4)",
+    borderRadius: 10,
+    padding: "11px 14px",
+    fontSize: 14,
+    cursor: "pointer"
+  };
   return /*#__PURE__*/<div style={{
     background: C.ink,
     color: C.white,
@@ -1684,8 +1751,42 @@ function HeroCard({
     padding: "30px 24px",
     textAlign: "center",
     boxShadow: "0 14px 34px rgba(43,42,40,0.3)",
-    marginBottom: 18
-  }}><div style={{
+    marginBottom: 18,
+    position: "relative",
+    touchAction: "pan-y",
+    userSelect: "none",
+    transform: `translateX(${shift}px) rotate(${shift / 24}deg)`,
+    transition: drag.current ? "none" : "transform 0.19s ease-out",
+    opacity: leaving ? 0 : 1
+  }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}><div style={{
+      position: "absolute",
+      top: 16,
+      left: 18,
+      fontSize: 13,
+      fontWeight: 800,
+      letterSpacing: 1.5,
+      textTransform: "uppercase",
+      border: "2px solid #B7D3A6",
+      color: "#B7D3A6",
+      borderRadius: 8,
+      padding: "2px 9px",
+      transform: "rotate(-8deg)",
+      opacity: shift > 0 ? strength : 0
+    }}>Plan</div><div style={{
+      position: "absolute",
+      top: 16,
+      right: 18,
+      fontSize: 13,
+      fontWeight: 800,
+      letterSpacing: 1.5,
+      textTransform: "uppercase",
+      border: "2px solid rgba(255,255,255,0.7)",
+      color: "rgba(255,255,255,0.85)",
+      borderRadius: 8,
+      padding: "2px 9px",
+      transform: "rotate(8deg)",
+      opacity: shift < 0 ? strength : 0
+    }}>Skip</div><div style={{
       fontSize: 10,
       opacity: 0.55,
       marginBottom: 10,
@@ -1708,23 +1809,30 @@ function HeroCard({
       padding: "3px 11px",
       borderRadius: 20,
       marginBottom: 14
-    }}>{imp.label} importance</div>}<div style={{
+    }}>{imp.label} importance</div>}<div onClick={() => {
+      if (!moved.current) onEdit(task);
+    }} style={{
       fontFamily: "Fraunces, serif",
       fontSize: 26,
       fontWeight: 600,
       lineHeight: 1.25,
-      marginBottom: 12
+      marginBottom: 12,
+      cursor: "pointer"
     }}>{title}</div><div style={{
       fontFamily: "IBM Plex Mono, monospace",
       fontSize: 13,
       opacity: 0.8,
-      marginBottom: 22
+      marginBottom: 14
     }}>{fmtDate(dueDate)}</div><div style={{
+      fontSize: 10.5,
+      opacity: 0.5,
+      marginBottom: 14
+    }}>← skip until tomorrow · swipe · add to plan →</div><div style={{
       display: "flex",
-      gap: 10,
+      gap: 8,
       justifyContent: "center",
       marginBottom: 18
-    }}><button onClick={() => driving ? onToggleAction(task.id, driving.id) : onToggle(task)} style={{
+    }}><button onClick={() => finish("skip")} style={actionBtn}>← Skip</button><button onClick={() => driving ? onToggleAction(task.id, driving.id) : onToggle(task)} style={{
         background: C.white,
         color: C.ink,
         border: "none",
@@ -1733,15 +1841,7 @@ function HeroCard({
         fontWeight: 700,
         fontSize: 14,
         cursor: "pointer"
-      }}>Done</button><button onClick={() => onEdit(task)} style={{
-        background: "transparent",
-        color: C.white,
-        border: "1px solid rgba(255,255,255,0.4)",
-        borderRadius: 10,
-        padding: "11px 18px",
-        fontSize: 14,
-        cursor: "pointer"
-      }}>Open</button></div><div style={{
+      }}>Done</button><button onClick={() => finish("plan")} style={actionBtn}>Plan →</button></div><div style={{
       display: "flex",
       justifyContent: "center"
     }}><SnoozeControl onSnooze={onSnooze} /></div></div>;
@@ -1795,6 +1895,10 @@ function ToDoList({
   onToggleTodayTaskDone
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
+  const [skipped, setSkipped] = useState(() => loadSkipped(me));
+  useEffect(() => {
+    setSkipped(loadSkipped(me));
+  }, [me]);
   const today = new Date().toISOString().slice(0, 10);
   const now = Date.now();
 
@@ -1926,28 +2030,54 @@ function ToDoList({
     onSetActionDueDate
   };
 
-  // the single most urgent thing across chores + project actions, for the overwhelmed spotlight
-  const topPick = useMemo(() => {
-    const choreTop = chores[0] ? {
-      kind: "chore",
-      tier: tierFor(effectiveDueDate(chores[0]), chores[0].priority, today),
-      item: chores[0]
-    } : null;
-    const projTop = projectItems[0] ? {
-      kind: "project",
-      tier: tierFor(projectItems[0].action && projectItems[0].action.dueDate || projectItems[0].task.dueDate, projectItems[0].task.priority, today),
-      item: projectItems[0]
-    } : null;
-    const otherTop = otherProjectItems[0] ? {
-      kind: "otherProject",
-      tier: tierFor(otherProjectItems[0].action && otherProjectItems[0].action.dueDate || otherProjectItems[0].task.dueDate, otherProjectItems[0].task.priority, today),
-      item: otherProjectItems[0]
-    } : null;
-    const candidates = [choreTop, projTop, otherTop].filter(Boolean);
-    if (!candidates.length) return null;
-    candidates.sort((a, b) => a.tier - b.tier);
-    return candidates[0];
-  }, [chores, projectItems, otherProjectItems, today]);
+  // the overwhelmed card stack: every chore / project action that could be done now, most urgent + most important first,
+  // minus anything already on today's plan or skipped until midnight
+  const pickKey = pick => pick.kind === "chore" ? `${pick.item.id}:${(drivingSubtask(pick.item) || {}).id || ""}` : `${pick.item.task.id}:${pick.item.action ? pick.item.action.id : ""}`;
+  const pickStack = useMemo(() => {
+    const out = [];
+    chores.forEach(t => {
+      const due = effectiveDueDate(t);
+      out.push({
+        kind: "chore",
+        tier: tierFor(due, t.priority, today),
+        due: due || "9999",
+        item: t
+      });
+    });
+    projectItems.forEach(item => {
+      const due = item.action && item.action.dueDate || item.task.dueDate;
+      out.push({
+        kind: "project",
+        tier: tierFor(due, item.task.priority, today),
+        due: due || "9999",
+        item
+      });
+    });
+    otherProjectItems.forEach(item => {
+      const due = item.action && item.action.dueDate || item.task.dueDate;
+      out.push({
+        kind: "otherProject",
+        tier: tierFor(due, item.task.priority, today),
+        due: due || "9999",
+        item
+      });
+    });
+    const planned = pick => {
+      const taskId = pick.kind === "chore" ? pick.item.id : pick.item.task.id;
+      const sub = pick.kind === "chore" ? (drivingSubtask(pick.item) || {}).id || null : pick.item.action ? pick.item.action.id : null;
+      return todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === sub);
+    };
+    return out.filter(p => !skipped.includes(pickKey(p)) && !planned(p)).sort((x, y) => x.tier - y.tier || x.due.localeCompare(y.due));
+  }, [chores, projectItems, otherProjectItems, today, skipped, todayItems]);
+  const topPick = pickStack[0] || null;
+  const skipPick = pick => {
+    const next = [...skipped, pickKey(pick)];
+    setSkipped(next);
+    saveSkipped(me, next);
+  };
+  const planPick = pick => {
+    if (pick.kind === "chore") onAddTaskToToday(pick.item.id, (drivingSubtask(pick.item) || {}).id || null);else onAddTaskToToday(pick.item.task.id, pick.item.action ? pick.item.action.id : null);
+  };
 
   // "Not today" postpones — real due date is left alone, so overdue/stale status stays honest; the item just
   // moves into the Postponed section until the chosen date, then quietly reappears in normal rank.
@@ -1980,7 +2110,16 @@ function ToDoList({
       fontWeight: 600,
       cursor: "pointer",
       marginBottom: 12
-    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button>{overwhelmed && topPick && /*#__PURE__*/<HeroCard pick={topPick} onToggle={wrappedToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={dateStr => {
+    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button>{overwhelmed && !topPick && /*#__PURE__*/<div style={{
+      background: C.ink,
+      color: C.white,
+      borderRadius: 20,
+      padding: "34px 24px",
+      textAlign: "center",
+      marginBottom: 18,
+      fontFamily: "Fraunces, serif",
+      fontSize: 20
+    }}>All caught up for now</div>}{overwhelmed && topPick && /*#__PURE__*/<HeroCard key={pickKey(topPick)} pick={topPick} onPlan={() => planPick(topPick)} onSkip={() => skipPick(topPick)} onToggle={wrappedToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={dateStr => {
       if (topPick.kind === "project" || topPick.kind === "otherProject") {
         if (topPick.item.action) snoozeProjectAction(topPick.item.task, topPick.item.action, dateStr);else snoozeChore(topPick.item.task, dateStr);
         return;
@@ -2279,7 +2418,8 @@ function TaskSections({ tasks, me, onOpen }) {
     display: "flex",
     flexDirection: "column",
     gap: 12,
-    boxSizing: "border-box"
+    boxSizing: "border-box",
+    background: C.card
   }}>{keys.map(k => /*#__PURE__*/<button key={k} onClick={() => onOpen(k)} aria-label={SECTION_LABELS[k]} style={{
       position: "relative",
       flex: 1,
@@ -2292,7 +2432,7 @@ function TaskSections({ tasks, me, onOpen }) {
       width: "100%",
       borderRadius: 16,
       border: `1px solid ${C.rule}`,
-      background: C.card,
+      background: C.white,
       color: C.ink,
       cursor: "pointer"
     }}><span style={{
@@ -2407,7 +2547,8 @@ function QueueView(props) {
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 150px)",
     display: "flex",
-    flexDirection: "column"
+    flexDirection: "column",
+    background: C.card
   }}><div style={{
       background: C.card,
       borderBottom: `1px solid ${C.rule}`,
