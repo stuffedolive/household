@@ -45,19 +45,19 @@ function findSimilarTasks(query, candidates) {
     return shared.some(w => !QA_GENERIC.has(w)) && shared.length >= Math.ceil(Math.min(q.length, tt.length) / 2);
   }).slice(0, 4);
 }
-/* which All tasks list a task belongs in: Household tasks / Personal tasks (chores), Shared / Personal projects */
-const TYPE_CHOICES = [["household", "Household task"], ["personalTasks", "Personal task"], ["shared", "Shared project"], ["personal", "Personal project"]];
+/* which All tasks list a task belongs in: Household chores / Personal chores, Shared / Personal projects */
 function sectionForTask(t) {
   if (t.listType === "chore") return t.scope === "personal" ? "personalTasks" : "household";
   return t.scope === "personal" ? "personal" : "shared";
 }
 const SECTION_LABELS = {
-  household: "Household tasks",
-  personalTasks: "Personal tasks",
+  household: "Household chores",
+  personalTasks: "Personal chores",
   shared: "Shared projects",
   personal: "Personal projects"
 };
-const APP_VERSION = "v44";
+const TYPE_CHOICES = ["household", "personalTasks", "shared", "personal"].map(k => [k, SECTION_LABELS[k]]);
+const APP_VERSION = "v45";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -2256,8 +2256,8 @@ function TodayPlanSection({
           }}>{inPlanIds.has(t.id) ? "On today's plan" : SECTION_LABELS[sectionForTask(t)]}</span></button>)}</div>}</div></div>;
 }
 /* landing screen for the All tasks tab: four full-page buttons, one per list */
-function SectionIcon({ kind }) {
-  const common = { width: 76, height: 76, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.25, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
+function SectionIcon({ kind, size = 76 }) {
+  const common = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.25, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
   if (kind === "household") return /*#__PURE__*/<svg {...common}><path d="M20.5 3.5L13.2 10.8" /><path d="M10.6 9.6l3.8 3.8-3.1 5.9a1 1 0 0 1-1.6.3l-4.4-4.4a1 1 0 0 1 .3-1.6z" /><path d="M9.2 14.6l-2.3 3.4M11.8 16.1l-1.3 2.4" /></svg>;
   if (kind === "personalTasks") return /*#__PURE__*/<svg {...common}><circle cx="10" cy="8" r="3.2" /><path d="M4 20c0-3.5 2.7-6 6-6s6 2.5 6 6" /><path d="M16.5 6.5l1.8 1.8 3.2-3.6" /></svg>;
   if (kind === "shared") return /*#__PURE__*/<svg {...common}><path d="M3 11l9-8 9 8" /><path d="M5 10v10h14V10" /><path d="M10 18l4-4" /><path d="M12.4 12.4l2.1-1 1.1 1.1-1 2.1z" /></svg>;
@@ -3211,7 +3211,6 @@ function TaskForm({
     };
   });
   const [deferDetails, setDeferDetails] = useState(false);
-  const [notesOpen, setNotesOpen] = useState(!!(initial && initial.notes));
   // A "add details later" task is saved with default Type/Belongs to, so we can't tell from the values whether
   // they've been properly chosen yet — track whether the user has actually set both.
   const [touched, setTouched] = useState({});
@@ -3257,6 +3256,35 @@ function TaskForm({
   // a pinned project that moves out of its current Priorities row (to a chore, or between shared/personal) loses its pin
   const hadPin = !!(initial && initial.listType === "project" && initial.gridBucket && Object.values(initial.gridBucket).some(Boolean));
   const willUnpin = hadPin && !deferDetails && !!typeValue && (t.listType !== "project" || t.scope !== initial.scope);
+  const typeTiles = /*#__PURE__*/<div style={{
+      marginBottom: 14
+    }}><div style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 8
+      }}>{TYPE_CHOICES.map(([k, label]) => {
+          const active = typeValue === k;
+          return /*#__PURE__*/<button key={k} onClick={() => chooseType(k)} aria-label={label} style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 5,
+            padding: "12px 6px 10px",
+            borderRadius: 12,
+            border: `1px solid ${active ? C.ink : C.rule}`,
+            background: active ? C.ink : C.white,
+            color: active ? C.white : C.sageDeep,
+            cursor: "pointer"
+          }}><SectionIcon kind={k} size={34} /><span style={{
+              fontSize: 12,
+              fontWeight: 600,
+              color: active ? C.white : C.ink
+            }}>{label}</span></button>;
+        })}</div>{willUnpin && /*#__PURE__*/<div style={{
+        fontSize: 12,
+        color: C.plum,
+        marginTop: 9
+      }}>Changing this will unpin it from Priorities.</div>}</div>;
   const recurText = t.recurrence.unit === "none" ? "Doesn't repeat" : `Repeats every ${t.recurrence.amount > 1 ? t.recurrence.amount + " " : ""}${t.recurrence.unit}${t.recurrence.amount > 1 ? "s" : ""}`;
   const placeName = deferDetails ? null : t.listType === "chore" ? t.room : t.listType === "project" ? t.category : null;
   const impLabel = (IMPORTANCE.find(p => p.key === t.priority) || {}).label;
@@ -3286,24 +3314,7 @@ function TaskForm({
       onClose();
     }
   };
-  return /*#__PURE__*/<Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave} headerExtra={/*#__PURE__*/<React.Fragment><button onClick={() => setNotesOpen(o => !o)} style={{
-      position: "relative",
-      background: notesOpen ? C.card : "none",
-      border: `1px solid ${notesOpen ? C.rule : "transparent"}`,
-      borderRadius: 8,
-      padding: "5px 7px",
-      cursor: "pointer",
-      fontSize: 15,
-      lineHeight: 1
-    }}>📝{t.notes && /*#__PURE__*/<span style={{
-        position: "absolute",
-        top: 2,
-        right: 2,
-        width: 6,
-        height: 6,
-        borderRadius: "50%",
-        background: C.plum
-      }} />}</button><button disabled={!isValid} onClick={finishAndSave} style={{
+  return /*#__PURE__*/<Overlay title={initial ? "Edit task" : "New task"} onClose={finishAndSave} headerExtra={/*#__PURE__*/<React.Fragment><button disabled={!isValid} onClick={finishAndSave} style={{
       background: isValid ? C.ink : C.rule,
       color: C.white,
       border: "none",
@@ -3327,22 +3338,15 @@ function TaskForm({
           fontSize: 23,
           fontWeight: 600,
           color: C.ink
-        }} /></div>{!initial && /*#__PURE__*/<div style={{
+        }} /></div>{!initial && /*#__PURE__*/<label htmlFor="defer-details" style={{
         display: "flex",
-        alignItems: "flex-start",
-        gap: 9,
-        marginBottom: 15,
-        padding: "9px 11px",
-        background: C.card,
-        borderRadius: 8,
-        border: `1px solid ${C.rule}`
-      }}><input type="checkbox" id="defer-details" checked={deferDetails} onChange={e => setDeferDetails(e.target.checked)} style={{
-          marginTop: 2
-        }} /><label htmlFor="defer-details" style={{
-          fontSize: 12,
-          color: C.inkSoft,
-          lineHeight: 1.4
-        }}>Add details later</label></div>}<Field label="Due date"><div style={{
+        alignItems: "center",
+        gap: 7,
+        marginBottom: 14,
+        fontSize: 12,
+        color: C.inkSoft,
+        cursor: "pointer"
+      }}><input type="checkbox" id="defer-details" checked={deferDetails} onChange={e => setDeferDetails(e.target.checked)} />Add details later</label>}<Field label="Due date"><div style={{
           display: "flex",
           alignItems: "center",
           gap: 10,
@@ -3415,28 +3419,11 @@ function TaskForm({
             borderRadius: 8,
             padding: "0 12px",
             cursor: "pointer"
-          }}>+</button></div></Field></FormSection>{!deferDetails && /*#__PURE__*/<FormSection title="Type"><div style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 1fr",
-        gap: 8,
-        marginBottom: 13
-      }}>{TYPE_CHOICES.map(([k, label]) => {
-          const active = typeValue === k;
-          return /*#__PURE__*/<button key={k} onClick={() => chooseType(k)} style={{
-            padding: "10px 8px",
-            borderRadius: 10,
-            border: `1px solid ${active ? C.ink : C.rule}`,
-            background: active ? C.ink : C.white,
-            color: active ? C.white : C.ink,
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: "pointer"
-          }}>{label}</button>;
-        })}</div>{willUnpin && /*#__PURE__*/<div style={{
-        fontSize: 12,
-        color: C.plum,
-        marginBottom: 13
-      }}>Changing this will unpin it from Priorities.</div>}{showAssignee && /*#__PURE__*/<Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={v => set("assignee", v)} /></Field>}</FormSection>}<div style={{
+          }}>+</button></div></Field></FormSection><FormSection title="Notes"><textarea value={t.notes || ""} onChange={e => set("notes", e.target.value)} rows={3} placeholder="Add notes…" aria-label="Notes" style={{
+        ...inputStyle,
+        resize: "vertical",
+        fontFamily: "inherit"
+      }} /></FormSection>{!initial && !deferDetails && /*#__PURE__*/<FormSection title="Type">{typeTiles}</FormSection>}<div style={{
       marginTop: 16,
       paddingTop: 14,
       borderTop: `1px solid ${C.rule}`
@@ -3461,23 +3448,19 @@ function TaskForm({
           minWidth: 0
         }}>{detailsSummary}</span></div>{detailsOpen && /*#__PURE__*/<div style={{
         marginTop: 16
-      }}>{!deferDetails && t.listType === "chore" && /*#__PURE__*/<Field label="Room"><SectionSelect value={t.room} onChange={v => set("room", v)} options={roomOptions} onAddNew={onAddRoom} /></Field>}{!deferDetails && t.listType === "project" && t.scope && /*#__PURE__*/<Field label="Category"><SectionSelect value={t.category} onChange={v => set("category", v)} options={categoryOptions} onAddNew={name => onAddCategory(t.scope, t.owner || me, name)} /></Field>}<Field label="Importance"><SegRow options={[[null, "None"], ...IMPORTANCE.map(p => [p.key, p.label])]} value={t.priority} onChange={v => set("priority", v)} /></Field>{t.listType === "project" && /*#__PURE__*/<Field label="Priority category (doesn't pin automatically)"><SegRow options={[[null, "None"], ...BUCKETS.map(b => [b.key, b.label])]} value={t.priorityBucket} onChange={v => set("priorityBucket", v)} /></Field>}<Field label="Repeats *"><SegRow options={RECUR_UNITS} value={t.recurrence.unit} onChange={v => set("recurrence", {
+      }}>{initial && !deferDetails && typeTiles}{!deferDetails && showAssignee && /*#__PURE__*/<SelectField label="Assign to" value={t.assignee} onChange={v => set("assignee", v)} options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} />}{!deferDetails && t.listType === "chore" && /*#__PURE__*/<Field label="Room"><SectionSelect value={t.room} onChange={v => set("room", v)} options={roomOptions} onAddNew={onAddRoom} /></Field>}{!deferDetails && t.listType === "project" && t.scope && /*#__PURE__*/<Field label="Category"><SectionSelect value={t.category} onChange={v => set("category", v)} options={categoryOptions} onAddNew={name => onAddCategory(t.scope, t.owner || me, name)} /></Field>}<SelectField label="Importance" value={t.priority} onChange={v => set("priority", v)} options={[[null, "None"], ...IMPORTANCE.map(p => [p.key, p.label])]} />{t.listType === "project" && /*#__PURE__*/<SelectField label="Priority category (doesn't pin automatically)" value={t.priorityBucket} onChange={v => set("priorityBucket", v)} options={[[null, "None"], ...BUCKETS.map(b => [b.key, b.label])]} />}<SelectField label="Repeats" value={t.recurrence.unit} onChange={v => set("recurrence", {
             ...t.recurrence,
             unit: v
-          })} /></Field>{t.recurrence.unit !== "none" && /*#__PURE__*/<React.Fragment><Field label={`Every (${t.recurrence.unit}s)`}><input type="number" min="1" value={t.recurrence.amount} onChange={e => set("recurrence", {
+          })} options={RECUR_UNITS} />{t.recurrence.unit !== "none" && /*#__PURE__*/<React.Fragment><Field label={`Every (${t.recurrence.unit}s)`}><input type="number" min="1" value={t.recurrence.amount} onChange={e => set("recurrence", {
               ...t.recurrence,
               amount: Math.max(1, parseInt(e.target.value, 10) || 1)
             })} style={{
               ...inputStyle,
               width: 90
-            }} /></Field><Field label="When completed"><SegRow options={[["rolling", "Restart timer from completion"], ["fixed", "Stick to the schedule"]]} value={t.recurrence.mode} onChange={v => set("recurrence", {
+            }} /></Field><SelectField label="When completed" value={t.recurrence.mode} onChange={v => set("recurrence", {
               ...t.recurrence,
               mode: v
-            })} /></Field></React.Fragment>}</div>}</div>{notesOpen && /*#__PURE__*/<FormSection title="Notes"><Field label="Notes"><textarea value={t.notes || ""} onChange={e => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{
-          ...inputStyle,
-          resize: "vertical",
-          fontFamily: "inherit"
-        }} /></Field></FormSection>}{initial && /*#__PURE__*/<button onClick={() => {
+            })} options={[["rolling", "Restart timer from completion"], ["fixed", "Stick to the schedule"]]} /></React.Fragment>}</div>}</div>{initial && /*#__PURE__*/<button onClick={() => {
       if (window.confirm(`Delete "${t.title}"? This can't be undone.`)) onDelete(t.id);
     }} style={{
       width: "100%",
@@ -3491,6 +3474,16 @@ function TaskForm({
       fontWeight: 600,
       cursor: "pointer"
     }}>Delete task</button>}</Overlay>;
+}
+function SelectField({ label, value, onChange, options }) {
+  return /*#__PURE__*/<Field label={label}><select value={value === null || value === undefined ? "" : String(value)} onChange={e => {
+      const raw = e.target.value;
+      const match = options.find(([v]) => String(v === null ? "" : v) === raw);
+      onChange(match ? match[0] : null);
+    }} style={{
+      ...inputStyle,
+      appearance: "auto"
+    }}>{options.map(([v, l]) => /*#__PURE__*/<option key={String(v)} value={v === null ? "" : String(v)}>{l}</option>)}</select></Field>;
 }
 function FormSection({
   title,
