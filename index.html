@@ -77,7 +77,38 @@ const C = {
   slateTint: "#E1E7EA",
   taupeTint: "#ECE7DC"
 };
-const APP_VERSION = "v42";
+/* quick-add duplicate check: finds open tasks whose title overlaps what's being typed ("weeds" ~ "Check weeds") */
+const QA_STOP = new Set(["the", "a", "an", "to", "and", "of", "for", "my", "our", "in", "on", "up", "out"]);
+const qaTokens = str => String(str || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w && !QA_STOP.has(w)).map(w => w.length > 3 ? w.replace(/(es|s)$/, "") : w);
+const QA_GENERIC = new Set(["check", "clean", "wash", "buy", "fix", "get", "put", "make", "do", "empty", "sort", "tidy", "take", "change", "replace", "order", "book", "call", "organise", "organize"]);
+function findSimilarTasks(query, candidates) {
+  const q = qaTokens(query);
+  if (!q.length || query.trim().length < 3) return [];
+  const last = q.length - 1;
+  const qHas = tt => q.every((w, i) => tt.some(x => x === w || i === last && w.length >= 3 && x.startsWith(w)));
+  return candidates.filter(t => {
+    const tt = qaTokens(t.title);
+    if (!tt.length) return false;
+    const titleInQuery = tt.every(x => q.some(w => w === x));
+    if (qHas(tt) || titleInQuery) return true;
+    // partial overlap ("weeds in the garden" ~ "Check weeds"): needs a meaningful shared word, not just a generic verb
+    const shared = q.filter(w => tt.includes(w));
+    return shared.some(w => !QA_GENERIC.has(w)) && shared.length >= Math.ceil(Math.min(q.length, tt.length) / 2);
+  }).slice(0, 4);
+}
+/* which All tasks list a task belongs in: Household tasks / Personal tasks (chores), Shared / Personal projects */
+const TYPE_CHOICES = [["household", "Household task"], ["personalTasks", "Personal task"], ["shared", "Shared project"], ["personal", "Personal project"]];
+function sectionForTask(t) {
+  if (t.listType === "chore") return t.scope === "personal" ? "personalTasks" : "household";
+  return t.scope === "personal" ? "personal" : "shared";
+}
+const SECTION_LABELS = {
+  household: "Household tasks",
+  personalTasks: "Personal tasks",
+  shared: "Shared projects",
+  personal: "Personal projects"
+};
+const APP_VERSION = "v43";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -257,10 +288,8 @@ function App() {
   const [priorityViewPerson, setPriorityViewPerson] = useState(null);
   const [filter, setFilter] = useState("all");
   const [choreFilter, setChoreFilter] = useState("all");
-  const [projectScope, setProjectScope] = useState("shared");
   const [projectFilter, setProjectFilter] = useState("all");
-  const [typeFilter, setTypeFilter] = useState("chore");
-  // which list is open inside the All tasks tab: null (the three-button landing), "household", "shared" or "personal"
+  // which list is open inside the All tasks tab: null (the landing), "household", "personalTasks", "shared" or "personal"
   const [queueSection, setQueueSection] = useState(null);
   const goView = v => {
     if (v === "queue") setQueueSection(null); // tapping the tab always lands on the three buttons
@@ -935,14 +964,9 @@ function App() {
     onSelectSearchResult: t => {
       setSearchQuery("");
       setView("queue");
-      setQueueSection(t.listType === "chore" ? "household" : t.scope === "personal" ? "personal" : "shared");
-      setTypeFilter(t.listType);
-      if (t.listType === "chore") {
-        setChoreFilter("all");
-      } else {
-        setProjectScope(t.scope || "shared");
-        setProjectFilter("all");
-      }
+      setQueueSection(sectionForTask(t));
+      setChoreFilter("all");
+      setProjectFilter("all");
       setHighlightTaskId(t.id);
     },
     onOpenSettings: () => setShowSettings(true)
@@ -1015,12 +1039,8 @@ function App() {
     setFilter: setFilter,
     choreFilter: choreFilter,
     setChoreFilter: setChoreFilter,
-    projectScope: projectScope,
-    setProjectScope: setProjectScope,
     projectFilter: projectFilter,
     setProjectFilter: setProjectFilter,
-    typeFilter: typeFilter,
-    setTypeFilter: setTypeFilter,
     section: queueSection,
     setSection: setQueueSection,
     highlightTaskId: highlightTaskId,
@@ -2702,6 +2722,7 @@ function ToDoList({
     items: todayItems,
     tasksById: tasksById,
     onAddSundry: onAddSundry,
+    onAddExisting: onAddTaskToToday,
     onToggleSundry: onToggleSundry,
     onDeleteSundry: onDeleteSundry,
     onReorderBucketFull: onReorderTodayBucketFull,
@@ -2987,7 +3008,17 @@ function TodayItemRow({
       textDecoration: completed ? "line-through" : "none",
       cursor: task ? "pointer" : "default"
     }
-  }, title), /*#__PURE__*/React.createElement("button", {
+  }, title, task && task.needsDetails &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
+    style: {
+      marginLeft: 6,
+      verticalAlign: "middle"
+    }
+  }, /*#__PURE__*/React.createElement(Tag, {
+    color: C.inkSoft
+  }, "needs details"))), /*#__PURE__*/React.createElement("button", {
     onClick: onMove,
     style: {
       border: "none",
@@ -3013,6 +3044,7 @@ function TodayPlanSection({
   items,
   tasksById,
   onAddSundry,
+  onAddExisting,
   onToggleSundry,
   onDeleteSundry,
   onReorderBucketFull,
@@ -3026,11 +3058,24 @@ function TodayPlanSection({
 }) {
   const [newSundry, setNewSundry] = useState("");
   const [resetting, setResetting] = useState(false);
+  const [confirmNew, setConfirmNew] = useState(false);
+  const candidates = useMemo(() => Object.values(tasksById).filter(t => !t.completed), [tasksById]);
+  const similar = useMemo(() => findSimilarTasks(newSundry, candidates), [newSundry, candidates]);
+  const inPlanIds = useMemo(() => new Set(items.filter(it => it.type === "task" && !it.subtaskId).map(it => it.id)), [items]);
+  const createNew = () => {
+    if (newSundry.trim()) onAddSundry(newSundry.trim());
+    setNewSundry("");
+    setConfirmNew(false);
+  };
+  // with similar tasks showing, adding needs a second confirmation so duplicates aren't made by accident
   const commitSundry = () => {
-    if (newSundry.trim()) {
-      onAddSundry(newSundry.trim());
-      setNewSundry("");
-    }
+    if (!newSundry.trim()) return;
+    if (similar.length) setConfirmNew(true);else createNew();
+  };
+  const useExisting = t => {
+    if (!inPlanIds.has(t.id)) onAddExisting(t.id, null);
+    setNewSundry("");
+    setConfirmNew(false);
   };
   const nowItems = items.filter(it => it.bucket !== "later");
   const laterItems = items.filter(it => it.bucket === "later");
@@ -3168,17 +3213,25 @@ function TodayPlanSection({
     })
   }))), /*#__PURE__*/React.createElement("div", {
     style: {
-      display: "flex",
-      gap: 6,
       marginTop: 14
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 6
     }
   }, /*#__PURE__*/React.createElement("input", {
     value: newSundry,
-    onChange: e => setNewSundry(capFirst(e.target.value)),
+    onChange: e => {
+      setNewSundry(capFirst(e.target.value));
+      setConfirmNew(false);
+    },
     onKeyDown: e => {
       if (e.key === "Enter") commitSundry();
     },
-    onBlur: commitSundry,
+    onBlur: () => {
+      if (!similar.length) commitSundry();
+    },
     placeholder: "Quick add a task for today…",
     style: {
       ...inputStyle,
@@ -3186,6 +3239,7 @@ function TodayPlanSection({
       background: C.white
     }
   }), /*#__PURE__*/React.createElement("button", {
+    onMouseDown: e => e.preventDefault(),
     onClick: commitSundry,
     style: {
       border: "none",
@@ -3195,29 +3249,132 @@ function TodayPlanSection({
       padding: "0 14px",
       cursor: "pointer"
     }
-  }, "+")));
+  }, "+")), similar.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginTop: 8,
+      border: `1px solid ${C.rule}`,
+      borderRadius: 8,
+      background: C.white,
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      padding: "6px 10px 2px"
+    }
+  }, "Already on your list? Tap to add it to today:"), similar.map(t =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    key: t.id,
+    onMouseDown: e => e.preventDefault(),
+    onClick: () => useExisting(t),
+    disabled: inPlanIds.has(t.id),
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      gap: 8,
+      width: "100%",
+      textAlign: "left",
+      border: "none",
+      borderTop: `1px solid ${C.rule}`,
+      background: "none",
+      padding: "9px 10px",
+      cursor: inPlanIds.has(t.id) ? "default" : "pointer",
+      opacity: inPlanIds.has(t.id) ? 0.5 : 1
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 13,
+      color: C.ink,
+      fontWeight: 600
+    }
+  }, t.title), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      flexShrink: 0
+    }
+  }, inPlanIds.has(t.id) ? "On today's plan" : SECTION_LABELS[sectionForTask(t)])))), confirmNew &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginTop: 8,
+      padding: "9px 10px",
+      borderRadius: 8,
+      background: C.white,
+      border: `1px solid ${C.ink}`,
+      display: "flex",
+      alignItems: "center",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("span", {
+    style: {
+      flex: 1,
+      fontSize: 12.5,
+      color: C.ink
+    }
+  }, "Create a new task anyway?"), /*#__PURE__*/React.createElement("button", {
+    onClick: createNew,
+    style: {
+      border: "none",
+      background: C.ink,
+      color: C.white,
+      borderRadius: 8,
+      padding: "6px 12px",
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer"
+    }
+  }, "Create new"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => setConfirmNew(false),
+    style: {
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      color: C.ink,
+      borderRadius: 8,
+      padding: "6px 12px",
+      fontSize: 12,
+      cursor: "pointer"
+    }
+  }, "Cancel"))));
 }
-/* landing screen for the All tasks tab: three big buttons, one per list */
+/* landing screen for the All tasks tab: four full-page buttons, one per list */
 function SectionIcon({
   kind
 }) {
   const common = {
-    width: 34,
-    height: 34,
+    width: 76,
+    height: 76,
     viewBox: "0 0 24 24",
     fill: "none",
     stroke: "currentColor",
-    strokeWidth: 1.6,
+    strokeWidth: 1.25,
     strokeLinecap: "round",
     strokeLinejoin: "round",
     "aria-hidden": true
   };
   if (kind === "household") return /*#__PURE__*/ /*#__PURE__*/React.createElement("svg", common, /*#__PURE__*/React.createElement("path", {
-    d: "M8 21h8a1 1 0 0 0 1-1v-7l-2-2H9l-2 2v7a1 1 0 0 0 1 1z"
+    d: "M20.5 3.5L13.2 10.8"
   }), /*#__PURE__*/React.createElement("path", {
-    d: "M10 11V8h5l2-2"
+    d: "M10.6 9.6l3.8 3.8-3.1 5.9a1 1 0 0 1-1.6.3l-4.4-4.4a1 1 0 0 1 .3-1.6z"
   }), /*#__PURE__*/React.createElement("path", {
-    d: "M19.5 3.5l1.5-1M20 7h2M19.5 10.5l1.5 1"
+    d: "M9.2 14.6l-2.3 3.4M11.8 16.1l-1.3 2.4"
+  }));
+  if (kind === "personalTasks") return /*#__PURE__*/ /*#__PURE__*/React.createElement("svg", common, /*#__PURE__*/React.createElement("circle", {
+    cx: "10",
+    cy: "8",
+    r: "3.2"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M4 20c0-3.5 2.7-6 6-6s6 2.5 6 6"
+  }), /*#__PURE__*/React.createElement("path", {
+    d: "M16.5 6.5l1.8 1.8 3.2-3.6"
   }));
   if (kind === "shared") return /*#__PURE__*/ /*#__PURE__*/React.createElement("svg", common, /*#__PURE__*/React.createElement("path", {
     d: "M3 11l9-8 9 8"
@@ -3245,32 +3402,44 @@ function TaskSections({
 }) {
   const open = tasks.filter(t => !t.completed);
   const counts = {
-    household: open.filter(t => t.listType === "chore").length,
-    shared: open.filter(t => t.listType === "project" && t.scope === "shared").length,
-    personal: open.filter(t => t.listType === "project" && t.scope === "personal" && t.owner === me).length
+    household: 0,
+    personalTasks: 0,
+    shared: 0,
+    personal: 0
   };
-  const buttons = [["household", "Household tasks", "Chores, by room"], ["shared", "Shared projects", "Renovation & home projects"], ["personal", "Personal projects", "Just yours"]];
+  open.forEach(t => {
+    const k = sectionForTask(t);
+    if ((k === "personalTasks" || k === "personal") && t.owner !== me) return;
+    counts[k]++;
+  });
+  const keys = ["household", "personalTasks", "shared", "personal"];
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
-      padding: "18px 16px",
+      height: "calc(100% - 150px)",
+      padding: "14px 16px",
       display: "flex",
       flexDirection: "column",
-      gap: 12
+      gap: 12,
+      boxSizing: "border-box"
     }
-  }, buttons.map(([k, label, sub]) =>
+  }, keys.map(k =>
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
     key: k,
     onClick: () => onOpen(k),
+    "aria-label": SECTION_LABELS[k],
     style: {
+      position: "relative",
+      flex: 1,
+      minHeight: 0,
       display: "flex",
+      flexDirection: "column",
       alignItems: "center",
-      gap: 16,
+      justifyContent: "center",
+      gap: 8,
       width: "100%",
-      textAlign: "left",
-      padding: "18px 16px",
-      borderRadius: 14,
+      borderRadius: 16,
       border: `1px solid ${C.rule}`,
       background: C.card,
       color: C.ink,
@@ -3279,32 +3448,22 @@ function TaskSections({
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       color: C.sageDeep,
-      display: "flex",
-      flexShrink: 0
+      display: "flex"
     }
   }, /*#__PURE__*/React.createElement(SectionIcon, {
     kind: k
   })), /*#__PURE__*/React.createElement("span", {
     style: {
-      flex: 1,
-      minWidth: 0
-    }
-  }, /*#__PURE__*/React.createElement("span", {
-    style: {
-      display: "block",
-      fontFamily: "Fraunces, serif",
-      fontSize: 17
-    }
-  }, label), /*#__PURE__*/React.createElement("span", {
-    style: {
-      display: "block",
       fontSize: 12,
       color: C.inkSoft,
-      marginTop: 2
+      letterSpacing: 0.3
     }
-  }, sub)), /*#__PURE__*/React.createElement("span", {
+  }, SECTION_LABELS[k]), /*#__PURE__*/React.createElement("span", {
     style: {
-      fontSize: 15,
+      position: "absolute",
+      top: 10,
+      right: 14,
+      fontSize: 12,
       fontWeight: 700,
       color: C.inkSoft
     }
@@ -3318,12 +3477,8 @@ function QueueView(props) {
     setFilter,
     choreFilter,
     setChoreFilter,
-    projectScope,
-    setProjectScope,
     projectFilter,
     setProjectFilter,
-    typeFilter,
-    setTypeFilter,
     config,
     onAddRoom,
     onAddCategory,
@@ -3345,11 +3500,15 @@ function QueueView(props) {
     section,
     setSection
   } = props;
-  const typed = useMemo(() => typeFilter === "all" ? tasks : tasks.filter(t => t.listType === typeFilter), [tasks, typeFilter]);
+  const typeFilter = section === "household" || section === "personalTasks" ? "chore" : "project";
+  const projectScope = section === "shared" ? "shared" : "personal";
+  const typed = useMemo(() => tasks.filter(t => t.listType === typeFilter), [tasks, typeFilter]);
   const scoped = useMemo(() => {
     if (typeFilter === "chore") {
-      if (choreFilter === "all") return typed;
-      return typed.filter(t => t.scope === "personal" ? t.owner === choreFilter : t.assignee === choreFilter || !t.assignee);
+      if (section === "personalTasks") return typed.filter(t => t.scope === "personal" && t.owner === me);
+      const sharedChores = typed.filter(t => t.scope !== "personal");
+      if (choreFilter === "all") return sharedChores;
+      return sharedChores.filter(t => t.assignee === choreFilter || !t.assignee);
     }
     if (typeFilter === "project") {
       let f = typed.filter(t => t.scope === projectScope);
@@ -3364,7 +3523,7 @@ function QueueView(props) {
     if (filter === "mine") f = f.filter(t => t.owner === me || t.scope === "shared" && (t.assignee === me || !t.assignee));
     if (filter === "shared") f = f.filter(t => t.scope === "shared");
     return f;
-  }, [typed, typeFilter, choreFilter, projectScope, projectFilter, filter, me]);
+  }, [typed, typeFilter, choreFilter, projectScope, projectFilter, filter, me, section]);
   const sorted = useMemo(() => scoped.filter(t => !t.completed).slice().sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")), [scoped]);
   const rowProps = {
     me,
@@ -3401,19 +3560,12 @@ function QueueView(props) {
     const t = setTimeout(() => setJumpToSection(null), 4000);
     return () => clearTimeout(t);
   }, [jumpToSection]);
-  const openSection = k => {
-    if (k === "household") setTypeFilter("chore");else {
-      setTypeFilter("project");
-      setProjectScope(k);
-    }
-    setSection(k);
-  };
   if (!section) return /*#__PURE__*/ /*#__PURE__*/React.createElement(TaskSections, {
     tasks: tasks,
     me: me,
-    onOpen: openSection
+    onOpen: setSection
   });
-  const sectionTitle = section === "household" ? "Household tasks" : section === "shared" ? "Shared projects" : "Personal projects";
+  const sectionTitle = SECTION_LABELS[section];
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       height: "calc(100% - 150px)",
@@ -3517,7 +3669,7 @@ function QueueView(props) {
     onAddRoom: onAddRoom,
     onDeleteRoom: onDeleteRoom,
     onReorderRoomsFull: onReorderRoomsFull,
-    colorBg: filterColor(choreFilter),
+    colorBg: section === "personalTasks" ? filterColor(me) : filterColor(choreFilter),
     highlightTaskId: highlightTaskId,
     jumpToSection: jumpToSection
   }) : (() => {
@@ -4015,7 +4167,12 @@ function TaskRow({
       fontWeight: 600,
       textDecoration: isDone ? "line-through" : "none"
     }
-  }, task.title)), !compact &&
+  }, task.title), task.needsDetails &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Tag, {
+    color: C.inkSoft
+  }, "needs details")), !compact &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -4685,6 +4842,22 @@ function TaskForm({
   const categoryOptions = ["Unassigned", ...(t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me])];
   const roomOptions = ["Unassigned", ...config.rooms];
   const showAssignee = t.scope === "shared";
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const typeValue = t.listType && t.scope ? sectionForTask(t) : null;
+  const chooseType = k => {
+    const listType = k === "household" || k === "personalTasks" ? "chore" : "project";
+    const scope = k === "household" || k === "shared" ? "shared" : "personal";
+    set("listType", listType);
+    set("scope", scope);
+    if (scope === "personal") set("assignee", null); // assigning only applies to shared tasks
+  };
+  // a pinned project that moves out of its current Priorities row (to a chore, or between shared/personal) loses its pin
+  const hadPin = !!(initial && initial.listType === "project" && initial.gridBucket && Object.values(initial.gridBucket).some(Boolean));
+  const willUnpin = hadPin && !deferDetails && !!typeValue && (t.listType !== "project" || t.scope !== initial.scope);
+  const recurText = t.recurrence.unit === "none" ? "Doesn't repeat" : `Repeats every ${t.recurrence.amount > 1 ? t.recurrence.amount + " " : ""}${t.recurrence.unit}${t.recurrence.amount > 1 ? "s" : ""}`;
+  const placeName = deferDetails ? null : t.listType === "chore" ? t.room : t.listType === "project" ? t.category : null;
+  const impLabel = (IMPORTANCE.find(p => p.key === t.priority) || {}).label;
+  const detailsSummary = [placeName && placeName !== "Unassigned" ? placeName : null, impLabel ? `${impLabel} importance` : null, recurText].filter(Boolean).join(" · ");
   // Title, and (Type + Belongs to) unless explicitly deferred — these have no safe default to silently fall back on
   const isValid = t.title.trim() && (deferDetails || !!t.listType && !!t.scope);
   const finishAndSave = () => {
@@ -4703,6 +4876,9 @@ function TaskForm({
         scope: t.scope || "shared",
         owner: t.scope === "personal" ? t.owner || me : null,
         needsDetails: initial && initial.needsDetails ? !(touched.listType && touched.scope) : deferDetails,
+        ...(willUnpin ? {
+          gridBucket: {}
+        } : {}),
         createdBy: t.createdBy || me
       });
     } else {
@@ -4756,13 +4932,29 @@ function TaskForm({
     }, "Save"))
   }, /*#__PURE__*/React.createElement(FormSection, {
     first: true
-  }, /*#__PURE__*/React.createElement(Field, {
-    label: "Title *"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 16
+    }
   }, /*#__PURE__*/React.createElement("input", {
     value: t.title,
     onChange: e => set("title", capFirst(e.target.value)),
-    placeholder: "e.g. Clean shower screen",
-    style: inputStyle
+    placeholder: "Task title",
+    "aria-label": "Task title",
+    style: {
+      width: "100%",
+      boxSizing: "border-box",
+      border: "none",
+      borderBottom: `1.5px dashed ${C.rule}`,
+      borderRadius: 0,
+      background: "transparent",
+      outline: "none",
+      padding: "4px 0 7px",
+      fontFamily: "Fraunces, serif",
+      fontSize: 23,
+      fontWeight: 600,
+      color: C.ink
+    }
   })), !initial &&
   /*#__PURE__*/
   /*#__PURE__*/
@@ -4794,44 +4986,42 @@ function TaskForm({
     }
   }, "Add details later")), /*#__PURE__*/React.createElement(Field, {
     label: "Due date"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10,
+      flexWrap: "wrap"
+    }
   }, /*#__PURE__*/React.createElement("input", {
     type: "date",
     value: t.dueDate || "",
     onChange: e => set("dueDate", e.target.value || null),
     style: {
       ...inputStyle,
-      width: 170
+      width: 160,
+      flexShrink: 0
     }
-  })), t.dueDate &&
+  }), t.dueDate &&
   /*#__PURE__*/
   /*#__PURE__*/
-  React.createElement("div", {
+  React.createElement("label", {
+    htmlFor: "starts-on-due",
     style: {
       display: "flex",
-      alignItems: "flex-start",
-      gap: 9,
-      marginBottom: 13,
-      padding: "9px 11px",
-      background: C.card,
-      borderRadius: 8,
-      border: `1px solid ${C.rule}`
+      alignItems: "center",
+      gap: 7,
+      fontSize: 12,
+      color: C.inkSoft,
+      lineHeight: 1.3,
+      cursor: "pointer"
     }
   }, /*#__PURE__*/React.createElement("input", {
     type: "checkbox",
     id: "starts-on-due",
     checked: !!t.startsOnDue,
-    onChange: e => set("startsOnDue", e.target.checked),
-    style: {
-      marginTop: 2
-    }
-  }), /*#__PURE__*/React.createElement("label", {
-    htmlFor: "starts-on-due",
-    style: {
-      fontSize: 12,
-      color: C.inkSoft,
-      lineHeight: 1.4
-    }
-  }, "Due date is do date")), /*#__PURE__*/React.createElement(Field, {
+    onChange: e => set("startsOnDue", e.target.checked)
+  }), "Due date is do date"))), /*#__PURE__*/React.createElement(Field, {
     label: "Subtasks"
   }, /*#__PURE__*/React.createElement(DragReorderList, {
     items: t.actions || [],
@@ -4930,30 +5120,99 @@ function TaskForm({
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(FormSection, {
-    title: "Details"
-  }, /*#__PURE__*/React.createElement(Field, {
-    label: "Type *"
-  }, /*#__PURE__*/React.createElement(SegRow, {
-    options: [["chore", "Chore"], ["project", "Project"]],
-    value: t.listType,
-    onChange: v => set("listType", v)
-  })), /*#__PURE__*/React.createElement(Field, {
-    label: "Belongs to *"
-  }, /*#__PURE__*/React.createElement(SegRow, {
-    options: [["shared", "Shared"], ["personal", "Personal"]],
-    value: t.scope,
-    onChange: v => set("scope", v)
-  })), t.listType === "chore" &&
+    title: "Type"
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 8,
+      marginBottom: 13
+    }
+  }, TYPE_CHOICES.map(([k, label]) => {
+    const active = typeValue === k;
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
+      key: k,
+      onClick: () => chooseType(k),
+      style: {
+        padding: "10px 8px",
+        borderRadius: 10,
+        border: `1px solid ${active ? C.ink : C.rule}`,
+        background: active ? C.ink : C.white,
+        color: active ? C.white : C.ink,
+        fontSize: 13,
+        fontWeight: 600,
+        cursor: "pointer"
+      }
+    }, label);
+  })), willUnpin &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.plum,
+      marginBottom: 13
+    }
+  }, "Changing this will unpin it from Priorities."), showAssignee &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(Field, {
-    label: "Category"
+    label: "Assign to"
+  }, /*#__PURE__*/React.createElement(SegRow, {
+    options: [[null, "Anyone"], ["jade", "Jade"], ["john", "John"]],
+    value: t.assignee,
+    onChange: v => set("assignee", v)
+  }))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginTop: 16,
+      paddingTop: 14,
+      borderTop: `1px solid ${C.rule}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 10
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setDetailsOpen(o => !o),
+    "aria-expanded": detailsOpen,
+    style: {
+      padding: "8px 14px",
+      borderRadius: 10,
+      border: `1px solid ${C.ink}`,
+      background: detailsOpen ? C.ink : C.white,
+      color: detailsOpen ? C.white : C.ink,
+      fontSize: 13,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, "Details ", detailsOpen ? "▴" : "▾"), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 12,
+      color: C.inkSoft,
+      lineHeight: 1.35,
+      minWidth: 0
+    }
+  }, detailsSummary)), detailsOpen &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginTop: 16
+    }
+  }, !deferDetails && t.listType === "chore" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(Field, {
+    label: "Room"
   }, /*#__PURE__*/React.createElement(SectionSelect, {
     value: t.room,
     onChange: v => set("room", v),
     options: roomOptions,
     onAddNew: onAddRoom
-  })), t.listType === "project" && t.scope &&
+  })), !deferDetails && t.listType === "project" && t.scope &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(Field, {
@@ -4963,18 +5222,7 @@ function TaskForm({
     onChange: v => set("category", v),
     options: categoryOptions,
     onAddNew: name => onAddCategory(t.scope, t.owner || me, name)
-  })), showAssignee &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement(Field, {
-    label: "Assign to"
-  }, /*#__PURE__*/React.createElement(SegRow, {
-    options: [[null, "Anyone"], ["jade", "Jade"], ["john", "John"]],
-    value: t.assignee,
-    onChange: v => set("assignee", v)
-  }))), /*#__PURE__*/React.createElement(FormSection, {
-    title: "Schedule"
-  }, /*#__PURE__*/React.createElement(Field, {
+  })), /*#__PURE__*/React.createElement(Field, {
     label: "Importance"
   }, /*#__PURE__*/React.createElement(SegRow, {
     options: [[null, "None"], ...IMPORTANCE.map(p => [p.key, p.label])],
@@ -5024,7 +5272,7 @@ function TaskForm({
       ...t.recurrence,
       mode: v
     })
-  })))), notesOpen &&
+  }))))), notesOpen &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(FormSection, {

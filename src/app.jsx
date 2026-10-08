@@ -26,7 +26,38 @@ const C = {
   slateTint: "#E1E7EA",
   taupeTint: "#ECE7DC"
 };
-const APP_VERSION = "v42";
+/* quick-add duplicate check: finds open tasks whose title overlaps what's being typed ("weeds" ~ "Check weeds") */
+const QA_STOP = new Set(["the", "a", "an", "to", "and", "of", "for", "my", "our", "in", "on", "up", "out"]);
+const qaTokens = str => String(str || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(w => w && !QA_STOP.has(w)).map(w => w.length > 3 ? w.replace(/(es|s)$/, "") : w);
+const QA_GENERIC = new Set(["check", "clean", "wash", "buy", "fix", "get", "put", "make", "do", "empty", "sort", "tidy", "take", "change", "replace", "order", "book", "call", "organise", "organize"]);
+function findSimilarTasks(query, candidates) {
+  const q = qaTokens(query);
+  if (!q.length || query.trim().length < 3) return [];
+  const last = q.length - 1;
+  const qHas = tt => q.every((w, i) => tt.some(x => x === w || i === last && w.length >= 3 && x.startsWith(w)));
+  return candidates.filter(t => {
+    const tt = qaTokens(t.title);
+    if (!tt.length) return false;
+    const titleInQuery = tt.every(x => q.some(w => w === x));
+    if (qHas(tt) || titleInQuery) return true;
+    // partial overlap ("weeds in the garden" ~ "Check weeds"): needs a meaningful shared word, not just a generic verb
+    const shared = q.filter(w => tt.includes(w));
+    return shared.some(w => !QA_GENERIC.has(w)) && shared.length >= Math.ceil(Math.min(q.length, tt.length) / 2);
+  }).slice(0, 4);
+}
+/* which All tasks list a task belongs in: Household tasks / Personal tasks (chores), Shared / Personal projects */
+const TYPE_CHOICES = [["household", "Household task"], ["personalTasks", "Personal task"], ["shared", "Shared project"], ["personal", "Personal project"]];
+function sectionForTask(t) {
+  if (t.listType === "chore") return t.scope === "personal" ? "personalTasks" : "household";
+  return t.scope === "personal" ? "personal" : "shared";
+}
+const SECTION_LABELS = {
+  household: "Household tasks",
+  personalTasks: "Personal tasks",
+  shared: "Shared projects",
+  personal: "Personal projects"
+};
+const APP_VERSION = "v43";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -206,10 +237,8 @@ function App() {
   const [priorityViewPerson, setPriorityViewPerson] = useState(null);
   const [filter, setFilter] = useState("all");
   const [choreFilter, setChoreFilter] = useState("all");
-  const [projectScope, setProjectScope] = useState("shared");
   const [projectFilter, setProjectFilter] = useState("all");
-  const [typeFilter, setTypeFilter] = useState("chore");
-  // which list is open inside the All tasks tab: null (the three-button landing), "household", "shared" or "personal"
+  // which list is open inside the All tasks tab: null (the landing), "household", "personalTasks", "shared" or "personal"
   const [queueSection, setQueueSection] = useState(null);
   const goView = v => {
     if (v === "queue") setQueueSection(null); // tapping the tab always lands on the three buttons
@@ -803,14 +832,9 @@ function App() {
   return /*#__PURE__*/<Shell><Header me={me} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
       setSearchQuery("");
       setView("queue");
-      setQueueSection(t.listType === "chore" ? "household" : t.scope === "personal" ? "personal" : "shared");
-      setTypeFilter(t.listType);
-      if (t.listType === "chore") {
-        setChoreFilter("all");
-      } else {
-        setProjectScope(t.scope || "shared");
-        setProjectFilter("all");
-      }
+      setQueueSection(sectionForTask(t));
+      setChoreFilter("all");
+      setProjectFilter("all");
       setHighlightTaskId(t.id);
     }} onOpenSettings={() => setShowSettings(true)} />{configError && /*#__PURE__*/<div style={{
       background: C.plum,
@@ -824,7 +848,7 @@ function App() {
     }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
-    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={quickAddToday} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectScope={projectScope} setProjectScope={setProjectScope} projectFilter={projectFilter} setProjectFilter={setProjectFilter} typeFilter={typeFilter} setTypeFilter={setTypeFilter} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
+    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={quickAddToday} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
     }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onToggleManualTodo={toggleManualTodo} />}<button onClick={() => {
@@ -1982,7 +2006,7 @@ function ToDoList({
       }
       const driving = drivingSubtask(topPick.item);
       if (driving) snoozeProjectAction(topPick.item, driving, dateStr);else snoozeChore(topPick.item, dateStr);
-    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} />{displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/<div style={{
+    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} />{displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/<div style={{
       color: C.inkSoft,
       fontSize: 13,
       textAlign: "center",
@@ -2087,7 +2111,10 @@ function TodayItemRow({
       color: C.ink,
       textDecoration: completed ? "line-through" : "none",
       cursor: task ? "pointer" : "default"
-    }}>{title}</span><button onClick={onMove} style={{
+    }}>{title}{task && task.needsDetails && /*#__PURE__*/<span style={{
+        marginLeft: 6,
+        verticalAlign: "middle"
+      }}><Tag color={C.inkSoft}>needs details</Tag></span>}</span><button onClick={onMove} style={{
       border: "none",
       background: "none",
       color: C.inkSoft,
@@ -2107,6 +2134,7 @@ function TodayPlanSection({
   items,
   tasksById,
   onAddSundry,
+  onAddExisting,
   onToggleSundry,
   onDeleteSundry,
   onReorderBucketFull,
@@ -2120,11 +2148,24 @@ function TodayPlanSection({
 }) {
   const [newSundry, setNewSundry] = useState("");
   const [resetting, setResetting] = useState(false);
+  const [confirmNew, setConfirmNew] = useState(false);
+  const candidates = useMemo(() => Object.values(tasksById).filter(t => !t.completed), [tasksById]);
+  const similar = useMemo(() => findSimilarTasks(newSundry, candidates), [newSundry, candidates]);
+  const inPlanIds = useMemo(() => new Set(items.filter(it => it.type === "task" && !it.subtaskId).map(it => it.id)), [items]);
+  const createNew = () => {
+    if (newSundry.trim()) onAddSundry(newSundry.trim());
+    setNewSundry("");
+    setConfirmNew(false);
+  };
+  // with similar tasks showing, adding needs a second confirmation so duplicates aren't made by accident
   const commitSundry = () => {
-    if (newSundry.trim()) {
-      onAddSundry(newSundry.trim());
-      setNewSundry("");
-    }
+    if (!newSundry.trim()) return;
+    if (similar.length) setConfirmNew(true);else createNew();
+  };
+  const useExisting = t => {
+    if (!inPlanIds.has(t.id)) onAddExisting(t.id, null);
+    setNewSundry("");
+    setConfirmNew(false);
   };
   const nowItems = items.filter(it => it.bucket !== "later");
   const laterItems = items.filter(it => it.bucket === "later");
@@ -2187,74 +2228,142 @@ function TodayPlanSection({
           letterSpacing: 0.5,
           marginBottom: 4
         }}>Later</div><DragReorderList items={laterItems} keyFn={keyFn} onFinalize={arr => onReorderBucketFull("later", arr)} renderRow={(item, idx, startDrag) => /*#__PURE__*/<TodayItemRow item={item} tasksById={tasksById} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onRemoveTask={onRemoveTask} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onMove={() => onSetBucket(item, "now")} moveLabel="↑ Today" startDrag={startDrag} />} /></div>}</div><div style={{
-      display: "flex",
-      gap: 6,
       marginTop: 14
-    }}><input value={newSundry} onChange={e => setNewSundry(capFirst(e.target.value))} onKeyDown={e => {
-        if (e.key === "Enter") commitSundry();
-      }} onBlur={commitSundry} placeholder="Quick add a task for today…" style={{
-        ...inputStyle,
-        fontSize: 13,
-        background: C.white
-      }} /><button onClick={commitSundry} style={{
-        border: "none",
-        background: C.sageDeep,
-        color: C.white,
+    }}><div style={{
+        display: "flex",
+        gap: 6
+      }}><input value={newSundry} onChange={e => {
+          setNewSundry(capFirst(e.target.value));
+          setConfirmNew(false);
+        }} onKeyDown={e => {
+          if (e.key === "Enter") commitSundry();
+        }} onBlur={() => {
+          if (!similar.length) commitSundry();
+        }} placeholder="Quick add a task for today…" style={{
+          ...inputStyle,
+          fontSize: 13,
+          background: C.white
+        }} /><button onMouseDown={e => e.preventDefault()} onClick={commitSundry} style={{
+          border: "none",
+          background: C.sageDeep,
+          color: C.white,
+          borderRadius: 8,
+          padding: "0 14px",
+          cursor: "pointer"
+        }}>+</button></div>{similar.length > 0 && /*#__PURE__*/<div style={{
+        marginTop: 8,
+        border: `1px solid ${C.rule}`,
         borderRadius: 8,
-        padding: "0 14px",
-        cursor: "pointer"
-      }}>+</button></div></div>;
+        background: C.white,
+        overflow: "hidden"
+      }}><div style={{
+          fontSize: 11,
+          color: C.inkSoft,
+          padding: "6px 10px 2px"
+        }}>Already on your list? Tap to add it to today:</div>{similar.map(t => /*#__PURE__*/<button key={t.id} onMouseDown={e => e.preventDefault()} onClick={() => useExisting(t)} disabled={inPlanIds.has(t.id)} style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          gap: 8,
+          width: "100%",
+          textAlign: "left",
+          border: "none",
+          borderTop: `1px solid ${C.rule}`,
+          background: "none",
+          padding: "9px 10px",
+          cursor: inPlanIds.has(t.id) ? "default" : "pointer",
+          opacity: inPlanIds.has(t.id) ? 0.5 : 1
+        }}><span style={{
+            fontSize: 13,
+            color: C.ink,
+            fontWeight: 600
+          }}>{t.title}</span><span style={{
+            fontSize: 11,
+            color: C.inkSoft,
+            flexShrink: 0
+          }}>{inPlanIds.has(t.id) ? "On today's plan" : SECTION_LABELS[sectionForTask(t)]}</span></button>)}</div>}{confirmNew && /*#__PURE__*/<div style={{
+        marginTop: 8,
+        padding: "9px 10px",
+        borderRadius: 8,
+        background: C.white,
+        border: `1px solid ${C.ink}`,
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }}><span style={{
+          flex: 1,
+          fontSize: 12.5,
+          color: C.ink
+        }}>Create a new task anyway?</span><button onClick={createNew} style={{
+          border: "none",
+          background: C.ink,
+          color: C.white,
+          borderRadius: 8,
+          padding: "6px 12px",
+          fontSize: 12,
+          fontWeight: 600,
+          cursor: "pointer"
+        }}>Create new</button><button onClick={() => setConfirmNew(false)} style={{
+          border: `1px solid ${C.rule}`,
+          background: C.white,
+          color: C.ink,
+          borderRadius: 8,
+          padding: "6px 12px",
+          fontSize: 12,
+          cursor: "pointer"
+        }}>Cancel</button></div>}</div></div>;
 }
-/* landing screen for the All tasks tab: three big buttons, one per list */
+/* landing screen for the All tasks tab: four full-page buttons, one per list */
 function SectionIcon({ kind }) {
-  const common = { width: 34, height: 34, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
-  if (kind === "household") return /*#__PURE__*/<svg {...common}><path d="M8 21h8a1 1 0 0 0 1-1v-7l-2-2H9l-2 2v7a1 1 0 0 0 1 1z" /><path d="M10 11V8h5l2-2" /><path d="M19.5 3.5l1.5-1M20 7h2M19.5 10.5l1.5 1" /></svg>;
+  const common = { width: 76, height: 76, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.25, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
+  if (kind === "household") return /*#__PURE__*/<svg {...common}><path d="M20.5 3.5L13.2 10.8" /><path d="M10.6 9.6l3.8 3.8-3.1 5.9a1 1 0 0 1-1.6.3l-4.4-4.4a1 1 0 0 1 .3-1.6z" /><path d="M9.2 14.6l-2.3 3.4M11.8 16.1l-1.3 2.4" /></svg>;
+  if (kind === "personalTasks") return /*#__PURE__*/<svg {...common}><circle cx="10" cy="8" r="3.2" /><path d="M4 20c0-3.5 2.7-6 6-6s6 2.5 6 6" /><path d="M16.5 6.5l1.8 1.8 3.2-3.6" /></svg>;
   if (kind === "shared") return /*#__PURE__*/<svg {...common}><path d="M3 11l9-8 9 8" /><path d="M5 10v10h14V10" /><path d="M10 18l4-4" /><path d="M12.4 12.4l2.1-1 1.1 1.1-1 2.1z" /></svg>;
   return /*#__PURE__*/<svg {...common}><circle cx="10" cy="8" r="3.2" /><path d="M4 20c0-3.5 2.7-6 6-6s6 2.5 6 6" /><path d="M19 3l.9 1.9 2.1.3-1.5 1.5.4 2.1L19 7.8l-1.9 1 .4-2.1L16 5.2l2.1-.3z" /></svg>;
 }
 function TaskSections({ tasks, me, onOpen }) {
   const open = tasks.filter(t => !t.completed);
-  const counts = {
-    household: open.filter(t => t.listType === "chore").length,
-    shared: open.filter(t => t.listType === "project" && t.scope === "shared").length,
-    personal: open.filter(t => t.listType === "project" && t.scope === "personal" && t.owner === me).length
-  };
-  const buttons = [["household", "Household tasks", "Chores, by room"], ["shared", "Shared projects", "Renovation & home projects"], ["personal", "Personal projects", "Just yours"]];
+  const counts = { household: 0, personalTasks: 0, shared: 0, personal: 0 };
+  open.forEach(t => {
+    const k = sectionForTask(t);
+    if ((k === "personalTasks" || k === "personal") && t.owner !== me) return;
+    counts[k]++;
+  });
+  const keys = ["household", "personalTasks", "shared", "personal"];
   return /*#__PURE__*/<div style={{
-    padding: "18px 16px",
+    height: "calc(100% - 150px)",
+    padding: "14px 16px",
     display: "flex",
     flexDirection: "column",
-    gap: 12
-  }}>{buttons.map(([k, label, sub]) => /*#__PURE__*/<button key={k} onClick={() => onOpen(k)} style={{
+    gap: 12,
+    boxSizing: "border-box"
+  }}>{keys.map(k => /*#__PURE__*/<button key={k} onClick={() => onOpen(k)} aria-label={SECTION_LABELS[k]} style={{
+      position: "relative",
+      flex: 1,
+      minHeight: 0,
       display: "flex",
+      flexDirection: "column",
       alignItems: "center",
-      gap: 16,
+      justifyContent: "center",
+      gap: 8,
       width: "100%",
-      textAlign: "left",
-      padding: "18px 16px",
-      borderRadius: 14,
+      borderRadius: 16,
       border: `1px solid ${C.rule}`,
       background: C.card,
       color: C.ink,
       cursor: "pointer"
     }}><span style={{
         color: C.sageDeep,
-        display: "flex",
-        flexShrink: 0
+        display: "flex"
       }}><SectionIcon kind={k} /></span><span style={{
-        flex: 1,
-        minWidth: 0
-      }}><span style={{
-          display: "block",
-          fontFamily: "Fraunces, serif",
-          fontSize: 17
-        }}>{label}</span><span style={{
-          display: "block",
-          fontSize: 12,
-          color: C.inkSoft,
-          marginTop: 2
-        }}>{sub}</span></span><span style={{
-        fontSize: 15,
+        fontSize: 12,
+        color: C.inkSoft,
+        letterSpacing: 0.3
+      }}>{SECTION_LABELS[k]}</span><span style={{
+        position: "absolute",
+        top: 10,
+        right: 14,
+        fontSize: 12,
         fontWeight: 700,
         color: C.inkSoft
       }}>{counts[k]}</span></button>)}</div>;
@@ -2267,12 +2376,8 @@ function QueueView(props) {
     setFilter,
     choreFilter,
     setChoreFilter,
-    projectScope,
-    setProjectScope,
     projectFilter,
     setProjectFilter,
-    typeFilter,
-    setTypeFilter,
     config,
     onAddRoom,
     onAddCategory,
@@ -2294,11 +2399,15 @@ function QueueView(props) {
     section,
     setSection
   } = props;
-  const typed = useMemo(() => typeFilter === "all" ? tasks : tasks.filter(t => t.listType === typeFilter), [tasks, typeFilter]);
+  const typeFilter = section === "household" || section === "personalTasks" ? "chore" : "project";
+  const projectScope = section === "shared" ? "shared" : "personal";
+  const typed = useMemo(() => tasks.filter(t => t.listType === typeFilter), [tasks, typeFilter]);
   const scoped = useMemo(() => {
     if (typeFilter === "chore") {
-      if (choreFilter === "all") return typed;
-      return typed.filter(t => t.scope === "personal" ? t.owner === choreFilter : t.assignee === choreFilter || !t.assignee);
+      if (section === "personalTasks") return typed.filter(t => t.scope === "personal" && t.owner === me);
+      const sharedChores = typed.filter(t => t.scope !== "personal");
+      if (choreFilter === "all") return sharedChores;
+      return sharedChores.filter(t => t.assignee === choreFilter || !t.assignee);
     }
     if (typeFilter === "project") {
       let f = typed.filter(t => t.scope === projectScope);
@@ -2313,7 +2422,7 @@ function QueueView(props) {
     if (filter === "mine") f = f.filter(t => t.owner === me || t.scope === "shared" && (t.assignee === me || !t.assignee));
     if (filter === "shared") f = f.filter(t => t.scope === "shared");
     return f;
-  }, [typed, typeFilter, choreFilter, projectScope, projectFilter, filter, me]);
+  }, [typed, typeFilter, choreFilter, projectScope, projectFilter, filter, me, section]);
   const sorted = useMemo(() => scoped.filter(t => !t.completed).slice().sort((a, b) => (a.dueDate || "9999").localeCompare(b.dueDate || "9999")), [scoped]);
   const rowProps = {
     me,
@@ -2350,15 +2459,8 @@ function QueueView(props) {
     const t = setTimeout(() => setJumpToSection(null), 4000);
     return () => clearTimeout(t);
   }, [jumpToSection]);
-  const openSection = k => {
-    if (k === "household") setTypeFilter("chore");else {
-      setTypeFilter("project");
-      setProjectScope(k);
-    }
-    setSection(k);
-  };
-  if (!section) return /*#__PURE__*/<TaskSections tasks={tasks} me={me} onOpen={openSection} />;
-  const sectionTitle = section === "household" ? "Household tasks" : section === "shared" ? "Shared projects" : "Personal projects";
+  if (!section) return /*#__PURE__*/<TaskSections tasks={tasks} me={me} onOpen={setSection} />;
+  const sectionTitle = SECTION_LABELS[section];
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 150px)",
     display: "flex",
@@ -2405,7 +2507,7 @@ function QueueView(props) {
         display: "flex",
         gap: 6,
         padding: "8px 16px 0"
-      }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/<FilterChip key={k} active={projectFilter === k} onClick={() => setProjectFilter(k)} label={l} activeColor={filterColor(k)} activeTint={filterTint(k)} />)}</div>}</div>{typeFilter === "chore" ? /*#__PURE__*/<RoomBoard tasks={sorted} rowProps={rowProps} baseRooms={config.rooms} extraRooms={withOrphans(config.rooms, sorted, "room").slice(config.rooms.length)} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} onReorderRoomsFull={onReorderRoomsFull} colorBg={filterColor(choreFilter)} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} /> : (() => {
+      }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/<FilterChip key={k} active={projectFilter === k} onClick={() => setProjectFilter(k)} label={l} activeColor={filterColor(k)} activeTint={filterTint(k)} />)}</div>}</div>{typeFilter === "chore" ? /*#__PURE__*/<RoomBoard tasks={sorted} rowProps={rowProps} baseRooms={config.rooms} extraRooms={withOrphans(config.rooms, sorted, "room").slice(config.rooms.length)} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} onReorderRoomsFull={onReorderRoomsFull} colorBg={section === "personalTasks" ? filterColor(me) : filterColor(choreFilter)} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} /> : (() => {
       const catList = catListForNav;
       return /*#__PURE__*/<CategoryBoard tasks={sorted} rowProps={rowProps} baseCategories={catList} extraCategories={withOrphans(catList, sorted, "category").slice(catList.length)} onAddCategory={name => onAddCategory(projectScope, me, name)} onDeleteCategory={name => onDeleteCategory(projectScope, me, name)} onReorderCategoriesFull={newArr => onReorderCategoriesFull(projectScope, me, newArr)} colorBg={projectScope === "shared" ? filterColor(projectFilter) : filterColor(me)} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} />;
     })()}{showNav && /*#__PURE__*/<Overlay title={typeFilter === "chore" ? "Rooms" : "Categories"} onClose={() => setShowNav(false)}>{navSections.map(({
@@ -2720,7 +2822,7 @@ function TaskRow({
             color: C.ink,
             fontWeight: 600,
             textDecoration: isDone ? "line-through" : "none"
-          }}>{task.title}</div></div>{!compact && /*#__PURE__*/<div style={{
+          }}>{task.title}</div>{task.needsDetails && /*#__PURE__*/<Tag color={C.inkSoft}>needs details</Tag>}</div>{!compact && /*#__PURE__*/<div style={{
           display: "flex",
           flexWrap: "wrap",
           gap: 6,
@@ -3201,6 +3303,22 @@ function TaskForm({
   const categoryOptions = ["Unassigned", ...(t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me])];
   const roomOptions = ["Unassigned", ...config.rooms];
   const showAssignee = t.scope === "shared";
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const typeValue = t.listType && t.scope ? sectionForTask(t) : null;
+  const chooseType = k => {
+    const listType = k === "household" || k === "personalTasks" ? "chore" : "project";
+    const scope = k === "household" || k === "shared" ? "shared" : "personal";
+    set("listType", listType);
+    set("scope", scope);
+    if (scope === "personal") set("assignee", null); // assigning only applies to shared tasks
+  };
+  // a pinned project that moves out of its current Priorities row (to a chore, or between shared/personal) loses its pin
+  const hadPin = !!(initial && initial.listType === "project" && initial.gridBucket && Object.values(initial.gridBucket).some(Boolean));
+  const willUnpin = hadPin && !deferDetails && !!typeValue && (t.listType !== "project" || t.scope !== initial.scope);
+  const recurText = t.recurrence.unit === "none" ? "Doesn't repeat" : `Repeats every ${t.recurrence.amount > 1 ? t.recurrence.amount + " " : ""}${t.recurrence.unit}${t.recurrence.amount > 1 ? "s" : ""}`;
+  const placeName = deferDetails ? null : t.listType === "chore" ? t.room : t.listType === "project" ? t.category : null;
+  const impLabel = (IMPORTANCE.find(p => p.key === t.priority) || {}).label;
+  const detailsSummary = [placeName && placeName !== "Unassigned" ? placeName : null, impLabel ? `${impLabel} importance` : null, recurText].filter(Boolean).join(" · ");
   // Title, and (Type + Belongs to) unless explicitly deferred — these have no safe default to silently fall back on
   const isValid = t.title.trim() && (deferDetails || !!t.listType && !!t.scope);
   const finishAndSave = () => {
@@ -3219,6 +3337,7 @@ function TaskForm({
         scope: t.scope || "shared",
         owner: t.scope === "personal" ? t.owner || me : null,
         needsDetails: initial && initial.needsDetails ? !(touched.listType && touched.scope) : deferDetails,
+        ...(willUnpin ? { gridBucket: {} } : {}),
         createdBy: t.createdBy || me
       });
     } else {
@@ -3251,7 +3370,22 @@ function TaskForm({
       fontSize: 13,
       fontWeight: 700,
       cursor: isValid ? "pointer" : "default"
-    }}>Save</button></React.Fragment>}><FormSection first={true}><Field label="Title *"><input value={t.title} onChange={e => set("title", capFirst(e.target.value))} placeholder="e.g. Clean shower screen" style={inputStyle} /></Field>{!initial && /*#__PURE__*/<div style={{
+    }}>Save</button></React.Fragment>}><FormSection first={true}><div style={{
+        marginBottom: 16
+      }}><input value={t.title} onChange={e => set("title", capFirst(e.target.value))} placeholder="Task title" aria-label="Task title" style={{
+          width: "100%",
+          boxSizing: "border-box",
+          border: "none",
+          borderBottom: `1.5px dashed ${C.rule}`,
+          borderRadius: 0,
+          background: "transparent",
+          outline: "none",
+          padding: "4px 0 7px",
+          fontFamily: "Fraunces, serif",
+          fontSize: 23,
+          fontWeight: 600,
+          color: C.ink
+        }} /></div>{!initial && /*#__PURE__*/<div style={{
         display: "flex",
         alignItems: "flex-start",
         gap: 9,
@@ -3266,25 +3400,24 @@ function TaskForm({
           fontSize: 12,
           color: C.inkSoft,
           lineHeight: 1.4
-        }}>Add details later</label></div>}<Field label="Due date"><input type="date" value={t.dueDate || ""} onChange={e => set("dueDate", e.target.value || null)} style={{
-          ...inputStyle,
-          width: 170
-        }} /></Field>{t.dueDate && /*#__PURE__*/<div style={{
-        display: "flex",
-        alignItems: "flex-start",
-        gap: 9,
-        marginBottom: 13,
-        padding: "9px 11px",
-        background: C.card,
-        borderRadius: 8,
-        border: `1px solid ${C.rule}`
-      }}><input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={e => set("startsOnDue", e.target.checked)} style={{
-          marginTop: 2
-        }} /><label htmlFor="starts-on-due" style={{
-          fontSize: 12,
-          color: C.inkSoft,
-          lineHeight: 1.4
-        }}>Due date is do date</label></div>}<Field label="Subtasks"><DragReorderList items={t.actions || []} keyFn={a => a.id} onFinalize={arr => set("actions", arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
+        }}>Add details later</label></div>}<Field label="Due date"><div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          flexWrap: "wrap"
+        }}><input type="date" value={t.dueDate || ""} onChange={e => set("dueDate", e.target.value || null)} style={{
+            ...inputStyle,
+            width: 160,
+            flexShrink: 0
+          }} />{t.dueDate && /*#__PURE__*/<label htmlFor="starts-on-due" style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            fontSize: 12,
+            color: C.inkSoft,
+            lineHeight: 1.3,
+            cursor: "pointer"
+          }}><input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={e => set("startsOnDue", e.target.checked)} />Due date is do date</label>}</div></Field><Field label="Subtasks"><DragReorderList items={t.actions || []} keyFn={a => a.id} onFinalize={arr => set("actions", arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
           display: "flex",
           alignItems: "center",
           gap: 5,
@@ -3340,19 +3473,65 @@ function TaskForm({
             borderRadius: 8,
             padding: "0 12px",
             cursor: "pointer"
-          }}>+</button></div></Field></FormSection>{!deferDetails && /*#__PURE__*/<FormSection title="Details"><Field label="Type *"><SegRow options={[["chore", "Chore"], ["project", "Project"]]} value={t.listType} onChange={v => set("listType", v)} /></Field><Field label="Belongs to *"><SegRow options={[["shared", "Shared"], ["personal", "Personal"]]} value={t.scope} onChange={v => set("scope", v)} /></Field>{t.listType === "chore" && /*#__PURE__*/<Field label="Category"><SectionSelect value={t.room} onChange={v => set("room", v)} options={roomOptions} onAddNew={onAddRoom} /></Field>}{t.listType === "project" && t.scope && /*#__PURE__*/<Field label="Category"><SectionSelect value={t.category} onChange={v => set("category", v)} options={categoryOptions} onAddNew={name => onAddCategory(t.scope, t.owner || me, name)} /></Field>}{showAssignee && /*#__PURE__*/<Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={v => set("assignee", v)} /></Field>}</FormSection>}<FormSection title="Schedule"><Field label="Importance"><SegRow options={[[null, "None"], ...IMPORTANCE.map(p => [p.key, p.label])]} value={t.priority} onChange={v => set("priority", v)} /></Field>{t.listType === "project" && /*#__PURE__*/<Field label="Priority category (doesn't pin automatically)"><SegRow options={[[null, "None"], ...BUCKETS.map(b => [b.key, b.label])]} value={t.priorityBucket} onChange={v => set("priorityBucket", v)} /></Field>}<Field label="Repeats *"><SegRow options={RECUR_UNITS} value={t.recurrence.unit} onChange={v => set("recurrence", {
-          ...t.recurrence,
-          unit: v
-        })} /></Field>{t.recurrence.unit !== "none" && /*#__PURE__*/<React.Fragment><Field label={`Every (${t.recurrence.unit}s)`}><input type="number" min="1" value={t.recurrence.amount} onChange={e => set("recurrence", {
+          }}>+</button></div></Field></FormSection>{!deferDetails && /*#__PURE__*/<FormSection title="Type"><div style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 1fr",
+        gap: 8,
+        marginBottom: 13
+      }}>{TYPE_CHOICES.map(([k, label]) => {
+          const active = typeValue === k;
+          return /*#__PURE__*/<button key={k} onClick={() => chooseType(k)} style={{
+            padding: "10px 8px",
+            borderRadius: 10,
+            border: `1px solid ${active ? C.ink : C.rule}`,
+            background: active ? C.ink : C.white,
+            color: active ? C.white : C.ink,
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: "pointer"
+          }}>{label}</button>;
+        })}</div>{willUnpin && /*#__PURE__*/<div style={{
+        fontSize: 12,
+        color: C.plum,
+        marginBottom: 13
+      }}>Changing this will unpin it from Priorities.</div>}{showAssignee && /*#__PURE__*/<Field label="Assign to"><SegRow options={[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]]} value={t.assignee} onChange={v => set("assignee", v)} /></Field>}</FormSection>}<div style={{
+      marginTop: 16,
+      paddingTop: 14,
+      borderTop: `1px solid ${C.rule}`
+    }}><div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10
+      }}><button onClick={() => setDetailsOpen(o => !o)} aria-expanded={detailsOpen} style={{
+          padding: "8px 14px",
+          borderRadius: 10,
+          border: `1px solid ${C.ink}`,
+          background: detailsOpen ? C.ink : C.white,
+          color: detailsOpen ? C.white : C.ink,
+          fontSize: 13,
+          fontWeight: 600,
+          cursor: "pointer",
+          flexShrink: 0
+        }}>Details {detailsOpen ? "▴" : "▾"}</button><span style={{
+          fontSize: 12,
+          color: C.inkSoft,
+          lineHeight: 1.35,
+          minWidth: 0
+        }}>{detailsSummary}</span></div>{detailsOpen && /*#__PURE__*/<div style={{
+        marginTop: 16
+      }}>{!deferDetails && t.listType === "chore" && /*#__PURE__*/<Field label="Room"><SectionSelect value={t.room} onChange={v => set("room", v)} options={roomOptions} onAddNew={onAddRoom} /></Field>}{!deferDetails && t.listType === "project" && t.scope && /*#__PURE__*/<Field label="Category"><SectionSelect value={t.category} onChange={v => set("category", v)} options={categoryOptions} onAddNew={name => onAddCategory(t.scope, t.owner || me, name)} /></Field>}<Field label="Importance"><SegRow options={[[null, "None"], ...IMPORTANCE.map(p => [p.key, p.label])]} value={t.priority} onChange={v => set("priority", v)} /></Field>{t.listType === "project" && /*#__PURE__*/<Field label="Priority category (doesn't pin automatically)"><SegRow options={[[null, "None"], ...BUCKETS.map(b => [b.key, b.label])]} value={t.priorityBucket} onChange={v => set("priorityBucket", v)} /></Field>}<Field label="Repeats *"><SegRow options={RECUR_UNITS} value={t.recurrence.unit} onChange={v => set("recurrence", {
             ...t.recurrence,
-            amount: Math.max(1, parseInt(e.target.value, 10) || 1)
-          })} style={{
-            ...inputStyle,
-            width: 90
-          }} /></Field><Field label="When completed"><SegRow options={[["rolling", "Restart timer from completion"], ["fixed", "Stick to the schedule"]]} value={t.recurrence.mode} onChange={v => set("recurrence", {
-            ...t.recurrence,
-            mode: v
-          })} /></Field></React.Fragment>}</FormSection>{notesOpen && /*#__PURE__*/<FormSection title="Notes"><Field label="Notes"><textarea value={t.notes || ""} onChange={e => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{
+            unit: v
+          })} /></Field>{t.recurrence.unit !== "none" && /*#__PURE__*/<React.Fragment><Field label={`Every (${t.recurrence.unit}s)`}><input type="number" min="1" value={t.recurrence.amount} onChange={e => set("recurrence", {
+              ...t.recurrence,
+              amount: Math.max(1, parseInt(e.target.value, 10) || 1)
+            })} style={{
+              ...inputStyle,
+              width: 90
+            }} /></Field><Field label="When completed"><SegRow options={[["rolling", "Restart timer from completion"], ["fixed", "Stick to the schedule"]]} value={t.recurrence.mode} onChange={v => set("recurrence", {
+              ...t.recurrence,
+              mode: v
+            })} /></Field></React.Fragment>}</div>}</div>{notesOpen && /*#__PURE__*/<FormSection title="Notes"><Field label="Notes"><textarea value={t.notes || ""} onChange={e => set("notes", e.target.value)} rows={3} placeholder="Any extra context…" style={{
           ...inputStyle,
           resize: "vertical",
           fontFamily: "inherit"
