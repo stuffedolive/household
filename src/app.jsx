@@ -2,7 +2,8 @@ const {
   useState,
   useEffect,
   useMemo,
-  useRef
+  useRef,
+  useCallback
 } = React;
 
 /* ---------- design tokens ---------- */
@@ -25,7 +26,7 @@ const C = {
   slateTint: "#E1E7EA",
   taupeTint: "#ECE7DC"
 };
-const APP_VERSION = "v41";
+const APP_VERSION = "v42";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -208,6 +209,12 @@ function App() {
   const [projectScope, setProjectScope] = useState("shared");
   const [projectFilter, setProjectFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("chore");
+  // which list is open inside the All tasks tab: null (the three-button landing), "household", "shared" or "personal"
+  const [queueSection, setQueueSection] = useState(null);
+  const goView = v => {
+    if (v === "queue") setQueueSection(null); // tapping the tab always lands on the three buttons
+    setView(v);
+  };
   const [highlightTaskId, setHighlightTaskId] = useState(null);
   useEffect(() => {
     if (!highlightTaskId) return;
@@ -240,13 +247,18 @@ function App() {
   // no matter how many years of history pile up, without deleting anything.
   const [activeTasksMap, setActiveTasksMap] = useState({});
   const [recentCompletedMap, setRecentCompletedMap] = useState({});
+  // `tasks` stays null until BOTH queries have answered at least once — otherwise anything keyed off "tasks is
+  // ready" (like the activity summary) runs against an empty list on slower connections like phones.
+  const [activeLoaded, setActiveLoaded] = useState(false);
+  const [completedLoaded, setCompletedLoaded] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
     const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", false).onSnapshot(snap => {
       const m = {};
       snap.docs.forEach(d => { m[d.id] = { id: d.id, ...d.data() }; });
       setActiveTasksMap(m);
-    }, err => { console.error("sync error (active)", err); setActiveTasksMap({}); });
+      setActiveLoaded(true);
+    }, err => { console.error("sync error (active)", err); setActiveTasksMap({}); setActiveLoaded(true); });
     return unsub;
   }, [authReady]);
   useEffect(() => {
@@ -255,24 +267,29 @@ function App() {
       const m = {};
       snap.docs.forEach(d => { m[d.id] = { id: d.id, ...d.data() }; });
       setRecentCompletedMap(m);
-    }, err => { console.error("sync error (completed) — if this is an index error, Firestore's console link will create it in one click", err); setRecentCompletedMap({}); });
+      setCompletedLoaded(true);
+    }, err => { console.error("sync error (completed) — if this is an index error, Firestore's console link will create it in one click", err); setRecentCompletedMap({}); setCompletedLoaded(true); });
     return unsub;
   }, [authReady]);
   const tasks = useMemo(() => {
-    if (authReady !== true) return null;
+    if (authReady !== true || !activeLoaded || !completedLoaded) return null;
     return [...Object.values(activeTasksMap), ...Object.values(recentCompletedMap)];
-  }, [activeTasksMap, recentCompletedMap, authReady]);
-  useEffect(() => {
-    if (activityCheckedRef.current) return;
-    if (!me || tasks === null) return;
-    activityCheckedRef.current = true;
+  }, [activeTasksMap, recentCompletedMap, authReady, activeLoaded, completedLoaded]);
+  const tasksRef = useRef(null);
+  tasksRef.current = tasks;
+  // "While you were away" check. Runs once when tasks first finish loading, and again whenever the app comes back
+  // after being away 30+ minutes (installed phone apps usually resume from the background rather than reloading).
+  // The moment the app is hidden we stamp "last seen" so the next check compares from when you actually left.
+  const runActivityCheck = useCallback(() => {
+    const list = tasksRef.current;
+    if (!me || list === null) return;
     PRESENCE_DOC.get().then(snap => {
       const data = snap.data() || {};
       const lastVisit = data[me];
       const now = Date.now();
       if (lastVisit) {
         // only shared tasks — the other person's personal tasks should never surface here
-        const shared = tasks.filter(t => t.scope === "shared");
+        const shared = list.filter(t => t.scope === "shared");
         const added = shared.filter(t => t.createdBy && t.createdBy !== me && t.createdAt && t.createdAt > lastVisit);
         const completed = shared.filter(t => t.lastCompletedBy && t.lastCompletedBy !== me && t.lastCompletedAt && t.lastCompletedAt > lastVisit);
         const notesChanged = shared.filter(t => t.notesUpdatedBy && t.notesUpdatedBy !== me && t.notesUpdatedAt && t.notesUpdatedAt > lastVisit);
@@ -282,7 +299,31 @@ function App() {
       }
       PRESENCE_DOC.set({ [me]: now }, { merge: true }).catch(console.error);
     }).catch(console.error);
-  }, [me, tasks]);
+  }, [me]);
+  useEffect(() => {
+    if (activityCheckedRef.current) return;
+    if (!me || tasks === null) return;
+    activityCheckedRef.current = true;
+    runActivityCheck();
+  }, [me, tasks, runActivityCheck]);
+  useEffect(() => {
+    if (!me) return;
+    let hiddenAt = null;
+    const onVis = () => {
+      if (document.visibilityState === "hidden") {
+        hiddenAt = Date.now();
+        if (activityCheckedRef.current) PRESENCE_DOC.set({ [me]: hiddenAt }, { merge: true }).catch(() => {});
+      } else if (hiddenAt && Date.now() - hiddenAt > 30 * 60 * 1000) {
+        hiddenAt = null;
+        // give the live listeners a moment to catch up after waking before comparing
+        setTimeout(runActivityCheck, 3000);
+      } else {
+        hiddenAt = null;
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [me, runActivityCheck]);
   const [configError, setConfigError] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
@@ -419,13 +460,35 @@ function App() {
   };
   const todayKey = it => it.type + it.id + (it.subtaskId || "");
   const todayBucket = it => it.bucket === "later" ? "later" : "now";
-  const addSundry = title => saveToday("Add sundry", [...todayItems, {
-    type: "sundry",
-    id: uid(),
-    title: title.trim(),
-    completed: false,
-    bucket: "now"
-  }]);
+  // Quick add from the plan: makes a REAL task (flagged "add details later") and puts it on this person's plan.
+  // Only this path auto-adds to the plan; the normal New task form never does.
+  const quickAddToday = title => {
+    const id = uid();
+    upsertTask({
+      id,
+      title: capFirst(title.trim()),
+      listType: "chore",
+      scope: "shared",
+      owner: null,
+      room: "Unassigned",
+      category: "Unassigned",
+      assignee: null,
+      priority: null,
+      priorityBucket: null,
+      dueDate: null,
+      recurrence: { unit: "none", amount: 1, mode: "rolling" },
+      notes: "",
+      completed: false,
+      gridBucket: {},
+      actions: [],
+      needsDetails: true,
+      createdBy: me,
+      startsOnDue: false,
+      createdAt: Date.now(),
+      completedAt: null
+    });
+    addTaskToToday(id, null);
+  };
   const toggleSundry = id => saveToday("Toggle sundry", todayItems.map(it => it.id === id ? {
     ...it,
     completed: !it.completed
@@ -737,9 +800,10 @@ function App() {
         }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
   }
   if (tasks === null) return /*#__PURE__*/<Shell><div style={centerMsg}>Loading the list…</div></Shell>;
-  return /*#__PURE__*/<Shell><Header me={me} view={view} setView={setView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
+  return /*#__PURE__*/<Shell><Header me={me} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
       setSearchQuery("");
       setView("queue");
+      setQueueSection(t.listType === "chore" ? "household" : t.scope === "personal" ? "personal" : "shared");
       setTypeFilter(t.listType);
       if (t.listType === "chore") {
         setChoreFilter("all");
@@ -760,7 +824,7 @@ function App() {
     }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
-    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectScope={projectScope} setProjectScope={setProjectScope} projectFilter={projectFilter} setProjectFilter={setProjectFilter} typeFilter={typeFilter} setTypeFilter={setTypeFilter} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
+    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={quickAddToday} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectScope={projectScope} setProjectScope={setProjectScope} projectFilter={projectFilter} setProjectFilter={setProjectFilter} typeFilter={typeFilter} setTypeFilter={setTypeFilter} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
     }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onToggleManualTodo={toggleManualTodo} />}<button onClick={() => {
@@ -1000,7 +1064,7 @@ function Header({
       display: "flex",
       gap: 8,
       marginTop: 14
-    }}><TabButton active={view === "todo"} onClick={() => setView("todo")} label="To-do list" /><TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" /><TabButton active={view === "queue"} onClick={() => setView("queue")} label="Tasks" /></div></div>;
+    }}><TabButton active={view === "todo"} onClick={() => setView("todo")} label="To-do list" /><TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" /><TabButton active={view === "queue"} onClick={() => setView("queue")} label="All tasks" /></div></div>;
 }
 function TabButton({
   active,
@@ -2128,7 +2192,7 @@ function TodayPlanSection({
       marginTop: 14
     }}><input value={newSundry} onChange={e => setNewSundry(capFirst(e.target.value))} onKeyDown={e => {
         if (e.key === "Enter") commitSundry();
-      }} onBlur={commitSundry} placeholder="Add a sundry…" style={{
+      }} onBlur={commitSundry} placeholder="Quick add a task for today…" style={{
         ...inputStyle,
         fontSize: 13,
         background: C.white
@@ -2140,6 +2204,60 @@ function TodayPlanSection({
         padding: "0 14px",
         cursor: "pointer"
       }}>+</button></div></div>;
+}
+/* landing screen for the All tasks tab: three big buttons, one per list */
+function SectionIcon({ kind }) {
+  const common = { width: 34, height: 34, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true };
+  if (kind === "household") return /*#__PURE__*/<svg {...common}><path d="M8 21h8a1 1 0 0 0 1-1v-7l-2-2H9l-2 2v7a1 1 0 0 0 1 1z" /><path d="M10 11V8h5l2-2" /><path d="M19.5 3.5l1.5-1M20 7h2M19.5 10.5l1.5 1" /></svg>;
+  if (kind === "shared") return /*#__PURE__*/<svg {...common}><path d="M3 11l9-8 9 8" /><path d="M5 10v10h14V10" /><path d="M10 18l4-4" /><path d="M12.4 12.4l2.1-1 1.1 1.1-1 2.1z" /></svg>;
+  return /*#__PURE__*/<svg {...common}><circle cx="10" cy="8" r="3.2" /><path d="M4 20c0-3.5 2.7-6 6-6s6 2.5 6 6" /><path d="M19 3l.9 1.9 2.1.3-1.5 1.5.4 2.1L19 7.8l-1.9 1 .4-2.1L16 5.2l2.1-.3z" /></svg>;
+}
+function TaskSections({ tasks, me, onOpen }) {
+  const open = tasks.filter(t => !t.completed);
+  const counts = {
+    household: open.filter(t => t.listType === "chore").length,
+    shared: open.filter(t => t.listType === "project" && t.scope === "shared").length,
+    personal: open.filter(t => t.listType === "project" && t.scope === "personal" && t.owner === me).length
+  };
+  const buttons = [["household", "Household tasks", "Chores, by room"], ["shared", "Shared projects", "Renovation & home projects"], ["personal", "Personal projects", "Just yours"]];
+  return /*#__PURE__*/<div style={{
+    padding: "18px 16px",
+    display: "flex",
+    flexDirection: "column",
+    gap: 12
+  }}>{buttons.map(([k, label, sub]) => /*#__PURE__*/<button key={k} onClick={() => onOpen(k)} style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 16,
+      width: "100%",
+      textAlign: "left",
+      padding: "18px 16px",
+      borderRadius: 14,
+      border: `1px solid ${C.rule}`,
+      background: C.card,
+      color: C.ink,
+      cursor: "pointer"
+    }}><span style={{
+        color: C.sageDeep,
+        display: "flex",
+        flexShrink: 0
+      }}><SectionIcon kind={k} /></span><span style={{
+        flex: 1,
+        minWidth: 0
+      }}><span style={{
+          display: "block",
+          fontFamily: "Fraunces, serif",
+          fontSize: 17
+        }}>{label}</span><span style={{
+          display: "block",
+          fontSize: 12,
+          color: C.inkSoft,
+          marginTop: 2
+        }}>{sub}</span></span><span style={{
+        fontSize: 15,
+        fontWeight: 700,
+        color: C.inkSoft
+      }}>{counts[k]}</span></button>)}</div>;
 }
 function QueueView(props) {
   const {
@@ -2172,7 +2290,9 @@ function QueueView(props) {
     onSetTaskActions,
     onSetActionDueDate,
     onToggleManualTodo,
-    highlightTaskId
+    highlightTaskId,
+    section,
+    setSection
   } = props;
   const typed = useMemo(() => typeFilter === "all" ? tasks : tasks.filter(t => t.listType === typeFilter), [tasks, typeFilter]);
   const scoped = useMemo(() => {
@@ -2230,6 +2350,15 @@ function QueueView(props) {
     const t = setTimeout(() => setJumpToSection(null), 4000);
     return () => clearTimeout(t);
   }, [jumpToSection]);
+  const openSection = k => {
+    if (k === "household") setTypeFilter("chore");else {
+      setTypeFilter("project");
+      setProjectScope(k);
+    }
+    setSection(k);
+  };
+  if (!section) return /*#__PURE__*/<TaskSections tasks={tasks} me={me} onOpen={openSection} />;
+  const sectionTitle = section === "household" ? "Household tasks" : section === "shared" ? "Shared projects" : "Personal projects";
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 150px)",
     display: "flex",
@@ -2240,19 +2369,26 @@ function QueueView(props) {
       paddingBottom: 10
     }}><div style={{
         display: "flex",
-        gap: 6,
+        alignItems: "center",
+        gap: 8,
         padding: "10px 16px 0"
-      }}>{[["chore", "Chores"], ["project", "Projects"]].map(([k, l]) => /*#__PURE__*/<button key={k} onClick={() => setTypeFilter(k)} style={{
+      }}><button onClick={() => setSection(null)} aria-label="Back to all tasks" style={{
           padding: "6px 12px",
           borderRadius: 8,
-          border: `1px solid ${typeFilter === k ? C.ink : C.rule}`,
-          background: typeFilter === k ? C.ink : C.white,
-          color: typeFilter === k ? C.white : C.ink,
+          border: `1px solid ${C.rule}`,
+          background: C.white,
+          color: C.ink,
           fontSize: 12,
           fontWeight: 600,
           cursor: "pointer",
-          flex: 1
-        }}>{l}</button>)}<button onClick={() => setShowNav(true)} aria-label="Jump to a category" style={{
+          flexShrink: 0
+        }}>← All tasks</button><div style={{
+          flex: 1,
+          textAlign: "center",
+          fontFamily: "Fraunces, serif",
+          fontSize: 16,
+          color: C.ink
+        }}>{sectionTitle}</div><button onClick={() => setShowNav(true)} aria-label="Jump to a category" style={{
           padding: "6px 12px",
           borderRadius: 8,
           border: `1px solid ${C.rule}`,
@@ -2261,34 +2397,15 @@ function QueueView(props) {
           fontSize: 14,
           cursor: "pointer",
           flexShrink: 0
-        }}>☰</button></div>{typeFilter === "chore" && /*#__PURE__*/<div style={{
+        }}>☰</button></div>{section === "household" && /*#__PURE__*/<div style={{
         display: "flex",
         gap: 6,
         padding: "8px 16px 0"
-      }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/<FilterChip key={k} active={choreFilter === k} onClick={() => setChoreFilter(k)} label={l} activeColor={filterColor(k)} activeTint={filterTint(k)} />)}</div>}{typeFilter === "project" && /*#__PURE__*/<React.Fragment><div style={{
-          padding: "8px 16px 0"
-        }}><button onClick={() => setProjectScope(projectScope === "shared" ? "personal" : "shared")} style={{
-            width: "100%",
-            padding: "8px 12px",
-            borderRadius: 8,
-            border: `1px solid ${C.ink}`,
-            background: C.ink,
-            color: C.white,
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6
-          }}>{projectScope === "shared" ? "Shared Projects" : "Personal Projects"} <span style={{
-              opacity: 0.6,
-              fontSize: 11
-            }}>⇄</span></button></div>{projectScope === "shared" && /*#__PURE__*/<div style={{
-          display: "flex",
-          gap: 6,
-          padding: "8px 16px 0"
-        }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/<FilterChip key={k} active={projectFilter === k} onClick={() => setProjectFilter(k)} label={l} activeColor={filterColor(k)} activeTint={filterTint(k)} />)}</div>}</React.Fragment>}</div>{typeFilter === "chore" ? /*#__PURE__*/<RoomBoard tasks={sorted} rowProps={rowProps} baseRooms={config.rooms} extraRooms={withOrphans(config.rooms, sorted, "room").slice(config.rooms.length)} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} onReorderRoomsFull={onReorderRoomsFull} colorBg={filterColor(choreFilter)} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} /> : (() => {
+      }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/<FilterChip key={k} active={choreFilter === k} onClick={() => setChoreFilter(k)} label={l} activeColor={filterColor(k)} activeTint={filterTint(k)} />)}</div>}{section === "shared" && /*#__PURE__*/<div style={{
+        display: "flex",
+        gap: 6,
+        padding: "8px 16px 0"
+      }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => /*#__PURE__*/<FilterChip key={k} active={projectFilter === k} onClick={() => setProjectFilter(k)} label={l} activeColor={filterColor(k)} activeTint={filterTint(k)} />)}</div>}</div>{typeFilter === "chore" ? /*#__PURE__*/<RoomBoard tasks={sorted} rowProps={rowProps} baseRooms={config.rooms} extraRooms={withOrphans(config.rooms, sorted, "room").slice(config.rooms.length)} onAddRoom={onAddRoom} onDeleteRoom={onDeleteRoom} onReorderRoomsFull={onReorderRoomsFull} colorBg={filterColor(choreFilter)} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} /> : (() => {
       const catList = catListForNav;
       return /*#__PURE__*/<CategoryBoard tasks={sorted} rowProps={rowProps} baseCategories={catList} extraCategories={withOrphans(catList, sorted, "category").slice(catList.length)} onAddCategory={name => onAddCategory(projectScope, me, name)} onDeleteCategory={name => onDeleteCategory(projectScope, me, name)} onReorderCategoriesFull={newArr => onReorderCategoriesFull(projectScope, me, newArr)} colorBg={projectScope === "shared" ? filterColor(projectFilter) : filterColor(me)} highlightTaskId={highlightTaskId} jumpToSection={jumpToSection} />;
     })()}{showNav && /*#__PURE__*/<Overlay title={typeFilter === "chore" ? "Rooms" : "Categories"} onClose={() => setShowNav(false)}>{navSections.map(({
@@ -3051,10 +3168,16 @@ function TaskForm({
   });
   const [deferDetails, setDeferDetails] = useState(false);
   const [notesOpen, setNotesOpen] = useState(!!(initial && initial.notes));
-  const set = (k, v) => setT(p => ({
-    ...p,
-    [k]: v
-  }));
+  // A "add details later" task is saved with default Type/Belongs to, so we can't tell from the values whether
+  // they've been properly chosen yet — track whether the user has actually set both.
+  const [touched, setTouched] = useState({});
+  const set = (k, v) => {
+    if (k === "listType" || k === "scope") setTouched(p => ({ ...p, [k]: true }));
+    setT(p => ({
+      ...p,
+      [k]: v
+    }));
+  };
   const [newAction, setNewAction] = useState("");
   const addFormAction = () => {
     if (!newAction.trim()) return;
@@ -3095,7 +3218,7 @@ function TaskForm({
         listType: t.listType || "chore",
         scope: t.scope || "shared",
         owner: t.scope === "personal" ? t.owner || me : null,
-        needsDetails: deferDetails,
+        needsDetails: initial && initial.needsDetails ? !(touched.listType && touched.scope) : deferDetails,
         createdBy: t.createdBy || me
       });
     } else {
