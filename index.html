@@ -129,7 +129,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v53";
+const APP_VERSION = "v54";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -325,7 +325,14 @@ function LoveLoading({
       color: C.ink,
       maxWidth: 300
     }
-  }, note), /*#__PURE__*/React.createElement("div", {
+  }, note, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontStyle: "normal",
+      fontSize: 14,
+      marginTop: 10,
+      color: C.inkSoft
+    }
+  }, "- Jade")), /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: note ? 11 : 14,
       color: C.inkSoft
@@ -2220,6 +2227,13 @@ function SettingsPanel({
     }
   }, preview, /*#__PURE__*/React.createElement("div", {
     style: {
+      fontStyle: "normal",
+      fontSize: 14,
+      marginTop: 10,
+      color: C.inkSoft
+    }
+  }, "- Jade"), /*#__PURE__*/React.createElement("div", {
+    style: {
       fontFamily: "inherit",
       fontStyle: "normal",
       fontSize: 11,
@@ -2715,7 +2729,23 @@ function HeroCard({
       textTransform: "uppercase",
       letterSpacing: 0.5
     }
-  }, "from ", task.title), /*#__PURE__*/React.createElement("div", {
+  }, "from ", task.title), imp &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "inline-block",
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: 0.5,
+      textTransform: "uppercase",
+      background: imp.color,
+      color: C.white,
+      padding: "3px 11px",
+      borderRadius: 20,
+      marginBottom: 14
+    }
+  }, imp.label, " importance"), /*#__PURE__*/React.createElement("div", {
     onClick: () => {
       if (!moved.current) onEdit(task);
     },
@@ -2827,6 +2857,20 @@ function ToDoList({
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
   const [skipped, setSkipped] = useState(() => loadSkipped(me));
+  // remembered on this device: whether the lists under the plan are collapsed
+  const [collapsedAll, setCollapsedAll] = useState(() => {
+    try {
+      return localStorage.getItem("lifelist-todo-collapsed") === "1";
+    } catch (e) {
+      return false;
+    }
+  });
+  const toggleCollapsedAll = () => setCollapsedAll(c => {
+    try {
+      localStorage.setItem("lifelist-todo-collapsed", c ? "0" : "1");
+    } catch (e) {}
+    return !c;
+  });
   useEffect(() => {
     setSkipped(loadSkipped(me));
   }, [me]);
@@ -3118,7 +3162,23 @@ function ToDoList({
     onEdit: onEdit,
     onToggleTodayTaskDone: onToggleTodayTaskDone,
     onConvertNote: onConvertNote
-  }), displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 &&
+  }), /*#__PURE__*/React.createElement("div", {
+    style: {
+      textAlign: "right",
+      marginBottom: 6
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: toggleCollapsedAll,
+    style: {
+      border: "none",
+      background: "none",
+      color: C.inkSoft,
+      fontSize: 11.5,
+      textDecoration: "underline",
+      cursor: "pointer",
+      padding: 0
+    }
+  }, collapsedAll ? "Expand all" : "Collapse all")), displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -3132,6 +3192,7 @@ function ToDoList({
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(CollapsibleSection, {
+    collapsedAll: collapsedAll,
     title: "Chores",
     count: displayChores.length,
     defaultOpen: true
@@ -3164,6 +3225,7 @@ function ToDoList({
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(CollapsibleSection, {
+    collapsedAll: collapsedAll,
     title: "Priority Projects",
     count: displayProjects.length,
     defaultOpen: true
@@ -3201,6 +3263,7 @@ function ToDoList({
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(CollapsibleSection, {
+    collapsedAll: collapsedAll,
     title: "Other Projects",
     count: displayOtherProjects.length,
     defaultOpen: true
@@ -3230,6 +3293,7 @@ function ToDoList({
     onAddToToday: inPlan(task.id, null) ? undefined : onAddTaskToToday,
     onToggleManualTodo: onToggleManualTodo
   }))), /*#__PURE__*/React.createElement(CollapsibleSection, {
+    collapsedAll: collapsedAll,
     title: "Postponed",
     count: postponedChores.length + postponedProjectItems.length,
     defaultOpen: false
@@ -3273,6 +3337,7 @@ function ToDoList({
     onRestore: () => onSetActionHiddenUntil(task.id, action.id, null),
     onAddToToday: inPlan(task.id, action.id) ? undefined : onAddTaskToToday
   }))), /*#__PURE__*/React.createElement(CollapsibleSection, {
+    collapsedAll: collapsedAll,
     title: "Upcoming",
     count: upcoming.length,
     defaultOpen: false
@@ -3304,6 +3369,7 @@ function ToDoList({
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(CollapsibleSection, {
+    collapsedAll: collapsedAll,
     title: "Recently completed",
     count: justDone.length,
     defaultOpen: false
@@ -5000,9 +5066,19 @@ function CollapsibleSection({
   title,
   count,
   defaultOpen,
+  collapsedAll,
   children
 }) {
-  const [open, setOpen] = useState(!!defaultOpen);
+  const [open, setOpen] = useState(!collapsedAll && !!defaultOpen);
+  // the Collapse all / Expand all switch resets every section: collapsed = all closed, expanded = back to each one's own default
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    setOpen(!collapsedAll && !!defaultOpen);
+  }, [collapsedAll]);
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14

@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v53";
+const APP_VERSION = "v54";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -267,7 +267,12 @@ function LoveLoading({
       lineHeight: 1.4,
       color: C.ink,
       maxWidth: 300
-    }}>{note}</div>}<div style={{
+    }}>{note}<div style={{
+        fontStyle: "normal",
+        fontSize: 14,
+        marginTop: 10,
+        color: C.inkSoft
+      }}>- Jade</div></div>}<div style={{
       fontSize: note ? 11 : 14,
       color: C.inkSoft
     }}>{text}</div></div>;
@@ -1555,7 +1560,7 @@ function SettingsPanel({ onClose, onExport, onImport, loveTexts, onSaveLoveNotes
       {loveTexts.length > 0 && <button onClick={() => setPreview(loveTexts[Math.floor(Math.random() * loveTexts.length)])} style={{ border: "none", background: "none", color: C.inkSoft, textDecoration: "underline", fontSize: 11.5, cursor: "pointer", padding: 0, marginTop: 10 }}>Preview a note</button>}
     </div>
     {preview && <div onClick={() => setPreview(null)} style={{ position: "fixed", inset: 0, zIndex: 1000, background: C.parchment, display: "flex", alignItems: "center", justifyContent: "center", padding: 32, textAlign: "center", cursor: "pointer" }}>
-      <div style={{ fontFamily: "Fraunces, serif", fontStyle: "italic", fontSize: 22, lineHeight: 1.4, color: C.ink, maxWidth: 300 }}>{preview}<div style={{ fontFamily: "inherit", fontStyle: "normal", fontSize: 11, color: C.inkSoft, marginTop: 22 }}>Tap to close</div></div>
+      <div style={{ fontFamily: "Fraunces, serif", fontStyle: "italic", fontSize: 22, lineHeight: 1.4, color: C.ink, maxWidth: 300 }}>{preview}<div style={{ fontStyle: "normal", fontSize: 14, marginTop: 10, color: C.inkSoft }}>- Jade</div><div style={{ fontFamily: "inherit", fontStyle: "normal", fontSize: 11, color: C.inkSoft, marginTop: 22 }}>Tap to close</div></div>
     </div>}
     <div style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 8, lineHeight: 1.4 }}>Download everything as a JSON file — a safety copy you can keep, separate from Firestore.</div>
@@ -1914,7 +1919,18 @@ function HeroCard({
       marginBottom: 8,
       textTransform: "uppercase",
       letterSpacing: 0.5
-    }}>from {task.title}</div>}<div onClick={() => {
+    }}>from {task.title}</div>}{imp && /*#__PURE__*/<div style={{
+      display: "inline-block",
+      fontSize: 10,
+      fontWeight: 700,
+      letterSpacing: 0.5,
+      textTransform: "uppercase",
+      background: imp.color,
+      color: C.white,
+      padding: "3px 11px",
+      borderRadius: 20,
+      marginBottom: 14
+    }}>{imp.label} importance</div>}<div onClick={() => {
       if (!moved.current) onEdit(task);
     }} style={{
       fontFamily: "Fraunces, serif",
@@ -2004,6 +2020,20 @@ function ToDoList({
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
   const [skipped, setSkipped] = useState(() => loadSkipped(me));
+  // remembered on this device: whether the lists under the plan are collapsed
+  const [collapsedAll, setCollapsedAll] = useState(() => {
+    try {
+      return localStorage.getItem("lifelist-todo-collapsed") === "1";
+    } catch (e) {
+      return false;
+    }
+  });
+  const toggleCollapsedAll = () => setCollapsedAll(c => {
+    try {
+      localStorage.setItem("lifelist-todo-collapsed", c ? "0" : "1");
+    } catch (e) {}
+    return !c;
+  });
   useEffect(() => {
     setSkipped(loadSkipped(me));
   }, [me]);
@@ -2249,15 +2279,26 @@ function ToDoList({
       }
       const driving = drivingSubtask(topPick.item);
       if (driving) snoozeProjectAction(topPick.item, driving, dateStr);else snoozeChore(topPick.item, dateStr);
-    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} />{displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/<div style={{
+    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} /><div style={{
+      textAlign: "right",
+      marginBottom: 6
+    }}><button onClick={toggleCollapsedAll} style={{
+        border: "none",
+        background: "none",
+        color: C.inkSoft,
+        fontSize: 11.5,
+        textDecoration: "underline",
+        cursor: "pointer",
+        padding: 0
+      }}>{collapsedAll ? "Expand all" : "Collapse all"}</button></div>{displayChores.length === 0 && displayProjects.length === 0 && displayOtherProjects.length === 0 && justDone.length === 0 && /*#__PURE__*/<div style={{
       color: C.inkSoft,
       fontSize: 13,
       textAlign: "center",
       marginTop: 40
-    }}>Nothing pressing right now.</div>}{displayChores.length > 0 && /*#__PURE__*/<CollapsibleSection title="Chores" count={displayChores.length} defaultOpen={true}>{displayChores.map(t => {
+    }}>Nothing pressing right now.</div>}{displayChores.length > 0 && /*#__PURE__*/<CollapsibleSection collapsedAll={collapsedAll} title="Chores" count={displayChores.length} defaultOpen={true}>{displayChores.map(t => {
         const driving = drivingSubtask(t);
         return driving ? /*#__PURE__*/<ActionAsRow key={t.id} task={t} action={driving} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(t, driving, dateStr) : undefined} onAddToToday={inPlan(t.id, driving.id) ? undefined : onAddTaskToToday} onToggleManualTodo={t.manualTodo ? onToggleManualTodo : undefined} /> : /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(t, dateStr) : undefined} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={t.manualTodo ? onToggleManualTodo : undefined} />;
-      })}</CollapsibleSection>}{displayProjects.length > 0 && /*#__PURE__*/<CollapsibleSection title="Priority Projects" count={displayProjects.length} defaultOpen={true}>{displayProjects.map(({
+      })}</CollapsibleSection>}{displayProjects.length > 0 && /*#__PURE__*/<CollapsibleSection collapsedAll={collapsedAll} title="Priority Projects" count={displayProjects.length} defaultOpen={true}>{displayProjects.map(({
         task,
         action
       }) => {
@@ -2266,10 +2307,10 @@ function ToDoList({
         return /*#__PURE__*/<div key={task.id + (action ? action.id : "")} style={notYetDue ? {
           opacity: 0.55
         } : undefined}>{action ? /*#__PURE__*/<ActionAsRow task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? kind => snoozeProjectAction(task, action, kind) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} /> : /*#__PURE__*/<TaskRow task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} />}</div>;
-      })}</CollapsibleSection>}{displayOtherProjects.length > 0 && /*#__PURE__*/<CollapsibleSection title="Other Projects" count={displayOtherProjects.length} defaultOpen={true}>{displayOtherProjects.map(({
+      })}</CollapsibleSection>}{displayOtherProjects.length > 0 && /*#__PURE__*/<CollapsibleSection collapsedAll={collapsedAll} title="Other Projects" count={displayOtherProjects.length} defaultOpen={true}>{displayOtherProjects.map(({
         task,
         action
-      }) => action ? /*#__PURE__*/<ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(task, action, dateStr) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} /> : /*#__PURE__*/<TaskRow key={task.id} task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} />)}</CollapsibleSection>}<CollapsibleSection title="Postponed" count={postponedChores.length + postponedProjectItems.length} defaultOpen={false}><div style={{
+      }) => action ? /*#__PURE__*/<ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(task, action, dateStr) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} /> : /*#__PURE__*/<TaskRow key={task.id} task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} />)}</CollapsibleSection>}<CollapsibleSection collapsedAll={collapsedAll} title="Postponed" count={postponedChores.length + postponedProjectItems.length} defaultOpen={false}><div style={{
         fontSize: 11,
         color: C.inkSoft,
         marginBottom: 6
@@ -2281,7 +2322,7 @@ function ToDoList({
       }}>Nothing postponed right now.</div>}{postponedChores.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onRestore={() => onSetTaskHiddenUntil(t.id, null)} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}{postponedProjectItems.map(({
         task,
         action
-      }) => /*#__PURE__*/<ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onRestore={() => onSetActionHiddenUntil(task.id, action.id, null)} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} />)}</CollapsibleSection><CollapsibleSection title="Upcoming" count={upcoming.length} defaultOpen={false}><div style={{
+      }) => /*#__PURE__*/<ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onRestore={() => onSetActionHiddenUntil(task.id, action.id, null)} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} />)}</CollapsibleSection><CollapsibleSection collapsedAll={collapsedAll} title="Upcoming" count={upcoming.length} defaultOpen={false}><div style={{
         fontSize: 11,
         color: C.inkSoft,
         marginBottom: 6
@@ -2290,7 +2331,7 @@ function ToDoList({
         fontSize: 12,
         textAlign: "center",
         padding: "10px 0"
-      }}>Nothing coming up yet.</div>}{upcoming.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}</CollapsibleSection>{justDone.length > 0 && /*#__PURE__*/<CollapsibleSection title="Recently completed" count={justDone.length} defaultOpen={false}>{justDone.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} showAsCompleted={true} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}</CollapsibleSection>}</div>;
+      }}>Nothing coming up yet.</div>}{upcoming.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}</CollapsibleSection>{justDone.length > 0 && /*#__PURE__*/<CollapsibleSection collapsedAll={collapsedAll} title="Recently completed" count={justDone.length} defaultOpen={false}>{justDone.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} showAsCompleted={true} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}</CollapsibleSection>}</div>;
 }
 
 /* compact "Today's plan" — just titles, sits at the top of the list like the hero card does for overwhelmed mode */
@@ -3379,9 +3420,19 @@ function CollapsibleSection({
   title,
   count,
   defaultOpen,
+  collapsedAll,
   children
 }) {
-  const [open, setOpen] = useState(!!defaultOpen);
+  const [open, setOpen] = useState(!collapsedAll && !!defaultOpen);
+  // the Collapse all / Expand all switch resets every section: collapsed = all closed, expanded = back to each one's own default
+  const firstRun = useRef(true);
+  useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false;
+      return;
+    }
+    setOpen(!collapsedAll && !!defaultOpen);
+  }, [collapsedAll]);
   return /*#__PURE__*/<div style={{
     marginBottom: 14
   }}><button onClick={() => setOpen(o => !o)} style={{
