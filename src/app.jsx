@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v54";
+const APP_VERSION = "v55";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1539,26 +1539,13 @@ function SettingsPanel({ onClose, onExport, onImport, loveTexts, onSaveLoveNotes
   const fileInputRef = useRef(null);
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(null);
+  const [showLove, setShowLove] = useState(false); // tucked away until the little heart at the bottom is tapped
   const addLove = () => {
     if (!draft.trim()) return;
     onSaveLoveNotes([...loveTexts, draft.trim()]);
     setDraft("");
   };
   return /*#__PURE__*/<Overlay title="Settings" onClose={onClose}>
-    <div style={{ marginBottom: 22, paddingBottom: 18, borderBottom: `1px solid ${C.rule}` }}>
-      <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, color: C.ink, marginBottom: 4 }}>Love notes</div>
-      <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10, lineHeight: 1.4 }}>John's loading screen shows one of these each time he opens the app (and stays up for 4 seconds). Anyone who opens Settings can read them.</div>
-      {loveTexts.length === 0 && <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>No notes yet.</div>}
-      {loveTexts.map((txt, i) => <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.rule}66` }}>
-        <div style={{ flex: 1, fontSize: 13, color: C.ink, fontStyle: "italic", lineHeight: 1.35 }}>{txt}</div>
-        <button onClick={() => onSaveLoveNotes(loveTexts.filter((_, j) => j !== i))} aria-label="Delete note" style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", fontSize: 14 }}>×</button>
-      </div>)}
-      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addLove(); }} placeholder="Write a note…" style={{ flex: 1, minWidth: 0, padding: "9px 10px", borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, fontSize: 13, color: C.ink }} />
-        <button onClick={addLove} disabled={!draft.trim()} style={{ ...btnStyle(C.ink), opacity: draft.trim() ? 1 : 0.4 }}>Add</button>
-      </div>
-      {loveTexts.length > 0 && <button onClick={() => setPreview(loveTexts[Math.floor(Math.random() * loveTexts.length)])} style={{ border: "none", background: "none", color: C.inkSoft, textDecoration: "underline", fontSize: 11.5, cursor: "pointer", padding: 0, marginTop: 10 }}>Preview a note</button>}
-    </div>
     {preview && <div onClick={() => setPreview(null)} style={{ position: "fixed", inset: 0, zIndex: 1000, background: C.parchment, display: "flex", alignItems: "center", justifyContent: "center", padding: 32, textAlign: "center", cursor: "pointer" }}>
       <div style={{ fontFamily: "Fraunces, serif", fontStyle: "italic", fontSize: 22, lineHeight: 1.4, color: C.ink, maxWidth: 300 }}>{preview}<div style={{ fontStyle: "normal", fontSize: 14, marginTop: 10, color: C.inkSoft }}>- Jade</div><div style={{ fontFamily: "inherit", fontStyle: "normal", fontSize: 11, color: C.inkSoft, marginTop: 22 }}>Tap to close</div></div>
     </div>}
@@ -1576,6 +1563,22 @@ function SettingsPanel({ onClose, onExport, onImport, loveTexts, onSaveLoveNotes
       }} />
       <button onClick={() => fileInputRef.current.click()} style={{ width: "100%", padding: "10px 0", borderRadius: 10, border: `1px solid ${C.plum}`, background: "transparent", color: C.plum, fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>Import data</button>
     </div>
+    {showLove ? (
+    <div style={{ marginTop: 22, paddingTop: 16, borderTop: `1px solid ${C.rule}` }}>
+      <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, color: C.ink, marginBottom: 4 }}>Love notes</div>
+      <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10, lineHeight: 1.4 }}>John's loading screen shows one of these each time he opens the app (and stays up for 4 seconds). Anyone who opens Settings can read them.</div>
+      {loveTexts.length === 0 && <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>No notes yet.</div>}
+      {loveTexts.map((txt, i) => <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.rule}66` }}>
+        <div style={{ flex: 1, fontSize: 13, color: C.ink, fontStyle: "italic", lineHeight: 1.35 }}>{txt}</div>
+        <button onClick={() => onSaveLoveNotes(loveTexts.filter((_, j) => j !== i))} aria-label="Delete note" style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", fontSize: 14 }}>×</button>
+      </div>)}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addLove(); }} placeholder="Write a note…" style={{ flex: 1, minWidth: 0, padding: "9px 10px", borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, fontSize: 13, color: C.ink }} />
+        <button onClick={addLove} disabled={!draft.trim()} style={{ ...btnStyle(C.ink), opacity: draft.trim() ? 1 : 0.4 }}>Add</button>
+      </div>
+      {loveTexts.length > 0 && <button onClick={() => setPreview(loveTexts[Math.floor(Math.random() * loveTexts.length)])} style={{ border: "none", background: "none", color: C.inkSoft, textDecoration: "underline", fontSize: 11.5, cursor: "pointer", padding: 0, marginTop: 10 }}>Preview a note</button>}
+    </div>
+    ) : <div style={{ textAlign: "center", marginTop: 26 }}><button onClick={() => setShowLove(true)} aria-label="More" style={{ border: "none", background: "none", color: C.rule, cursor: "pointer", fontSize: 15, padding: 6 }}>♡</button></div>}
   </Overlay>;
 }
 
@@ -1825,6 +1828,11 @@ function HeroCard({
   const [leaving, setLeaving] = useState(null); // "plan" | "skip" while the card flies off
   const drag = useRef(null);
   const moved = useRef(false);
+  const dxRef = useRef(0);
+  const setDrag = v => {
+    dxRef.current = v;
+    setDx(v);
+  };
   const finish = dir => {
     setLeaving(dir);
     setTimeout(() => {
@@ -1834,25 +1842,46 @@ function HeroCard({
   const onDown = e => {
     if (leaving) return;
     if (e.target.closest && e.target.closest("button, input, select")) return;
+    // the gesture only counts as a swipe once it's clearly sideways; a vertical drag is left to the page to scroll
     drag.current = {
       x: e.clientX,
-      id: e.pointerId
+      y: e.clientY,
+      id: e.pointerId,
+      locked: false
     };
     moved.current = false;
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch (err) {}
+    dxRef.current = 0;
   };
   const onMove = e => {
-    if (!drag.current) return;
-    const d = e.clientX - drag.current.x;
-    if (Math.abs(d) > 6) moved.current = true;
-    setDx(d);
+    const g = drag.current;
+    if (!g) return;
+    const d = e.clientX - g.x;
+    const dy = e.clientY - g.y;
+    if (!g.locked) {
+      if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(d)) {
+        drag.current = null; // vertical: let it scroll
+        return;
+      }
+      if (Math.abs(d) < 10) return;
+      g.locked = true;
+      moved.current = true;
+      try {
+        e.currentTarget.setPointerCapture(g.id);
+      } catch (err) {}
+    }
+    setDrag(d);
   };
   const onUp = () => {
-    if (!drag.current) return;
+    const g = drag.current;
     drag.current = null;
-    if (dx > THRESHOLD) finish("plan");else if (dx < -THRESHOLD) finish("skip");else setDx(0);
+    if (!g || !g.locked) return;
+    const d = dxRef.current;
+    if (d > THRESHOLD) finish("plan");else if (d < -THRESHOLD) finish("skip");else setDrag(0);
+  };
+  const onCancel = () => {
+    const g = drag.current;
+    drag.current = null;
+    if (g && g.locked) setDrag(0);
   };
   const shift = leaving === "plan" ? 520 : leaving === "skip" ? -520 : dx;
   const strength = Math.min(Math.abs(shift) / THRESHOLD, 1);
@@ -1876,10 +1905,12 @@ function HeroCard({
     position: "relative",
     touchAction: "pan-y",
     userSelect: "none",
+    WebkitUserSelect: "none",
+    WebkitTouchCallout: "none",
     transform: `translateX(${shift}px) rotate(${shift / 24}deg)`,
     transition: drag.current ? "none" : "transform 0.19s ease-out",
     opacity: leaving ? 0 : 1
-  }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}><div style={{
+  }} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onCancel}><div style={{
       position: "absolute",
       top: 16,
       left: 18,
@@ -2240,6 +2271,7 @@ function ToDoList({
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 120px)",
     overflowY: "auto",
+    overflowX: "hidden",
     padding: "14px 16px 90px"
   }}><button onClick={() => setOverwhelmed(o => !o)} style={{
       width: "100%",
