@@ -129,7 +129,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v52";
+const APP_VERSION = "v53";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -274,6 +274,64 @@ function withOrphans(sections, tasks, field) {
 const TASKS_COLLECTION = "tasks";
 const CONFIG_DOC = db.collection("meta").doc("config");
 const PRESENCE_DOC = db.collection("meta").doc("presence");
+// love notes: Jade writes them in Settings; John's loading screen shows a random one (never the same twice in a row).
+// A copy is cached on the device so the note can show immediately, before sign-in finishes.
+const LOVE_DOC = db.collection("meta").doc("loveNotes");
+const LOVE_CACHE_KEY = "lifelist-love-notes";
+const LOVE_LAST_KEY = "lifelist-love-last";
+const LOVE_MIN_MS = 4000;
+const loadLoveCache = () => {
+  try {
+    const v = JSON.parse(localStorage.getItem(LOVE_CACHE_KEY));
+    return Array.isArray(v) ? v.filter(x => typeof x === "string" && x.trim()) : [];
+  } catch (e) {
+    return [];
+  }
+};
+const pickLoveNote = texts => {
+  if (!texts.length) return null;
+  let last = null;
+  try {
+    last = localStorage.getItem(LOVE_LAST_KEY);
+  } catch (e) {}
+  const pool = texts.length > 1 ? texts.filter(x => x !== last) : texts;
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  try {
+    localStorage.setItem(LOVE_LAST_KEY, pick);
+  } catch (e) {}
+  return pick;
+};
+function LoveLoading({
+  note,
+  text
+}) {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    style: {
+      ...centerMsg,
+      flexDirection: "column",
+      gap: 22,
+      padding: "0 32px",
+      textAlign: "center"
+    }
+  }, note &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      fontFamily: "Fraunces, serif",
+      fontStyle: "italic",
+      fontSize: 22,
+      lineHeight: 1.4,
+      color: C.ink,
+      maxWidth: 300
+    }
+  }, note), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: note ? 11 : 14,
+      color: C.inkSoft
+    }
+  }, text));
+}
 const TODAY_COLLECTION = "today";
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 function sanitizeList(arr, fallback) {
@@ -327,6 +385,27 @@ function App() {
   }, [highlightTaskId]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  // John's loading screen shows one of Jade's love notes and stays up for at least 4 seconds
+  const [loveTexts, setLoveTexts] = useState(loadLoveCache);
+  const [loveNote, setLoveNote] = useState(() => new URLSearchParams(window.location.search).get("user") === "john" ? pickLoveNote(loadLoveCache()) : null);
+  const [loveHoldDone, setLoveHoldDone] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setLoveHoldDone(true), LOVE_MIN_MS);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    if (authReady !== true) return;
+    return LOVE_DOC.onSnapshot(doc => {
+      const d = doc.data() || {};
+      const texts = (d.notes || []).map(n => n && n.text).filter(x => typeof x === "string" && x.trim());
+      setLoveTexts(texts);
+      try {
+        localStorage.setItem(LOVE_CACHE_KEY, JSON.stringify(texts));
+      } catch (e) {}
+      // first time on this device: no cached note yet, so pick one as soon as they arrive
+      setLoveNote(cur => cur || (new URLSearchParams(window.location.search).get("user") === "john" ? pickLoveNote(texts) : null));
+    }, err => console.error("love notes sync error:", err));
+  }, [authReady]);
   const [convertNote, setConvertNote] = useState(null); // plan note being turned into a real task
   const [pickerFor, setPickerFor] = useState(null);
   const [activitySummary, setActivitySummary] = useState(null);
@@ -903,9 +982,10 @@ function App() {
     return visibleTasks.filter(t => t.title.toLowerCase().includes(q)).slice(0, 8);
   }, [searchQuery, visibleTasks]);
   const needsDetailsTasks = useMemo(() => (tasks || []).filter(t => t.needsDetails && t.createdBy === me), [tasks, me]);
-  if (authReady === null) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
-    style: centerMsg
-  }, "Loading…"));
+  if (authReady === null) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(LoveLoading, {
+    note: loveNote,
+    text: "Loading…"
+  }));
   if (authReady === false) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(PinGate, null));
   if (!me) {
     return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
@@ -946,9 +1026,10 @@ function App() {
       style: btnStyle(PERSON_COLOR[key])
     }, label)))));
   }
-  if (tasks === null) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement("div", {
-    style: centerMsg
-  }, "Loading the list…"));
+  if (tasks === null || loveNote && !loveHoldDone) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(LoveLoading, {
+    note: loveNote,
+    text: "Loading the list…"
+  }));
   return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(Header, {
     me: me,
     realMe: realMe,
@@ -1155,6 +1236,13 @@ function App() {
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(SettingsPanel, {
+    loveTexts: loveTexts,
+    onSaveLoveNotes: texts => LOVE_DOC.set({
+      notes: texts.map(text => ({
+        id: uid(),
+        text
+      }))
+    }).catch(console.error),
     onClose: () => setShowSettings(false),
     onExport: exportData,
     onImport: importData
@@ -1996,13 +2084,149 @@ function ActivitySummary({
 function SettingsPanel({
   onClose,
   onExport,
-  onImport
+  onImport,
+  loveTexts,
+  onSaveLoveNotes
 }) {
   const fileInputRef = useRef(null);
+  const [draft, setDraft] = useState("");
+  const [preview, setPreview] = useState(null);
+  const addLove = () => {
+    if (!draft.trim()) return;
+    onSaveLoveNotes([...loveTexts, draft.trim()]);
+    setDraft("");
+  };
   return /*#__PURE__*/ /*#__PURE__*/React.createElement(Overlay, {
     title: "Settings",
     onClose: onClose
   }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 22,
+      paddingBottom: 18,
+      borderBottom: `1px solid ${C.rule}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Fraunces, serif",
+      fontSize: 16,
+      fontWeight: 600,
+      color: C.ink,
+      marginBottom: 4
+    }
+  }, "Love notes"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      marginBottom: 10,
+      lineHeight: 1.4
+    }
+  }, "John's loading screen shows one of these each time he opens the app (and stays up for 4 seconds). Anyone who opens Settings can read them."), loveTexts.length === 0 && /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 12,
+      color: C.inkSoft,
+      marginBottom: 8
+    }
+  }, "No notes yet."), loveTexts.map((txt, i) => /*#__PURE__*/React.createElement("div", {
+    key: i,
+    style: {
+      display: "flex",
+      alignItems: "flex-start",
+      gap: 8,
+      padding: "6px 0",
+      borderBottom: `1px solid ${C.rule}66`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      fontSize: 13,
+      color: C.ink,
+      fontStyle: "italic",
+      lineHeight: 1.35
+    }
+  }, txt), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onSaveLoveNotes(loveTexts.filter((_, j) => j !== i)),
+    "aria-label": "Delete note",
+    style: {
+      border: "none",
+      background: "none",
+      color: C.inkSoft,
+      cursor: "pointer",
+      fontSize: 14
+    }
+  }, "×"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8,
+      marginTop: 10
+    }
+  }, /*#__PURE__*/React.createElement("input", {
+    value: draft,
+    onChange: e => setDraft(e.target.value),
+    onKeyDown: e => {
+      if (e.key === "Enter") addLove();
+    },
+    placeholder: "Write a note…",
+    style: {
+      flex: 1,
+      minWidth: 0,
+      padding: "9px 10px",
+      borderRadius: 8,
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      fontSize: 13,
+      color: C.ink
+    }
+  }), /*#__PURE__*/React.createElement("button", {
+    onClick: addLove,
+    disabled: !draft.trim(),
+    style: {
+      ...btnStyle(C.ink),
+      opacity: draft.trim() ? 1 : 0.4
+    }
+  }, "Add")), loveTexts.length > 0 && /*#__PURE__*/React.createElement("button", {
+    onClick: () => setPreview(loveTexts[Math.floor(Math.random() * loveTexts.length)]),
+    style: {
+      border: "none",
+      background: "none",
+      color: C.inkSoft,
+      textDecoration: "underline",
+      fontSize: 11.5,
+      cursor: "pointer",
+      padding: 0,
+      marginTop: 10
+    }
+  }, "Preview a note")), preview && /*#__PURE__*/React.createElement("div", {
+    onClick: () => setPreview(null),
+    style: {
+      position: "fixed",
+      inset: 0,
+      zIndex: 1000,
+      background: C.parchment,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 32,
+      textAlign: "center",
+      cursor: "pointer"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Fraunces, serif",
+      fontStyle: "italic",
+      fontSize: 22,
+      lineHeight: 1.4,
+      color: C.ink,
+      maxWidth: 300
+    }
+  }, preview, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "inherit",
+      fontStyle: "normal",
+      fontSize: 11,
+      color: C.inkSoft,
+      marginTop: 22
+    }
+  }, "Tap to close"))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 20
     }
@@ -2160,12 +2384,7 @@ function ActionAsRow({
       marginTop: 5,
       alignItems: "center"
     }
-  }, imp &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement(Tag, {
-    color: imp.color
-  }, imp.label), /*#__PURE__*/React.createElement("span", {
+  }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontSize: 10.5,
       fontFamily: "IBM Plex Mono, monospace",
@@ -2496,23 +2715,7 @@ function HeroCard({
       textTransform: "uppercase",
       letterSpacing: 0.5
     }
-  }, "from ", task.title), imp &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement("div", {
-    style: {
-      display: "inline-block",
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: 0.5,
-      textTransform: "uppercase",
-      background: imp.color,
-      color: C.white,
-      padding: "3px 11px",
-      borderRadius: 20,
-      marginBottom: 14
-    }
-  }, imp.label, " importance"), /*#__PURE__*/React.createElement("div", {
+  }, "from ", task.title), /*#__PURE__*/React.createElement("div", {
     onClick: () => {
       if (!moved.current) onEdit(task);
     },
@@ -3193,17 +3396,7 @@ function TodayItemRow({
       textDecoration: completed ? "line-through" : "none",
       cursor: task || isNote ? "pointer" : "default"
     }
-  }, title, task && task.needsDetails &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement("span", {
-    style: {
-      marginLeft: 6,
-      verticalAlign: "middle"
-    }
-  }, /*#__PURE__*/React.createElement(Tag, {
-    color: C.inkSoft
-  }, "needs details"))), /*#__PURE__*/React.createElement("button", {
+  }, title), /*#__PURE__*/React.createElement("button", {
     onClick: onMove,
     style: {
       border: "none",
@@ -3729,7 +3922,8 @@ function QueueView(props) {
     onClick: () => setSection(null),
     "aria-label": "Back to all tasks",
     style: {
-      padding: "6px 12px",
+      width: 38,
+      padding: "6px 0",
       borderRadius: 8,
       border: `1px solid ${C.rule}`,
       background: C.white,
@@ -3739,7 +3933,7 @@ function QueueView(props) {
       cursor: "pointer",
       flexShrink: 0
     }
-  }, "← All tasks"), /*#__PURE__*/React.createElement("div", {
+  }, "←"), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1,
       textAlign: "center",
@@ -3751,7 +3945,8 @@ function QueueView(props) {
     onClick: () => setShowNav(true),
     "aria-label": "Jump to a category",
     style: {
-      padding: "6px 12px",
+      width: 38,
+      padding: "6px 0",
       borderRadius: 8,
       border: `1px solid ${C.rule}`,
       background: C.white,
@@ -4352,13 +4547,7 @@ function TaskRow({
       alignItems: "center",
       gap: 6
     }
-  }, !flat &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement(PersonBadge, {
-    person: badgePerson,
-    size: compact ? 16 : 18
-  }), /*#__PURE__*/React.createElement("div", {
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontSize: compact ? 13 : 14,
       color: C.ink,
@@ -4386,12 +4575,7 @@ function TaskRow({
   /*#__PURE__*/
   React.createElement(Tag, {
     color: C.inkSoft
-  }, "Not yet — ", fmtDate(task.dueDate)), imp &&
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement(Tag, {
-    color: imp.color
-  }, imp.label), task.dueDate && !notYetAvailable &&
+  }, "Not yet — ", fmtDate(task.dueDate)), task.dueDate && !notYetAvailable &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("span", {
@@ -4422,13 +4606,17 @@ function TaskRow({
       alignItems: flat ? "center" : "stretch",
       flexShrink: 0
     }
-  }, flat && badgePerson &&
+  }, badgePerson &&
   /*#__PURE__*/
   /*#__PURE__*/
-  React.createElement(PersonBadge, {
+  React.createElement("div", {
+    style: {
+      alignSelf: flat ? "center" : "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement(PersonBadge, {
     person: badgePerson,
     size: 18
-  }), onAddToToday &&
+  })), onAddToToday &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {

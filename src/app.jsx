@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v52";
+const APP_VERSION = "v53";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -223,6 +223,55 @@ function withOrphans(sections, tasks, field) {
 const TASKS_COLLECTION = "tasks";
 const CONFIG_DOC = db.collection("meta").doc("config");
 const PRESENCE_DOC = db.collection("meta").doc("presence");
+// love notes: Jade writes them in Settings; John's loading screen shows a random one (never the same twice in a row).
+// A copy is cached on the device so the note can show immediately, before sign-in finishes.
+const LOVE_DOC = db.collection("meta").doc("loveNotes");
+const LOVE_CACHE_KEY = "lifelist-love-notes";
+const LOVE_LAST_KEY = "lifelist-love-last";
+const LOVE_MIN_MS = 4000;
+const loadLoveCache = () => {
+  try {
+    const v = JSON.parse(localStorage.getItem(LOVE_CACHE_KEY));
+    return Array.isArray(v) ? v.filter(x => typeof x === "string" && x.trim()) : [];
+  } catch (e) {
+    return [];
+  }
+};
+const pickLoveNote = texts => {
+  if (!texts.length) return null;
+  let last = null;
+  try {
+    last = localStorage.getItem(LOVE_LAST_KEY);
+  } catch (e) {}
+  const pool = texts.length > 1 ? texts.filter(x => x !== last) : texts;
+  const pick = pool[Math.floor(Math.random() * pool.length)];
+  try {
+    localStorage.setItem(LOVE_LAST_KEY, pick);
+  } catch (e) {}
+  return pick;
+};
+function LoveLoading({
+  note,
+  text
+}) {
+  return /*#__PURE__*/<div style={{
+    ...centerMsg,
+    flexDirection: "column",
+    gap: 22,
+    padding: "0 32px",
+    textAlign: "center"
+  }}>{note && /*#__PURE__*/<div style={{
+      fontFamily: "Fraunces, serif",
+      fontStyle: "italic",
+      fontSize: 22,
+      lineHeight: 1.4,
+      color: C.ink,
+      maxWidth: 300
+    }}>{note}</div>}<div style={{
+      fontSize: note ? 11 : 14,
+      color: C.inkSoft
+    }}>{text}</div></div>;
+}
 const TODAY_COLLECTION = "today";
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 function sanitizeList(arr, fallback) {
@@ -276,6 +325,27 @@ function App() {
   }, [highlightTaskId]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  // John's loading screen shows one of Jade's love notes and stays up for at least 4 seconds
+  const [loveTexts, setLoveTexts] = useState(loadLoveCache);
+  const [loveNote, setLoveNote] = useState(() => new URLSearchParams(window.location.search).get("user") === "john" ? pickLoveNote(loadLoveCache()) : null);
+  const [loveHoldDone, setLoveHoldDone] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setLoveHoldDone(true), LOVE_MIN_MS);
+    return () => clearTimeout(t);
+  }, []);
+  useEffect(() => {
+    if (authReady !== true) return;
+    return LOVE_DOC.onSnapshot(doc => {
+      const d = doc.data() || {};
+      const texts = (d.notes || []).map(n => n && n.text).filter(x => typeof x === "string" && x.trim());
+      setLoveTexts(texts);
+      try {
+        localStorage.setItem(LOVE_CACHE_KEY, JSON.stringify(texts));
+      } catch (e) {}
+      // first time on this device: no cached note yet, so pick one as soon as they arrive
+      setLoveNote(cur => cur || (new URLSearchParams(window.location.search).get("user") === "john" ? pickLoveNote(texts) : null));
+    }, err => console.error("love notes sync error:", err));
+  }, [authReady]);
   const [convertNote, setConvertNote] = useState(null); // plan note being turned into a real task
   const [pickerFor, setPickerFor] = useState(null);
   const [activitySummary, setActivitySummary] = useState(null);
@@ -805,7 +875,7 @@ function App() {
     return visibleTasks.filter(t => t.title.toLowerCase().includes(q)).slice(0, 8);
   }, [searchQuery, visibleTasks]);
   const needsDetailsTasks = useMemo(() => (tasks || []).filter(t => t.needsDetails && t.createdBy === me), [tasks, me]);
-  if (authReady === null) return /*#__PURE__*/<Shell><div style={centerMsg}>Loading…</div></Shell>;
+  if (authReady === null) return /*#__PURE__*/<Shell><LoveLoading note={loveNote} text="Loading…" /></Shell>;
   if (authReady === false) return /*#__PURE__*/<Shell><PinGate /></Shell>;
   if (!me) {
     return /*#__PURE__*/<Shell><div style={{
@@ -831,7 +901,7 @@ function App() {
           gap: 12
         }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setRealMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
   }
-  if (tasks === null) return /*#__PURE__*/<Shell><div style={centerMsg}>Loading the list…</div></Shell>;
+  if (tasks === null || loveNote && !loveHoldDone) return /*#__PURE__*/<Shell><LoveLoading note={loveNote} text="Loading the list…" /></Shell>;
   return /*#__PURE__*/<Shell><Header me={me} realMe={realMe} onViewAs={k => setViewAs(k === realMe ? null : k)} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
       setSearchQuery("");
       setView("queue");
@@ -903,7 +973,12 @@ function App() {
     }} />}{pickerFor && /*#__PURE__*/<BucketPicker tasks={tasks.filter(t => t.listType === "project" && !t.completed && (pickerFor.scope === "shared" ? t.scope === "shared" && (t.assignee === pickerFor.person || !t.assignee) : t.scope === "personal" && t.owner === pickerFor.person) && (!t.priorityBucket || t.priorityBucket === pickerFor.bucket))} onPick={taskId => {
       setBucket(taskId, pickerFor.person, pickerFor.bucket, pickerFor.scope);
       setPickerFor(null);
-    }} onClose={() => setPickerFor(null)} />}{activitySummary && /*#__PURE__*/<ActivitySummary summary={activitySummary} onClose={() => setActivitySummary(null)} />}{showSettings && /*#__PURE__*/<SettingsPanel onClose={() => setShowSettings(false)} onExport={exportData} onImport={importData} />}</Shell>;
+    }} onClose={() => setPickerFor(null)} />}{activitySummary && /*#__PURE__*/<ActivitySummary summary={activitySummary} onClose={() => setActivitySummary(null)} />}{showSettings && /*#__PURE__*/<SettingsPanel loveTexts={loveTexts} onSaveLoveNotes={texts => LOVE_DOC.set({
+      notes: texts.map(text => ({
+        id: uid(),
+        text
+      }))
+    }).catch(console.error)} onClose={() => setShowSettings(false)} onExport={exportData} onImport={importData} />}</Shell>;
 }
 const centerMsg = {
   display: "flex",
@@ -1455,9 +1530,33 @@ function ActivitySummary({ summary, onClose }) {
   </Overlay>;
 }
 
-function SettingsPanel({ onClose, onExport, onImport }) {
+function SettingsPanel({ onClose, onExport, onImport, loveTexts, onSaveLoveNotes }) {
   const fileInputRef = useRef(null);
+  const [draft, setDraft] = useState("");
+  const [preview, setPreview] = useState(null);
+  const addLove = () => {
+    if (!draft.trim()) return;
+    onSaveLoveNotes([...loveTexts, draft.trim()]);
+    setDraft("");
+  };
   return /*#__PURE__*/<Overlay title="Settings" onClose={onClose}>
+    <div style={{ marginBottom: 22, paddingBottom: 18, borderBottom: `1px solid ${C.rule}` }}>
+      <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, color: C.ink, marginBottom: 4 }}>Love notes</div>
+      <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10, lineHeight: 1.4 }}>John's loading screen shows one of these each time he opens the app (and stays up for 4 seconds). Anyone who opens Settings can read them.</div>
+      {loveTexts.length === 0 && <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>No notes yet.</div>}
+      {loveTexts.map((txt, i) => <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.rule}66` }}>
+        <div style={{ flex: 1, fontSize: 13, color: C.ink, fontStyle: "italic", lineHeight: 1.35 }}>{txt}</div>
+        <button onClick={() => onSaveLoveNotes(loveTexts.filter((_, j) => j !== i))} aria-label="Delete note" style={{ border: "none", background: "none", color: C.inkSoft, cursor: "pointer", fontSize: 14 }}>×</button>
+      </div>)}
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <input value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => { if (e.key === "Enter") addLove(); }} placeholder="Write a note…" style={{ flex: 1, minWidth: 0, padding: "9px 10px", borderRadius: 8, border: `1px solid ${C.rule}`, background: C.white, fontSize: 13, color: C.ink }} />
+        <button onClick={addLove} disabled={!draft.trim()} style={{ ...btnStyle(C.ink), opacity: draft.trim() ? 1 : 0.4 }}>Add</button>
+      </div>
+      {loveTexts.length > 0 && <button onClick={() => setPreview(loveTexts[Math.floor(Math.random() * loveTexts.length)])} style={{ border: "none", background: "none", color: C.inkSoft, textDecoration: "underline", fontSize: 11.5, cursor: "pointer", padding: 0, marginTop: 10 }}>Preview a note</button>}
+    </div>
+    {preview && <div onClick={() => setPreview(null)} style={{ position: "fixed", inset: 0, zIndex: 1000, background: C.parchment, display: "flex", alignItems: "center", justifyContent: "center", padding: 32, textAlign: "center", cursor: "pointer" }}>
+      <div style={{ fontFamily: "Fraunces, serif", fontStyle: "italic", fontSize: 22, lineHeight: 1.4, color: C.ink, maxWidth: 300 }}>{preview}<div style={{ fontFamily: "inherit", fontStyle: "normal", fontSize: 11, color: C.inkSoft, marginTop: 22 }}>Tap to close</div></div>
+    </div>}
     <div style={{ marginBottom: 20 }}>
       <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 8, lineHeight: 1.4 }}>Download everything as a JSON file — a safety copy you can keep, separate from Firestore.</div>
       <button onClick={onExport} style={{ ...btnStyle(C.ink), width: "100%" }}>Export data</button>
@@ -1562,7 +1661,7 @@ function ActionAsRow({
             gap: 6,
             marginTop: 5,
             alignItems: "center"
-          }}>{imp && /*#__PURE__*/<Tag color={imp.color}>{imp.label}</Tag>}<span style={{
+          }}><span style={{
               fontSize: 10.5,
               fontFamily: "IBM Plex Mono, monospace",
               color: overdue ? C.plum : C.inkSoft,
@@ -1815,18 +1914,7 @@ function HeroCard({
       marginBottom: 8,
       textTransform: "uppercase",
       letterSpacing: 0.5
-    }}>from {task.title}</div>}{imp && /*#__PURE__*/<div style={{
-      display: "inline-block",
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: 0.5,
-      textTransform: "uppercase",
-      background: imp.color,
-      color: C.white,
-      padding: "3px 11px",
-      borderRadius: 20,
-      marginBottom: 14
-    }}>{imp.label} importance</div>}<div onClick={() => {
+    }}>from {task.title}</div>}<div onClick={() => {
       if (!moved.current) onEdit(task);
     }} style={{
       fontFamily: "Fraunces, serif",
@@ -2269,10 +2357,7 @@ function TodayItemRow({
       fontStyle: isNote ? "italic" : "normal",
       textDecoration: completed ? "line-through" : "none",
       cursor: task || isNote ? "pointer" : "default"
-    }}>{title}{task && task.needsDetails && /*#__PURE__*/<span style={{
-        marginLeft: 6,
-        verticalAlign: "middle"
-      }}><Tag color={C.inkSoft}>needs details</Tag></span>}</span><button onClick={onMove} style={{
+    }}>{title}</span><button onClick={onMove} style={{
       border: "none",
       background: "none",
       color: C.inkSoft,
@@ -2598,7 +2683,8 @@ function QueueView(props) {
         gap: 8,
         padding: "10px 16px 0"
       }}><button onClick={() => setSection(null)} aria-label="Back to all tasks" style={{
-          padding: "6px 12px",
+          width: 38,
+          padding: "6px 0",
           borderRadius: 8,
           border: `1px solid ${C.rule}`,
           background: C.white,
@@ -2607,14 +2693,15 @@ function QueueView(props) {
           fontWeight: 600,
           cursor: "pointer",
           flexShrink: 0
-        }}>← All tasks</button><div style={{
+        }}>←</button><div style={{
           flex: 1,
           textAlign: "center",
           fontFamily: "Fraunces, serif",
           fontSize: 16,
           color: C.ink
         }}>{sectionTitle}</div><button onClick={() => setShowNav(true)} aria-label="Jump to a category" style={{
-          padding: "6px 12px",
+          width: 38,
+          padding: "6px 0",
           borderRadius: 8,
           border: `1px solid ${C.rule}`,
           background: C.white,
@@ -2988,7 +3075,7 @@ function TaskRow({
           display: "flex",
           alignItems: "center",
           gap: 6
-        }}>{!flat && /*#__PURE__*/<PersonBadge person={badgePerson} size={compact ? 16 : 18} />}<div style={{
+        }}><div style={{
             fontSize: compact ? 13 : 14,
             color: C.ink,
             fontWeight: 600,
@@ -2999,7 +3086,7 @@ function TaskRow({
           gap: 6,
           marginTop: 5,
           alignItems: "center"
-        }}>{notYetAvailable && /*#__PURE__*/<Tag color={C.inkSoft}>Not yet — {fmtDate(task.dueDate)}</Tag>}{imp && /*#__PURE__*/<Tag color={imp.color}>{imp.label}</Tag>}{task.dueDate && !notYetAvailable && /*#__PURE__*/<span style={{
+        }}>{notYetAvailable && /*#__PURE__*/<Tag color={C.inkSoft}>Not yet — {fmtDate(task.dueDate)}</Tag>}{task.dueDate && !notYetAvailable && /*#__PURE__*/<span style={{
             fontSize: 10.5,
             fontFamily: "IBM Plex Mono, monospace",
             color: overdue ? C.plum : C.inkSoft,
@@ -3018,7 +3105,9 @@ function TaskRow({
         gap: flat ? 8 : 4,
         alignItems: flat ? "center" : "stretch",
         flexShrink: 0
-      }}>{flat && badgePerson && /*#__PURE__*/<PersonBadge person={badgePerson} size={18} />}{onAddToToday && /*#__PURE__*/<button onClick={e => {
+      }}>{badgePerson && /*#__PURE__*/<div style={{
+          alignSelf: flat ? "center" : "flex-end"
+        }}><PersonBadge person={badgePerson} size={18} /></div>}{onAddToToday && /*#__PURE__*/<button onClick={e => {
           e.stopPropagation();
           onAddToToday(task.id, null);
         }} style={{
