@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v55";
+const APP_VERSION = "v56";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -228,7 +228,7 @@ const PRESENCE_DOC = db.collection("meta").doc("presence");
 const LOVE_DOC = db.collection("meta").doc("loveNotes");
 const LOVE_CACHE_KEY = "lifelist-love-notes";
 const LOVE_LAST_KEY = "lifelist-love-last";
-const LOVE_MIN_MS = 4000;
+const LOVE_MIN_MS = 5000;
 const loadLoveCache = () => {
   try {
     const v = JSON.parse(localStorage.getItem(LOVE_CACHE_KEY));
@@ -252,9 +252,11 @@ const pickLoveNote = texts => {
 };
 function LoveLoading({
   note,
-  text
+  text,
+  onSkip
 }) {
-  return /*#__PURE__*/<div style={{
+  return /*#__PURE__*/<div onClick={onSkip} style={{
+    cursor: onSkip ? "pointer" : "default",
     ...centerMsg,
     flexDirection: "column",
     gap: 22,
@@ -275,7 +277,14 @@ function LoveLoading({
       }}>- Jade</div></div>}<div style={{
       fontSize: note ? 11 : 14,
       color: C.inkSoft
-    }}>{text}</div></div>;
+    }}>{text}</div>{onSkip && /*#__PURE__*/<div style={{
+      fontSize: 11,
+      color: C.inkSoft,
+      opacity: 0.7,
+      border: `1px solid ${C.rule}`,
+      borderRadius: 20,
+      padding: "4px 14px"
+    }}>Tap to skip</div>}</div>;
 }
 const TODAY_COLLECTION = "today";
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
@@ -330,7 +339,7 @@ function App() {
   }, [highlightTaskId]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
-  // John's loading screen shows one of Jade's love notes and stays up for at least 4 seconds
+  // John's loading screen shows one of Jade's love notes and stays up for at least 5 seconds (tap to skip once loaded)
   const [loveTexts, setLoveTexts] = useState(loadLoveCache);
   const [loveNote, setLoveNote] = useState(() => new URLSearchParams(window.location.search).get("user") === "john" ? pickLoveNote(loadLoveCache()) : null);
   const [loveHoldDone, setLoveHoldDone] = useState(false);
@@ -906,7 +915,7 @@ function App() {
           gap: 12
         }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setRealMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
   }
-  if (tasks === null || loveNote && !loveHoldDone) return /*#__PURE__*/<Shell><LoveLoading note={loveNote} text="Loading the list…" /></Shell>;
+  if (tasks === null || loveNote && !loveHoldDone) return /*#__PURE__*/<Shell><LoveLoading note={loveNote} text={tasks === null ? "Loading the list…" : "Ready"} onSkip={tasks !== null ? () => setLoveHoldDone(true) : undefined} /></Shell>;
   return /*#__PURE__*/<Shell><Header me={me} realMe={realMe} onViewAs={k => setViewAs(k === realMe ? null : k)} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
       setSearchQuery("");
       setView("queue");
@@ -1566,7 +1575,7 @@ function SettingsPanel({ onClose, onExport, onImport, loveTexts, onSaveLoveNotes
     {showLove ? (
     <div style={{ marginTop: 22, paddingTop: 16, borderTop: `1px solid ${C.rule}` }}>
       <div style={{ fontFamily: "Fraunces, serif", fontSize: 16, fontWeight: 600, color: C.ink, marginBottom: 4 }}>Love notes</div>
-      <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10, lineHeight: 1.4 }}>John's loading screen shows one of these each time he opens the app (and stays up for 4 seconds). Anyone who opens Settings can read them.</div>
+      <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 10, lineHeight: 1.4 }}>John's loading screen shows one of these each time he opens the app (and stays up for 5 seconds unless he taps to skip once the app has loaded). Anyone who opens Settings can read them.</div>
       {loveTexts.length === 0 && <div style={{ fontSize: 12, color: C.inkSoft, marginBottom: 8 }}>No notes yet.</div>}
       {loveTexts.map((txt, i) => <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 0", borderBottom: `1px solid ${C.rule}66` }}>
         <div style={{ flex: 1, fontSize: 13, color: C.ink, fontStyle: "italic", lineHeight: 1.35 }}>{txt}</div>
