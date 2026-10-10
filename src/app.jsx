@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v57";
+const APP_VERSION = "v58";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1554,7 +1554,17 @@ function SettingsPanel({ onClose, onExport, onImport, loveTexts, onSaveLoveNotes
     onSaveLoveNotes([...loveTexts, draft.trim()]);
     setDraft("");
   };
+  // loads the page under a fresh URL so the browser can't hand back its old saved copy (keeps ?user=…)
+  const reloadLatest = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("refresh", String(Date.now()));
+    window.location.replace(url.toString());
+  };
   return /*#__PURE__*/<Overlay title="Settings" onClose={onClose}>
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 11, color: C.inkSoft, marginBottom: 8, lineHeight: 1.4 }}>You're on version {APP_VERSION}. If something you expect is missing, reload to pick up the latest version. Your tasks aren't affected.</div>
+      <button onClick={reloadLatest} style={{ ...btnStyle(C.sageDeep), width: "100%" }}>Reload latest version</button>
+    </div>
     {preview && <div onClick={() => setPreview(null)} style={{ position: "fixed", inset: 0, zIndex: 1000, background: C.parchment, display: "flex", alignItems: "center", justifyContent: "center", padding: 32, textAlign: "center", cursor: "pointer" }}>
       <div style={{ fontFamily: "Fraunces, serif", fontStyle: "italic", fontSize: 22, lineHeight: 1.4, color: C.ink, maxWidth: 300 }}>{preview}<div style={{ fontStyle: "normal", fontSize: 14, marginTop: 10, color: C.inkSoft }}>- Jade</div><div style={{ fontFamily: "inherit", fontStyle: "normal", fontSize: 11, color: C.inkSoft, marginTop: 22 }}>Tap to close</div></div>
     </div>}
