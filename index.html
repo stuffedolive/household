@@ -129,7 +129,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v58";
+const APP_VERSION = "v59";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -3151,13 +3151,41 @@ function ToDoList({
   const displayProjects = overwhelmed && topPick && topPick.kind === "project" ? projectItems.filter(item => !sameItem(item, topPick.item)) : projectItems;
   const displayOtherProjects = overwhelmed && topPick && topPick.kind === "otherProject" ? otherProjectItems.filter(item => !sameItem(item, topPick.item)) : otherProjectItems;
   const inPlan = (taskId, subtaskId) => todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null));
-  const tasksById = useMemo(() => {
+  const baseById = useMemo(() => {
     const m = {};
     tasks.forEach(t => {
       m[t.id] = t;
     });
     return m;
   }, [tasks]);
+  // A task on the plan can be missing from the loaded list (e.g. someone just completed it and the "recently
+  // completed" query hasn't caught up, or it was completed by an older copy of the app). Rather than showing
+  // "(removed)", look those few tasks up directly by id.
+  const missingKey = todayItems.filter(it => it.type === "task" && !baseById[it.id]).map(it => it.id).filter((id, i, a) => a.indexOf(id) === i).sort().join(",");
+  const [extraById, setExtraById] = useState({});
+  useEffect(() => {
+    if (!missingKey) {
+      setExtraById({});
+      return;
+    }
+    const unsubs = missingKey.split(",").map(id => db.collection(TASKS_COLLECTION).doc(id).onSnapshot(doc => {
+      setExtraById(prev => {
+        const next = {
+          ...prev
+        };
+        if (doc.exists) next[id] = {
+          id,
+          ...doc.data()
+        };else delete next[id];
+        return next;
+      });
+    }, () => {}));
+    return () => unsubs.forEach(u => u());
+  }, [missingKey]);
+  const tasksById = useMemo(() => ({
+    ...extraById,
+    ...baseById
+  }), [extraById, baseById]);
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       height: "calc(100% - 120px)",
@@ -3499,7 +3527,7 @@ function TodayItemRow({
     // this is what makes recurring chores (which immediately reset completed:false when done) still show as checked here.
     title = subtask ? subtask.title : task.title;
     // ticked here if this person ticked it, or — if they haven't touched it — if anyone completed the task today
-    const doneByAnyone = subtask ? !!subtask.completed : !!(task.lastCompletedAt && new Date(task.lastCompletedAt).toLocaleDateString("en-CA", {
+    const doneByAnyone = subtask ? !!subtask.completed : !!task.completed || !!(task.lastCompletedAt && new Date(task.lastCompletedAt).toLocaleDateString("en-CA", {
       timeZone: "Australia/Adelaide"
     }) === adelaideToday());
     completed = typeof item.completedToday === "boolean" ? item.completedToday : doneByAnyone;
