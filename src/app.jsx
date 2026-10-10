@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v56";
+const APP_VERSION = "v57";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -650,11 +650,11 @@ function App() {
   // a local "done today" checkmark, independent of the underlying task's real completion state — this is what
   // makes the Today's-plan checkbox behave sensibly even for recurring chores, which reset completed:false
   // immediately as part of advancing their schedule and would otherwise never visibly show as checked here.
-  const toggleTodayTaskDone = item => {
+  const toggleTodayTaskDone = (item, next) => {
     const key = todayKey(item);
     saveToday("Mark done", todayItems.map(it => todayKey(it) === key ? {
       ...it,
-      completedToday: !it.completedToday
+      completedToday: typeof next === "boolean" ? next : !it.completedToday
     } : it));
   };
   const resetToday = () => saveToday("Reset today", []);
@@ -2403,10 +2403,14 @@ function TodayItemRow({
     // "completedToday" is a local, always-visible checkmark separate from the task's real completion state —
     // this is what makes recurring chores (which immediately reset completed:false when done) still show as checked here.
     title = subtask ? subtask.title : task.title;
-    completed = !!item.completedToday;
+    // ticked here if this person ticked it, or — if they haven't touched it — if anyone completed the task today
+    const doneByAnyone = subtask ? !!subtask.completed : !!(task.lastCompletedAt && new Date(task.lastCompletedAt).toLocaleDateString("en-CA", {
+      timeZone: "Australia/Adelaide"
+    }) === adelaideToday());
+    completed = typeof item.completedToday === "boolean" ? item.completedToday : doneByAnyone;
     onCheck = () => {
       if (subtask) onToggleAction(task.id, subtask.id);else onToggle(task);
-      onToggleTodayTaskDone(item);
+      onToggleTodayTaskDone(item, !completed);
     };
   } else {
     title = "(removed)";
@@ -3775,7 +3779,19 @@ function TaskForm({
             ...inputStyle,
             width: 160,
             flexShrink: 0
-          }} />{t.dueDate && /*#__PURE__*/<label htmlFor="starts-on-due" style={{
+          }} />{t.dueDate && /*#__PURE__*/<button type="button" onClick={() => setT(prev => ({
+            ...prev,
+            dueDate: null,
+            startsOnDue: false
+          }))} style={{
+            border: "none",
+            background: "none",
+            color: C.inkSoft,
+            textDecoration: "underline",
+            fontSize: 12,
+            cursor: "pointer",
+            padding: 0
+          }}>No due date</button>}{t.dueDate && /*#__PURE__*/<label htmlFor="starts-on-due" style={{
             display: "flex",
             alignItems: "center",
             gap: 7,
@@ -3816,7 +3832,15 @@ function TaskForm({
             padding: "3px 5px",
             color: C.inkSoft,
             width: 112
-          }} /><button onClick={() => removeFormAction(a.id)} style={{
+          }} />{a.dueDate && /*#__PURE__*/<button type="button" onClick={() => setFormActionDate(a.id, null)} aria-label="Clear subtask date" style={{
+            border: "none",
+            background: "none",
+            color: C.inkSoft,
+            textDecoration: "underline",
+            fontSize: 10,
+            cursor: "pointer",
+            padding: 0
+          }}>clear</button>}<button onClick={() => removeFormAction(a.id)} style={{
             border: "none",
             background: "none",
             color: C.inkSoft,
