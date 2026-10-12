@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v62";
+const APP_VERSION = "v63";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1664,11 +1664,11 @@ function ActionAsRow({
     background: C.card,
     border: `1px solid ${C.rule}`,
     borderRadius: 10,
-    padding: "11px 12px",
-    marginBottom: 8
+    padding: "7px 10px",
+    marginBottom: 5
   }}><div style={{
       display: "flex",
-      alignItems: "flex-start",
+      alignItems: "center",
       gap: 10
     }}><button onClick={() => onToggleAction(task.id, action.id)} style={{
         width: 20,
@@ -1699,7 +1699,7 @@ function ActionAsRow({
             display: "flex",
             flexWrap: "wrap",
             gap: 6,
-            marginTop: 5,
+            marginTop: 2,
             alignItems: "center"
           }}><span style={{
               fontSize: 10.5,
@@ -1710,17 +1710,17 @@ function ActionAsRow({
           marginTop: 6
         }}><SnoozeControl onSnooze={onSnooze} /></div>}</div><div style={{
         display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        alignItems: "stretch",
+        flexDirection: "row",
+        gap: 5,
+        alignItems: "center",
         flexShrink: 0
       }}>{onAddToToday && /*#__PURE__*/<button onClick={() => onAddToToday(task.id, action.id)} style={{
           border: `1px solid ${C.rule}`,
           background: C.white,
           color: C.sageDeep,
           cursor: "pointer",
-          padding: "2px 8px",
-          fontSize: 11,
+          padding: "2px 6px",
+          fontSize: 10.5,
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
@@ -1729,8 +1729,8 @@ function ActionAsRow({
           background: onListFor(task, me) ? "#E3EBDD" : C.white,
           color: C.sageDeep,
           cursor: "pointer",
-          padding: "2px 8px",
-          fontSize: 11,
+          padding: "2px 6px",
+          fontSize: 10.5,
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
@@ -1739,8 +1739,8 @@ function ActionAsRow({
           background: C.white,
           color: C.sageDeep,
           cursor: "pointer",
-          padding: "2px 8px",
-          fontSize: 11,
+          padding: "2px 6px",
+          fontSize: 10.5,
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
@@ -3181,15 +3181,15 @@ function TaskRow({
     border: `1px solid ${highlighted ? C.mustard : C.rule}`,
     boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
     borderRadius: 10,
-    padding: compact ? "9px 10px" : "11px 12px",
-    marginBottom: 8
+    padding: "7px 10px",
+    marginBottom: 5
   };
   return /*#__PURE__*/<div style={{
     ...rowStyle,
     opacity: isDone ? 0.55 : notYetAvailable ? 0.5 : 1
   }}><div style={{
       display: "flex",
-      alignItems: "flex-start",
+      alignItems: flat ? "flex-start" : "center",
       gap: 10
     }}><button onClick={() => onToggle(task)} style={{
         width: 20,
@@ -3221,7 +3221,7 @@ function TaskRow({
           display: "flex",
           flexWrap: "wrap",
           gap: 6,
-          marginTop: 5,
+          marginTop: 2,
           alignItems: "center"
         }}>{notYetAvailable && /*#__PURE__*/<Tag color={C.inkSoft}>Not yet — {fmtDate(task.dueDate)}</Tag>}{task.dueDate && !notYetAvailable && /*#__PURE__*/<span style={{
             fontSize: 10.5,
@@ -3238,13 +3238,13 @@ function TaskRow({
             month: "short"
           }) : fmtDate(task.dueDate)}</div>}</div><div style={{
         display: "flex",
-        flexDirection: flat ? "row" : "column",
-        gap: flat ? 8 : 4,
-        alignItems: flat ? "center" : "stretch",
+        flexDirection: "row",
+        gap: flat ? 8 : 5,
+        alignItems: "center",
         flexShrink: 0
       }}>{badgePerson && /*#__PURE__*/<div style={{
-          alignSelf: flat ? "center" : "flex-end"
-        }}><PersonBadge person={badgePerson} size={18} /></div>}{onAddToToday && /*#__PURE__*/<button onClick={e => {
+          alignSelf: "center"
+        }}><PersonBadge person={badgePerson} size={flat ? 18 : 16} /></div>}{onAddToToday && /*#__PURE__*/<button onClick={e => {
           e.stopPropagation();
           onAddToToday(task.id, null);
         }} style={{
@@ -3252,8 +3252,8 @@ function TaskRow({
           background: C.white,
           color: C.sageDeep,
           cursor: "pointer",
-          padding: "2px 8px",
-          fontSize: 11,
+          padding: flat ? "2px 8px" : "2px 6px",
+          fontSize: flat ? 11 : 10.5,
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
@@ -3265,8 +3265,8 @@ function TaskRow({
           background: onListFor(task, me) ? "#E3EBDD" : C.white,
           color: C.sageDeep,
           cursor: "pointer",
-          padding: "2px 8px",
-          fontSize: 11,
+          padding: flat ? "2px 8px" : "2px 6px",
+          fontSize: flat ? 11 : 10.5,
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
@@ -3278,8 +3278,8 @@ function TaskRow({
           background: C.white,
           color: C.sageDeep,
           cursor: "pointer",
-          padding: "2px 8px",
-          fontSize: 11,
+          padding: flat ? "2px 8px" : "2px 6px",
+          fontSize: flat ? 11 : 10.5,
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
