@@ -129,7 +129,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v59";
+const APP_VERSION = "v60";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -5655,7 +5655,24 @@ function TaskForm({
     id: "starts-on-due",
     checked: !!t.startsOnDue,
     onChange: e => set("startsOnDue", e.target.checked)
-  }), "Due date is do date"))), /*#__PURE__*/React.createElement(Field, {
+  }), "Due date is do date"))), /*#__PURE__*/React.createElement("div", {
+    style: {
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => set("manualTodo", !t.manualTodo),
+    style: {
+      border: `1px solid ${t.manualTodo ? C.sage : C.rule}`,
+      background: t.manualTodo ? "#E3EBDD" : C.white,
+      color: C.sageDeep,
+      cursor: "pointer",
+      padding: "6px 12px",
+      fontSize: 12.5,
+      fontWeight: 600,
+      borderRadius: 8
+    }
+  }, t.manualTodo ? "✓ On the to-do list — tap to remove" : "+ Add to the to-do list")), /*#__PURE__*/React.createElement(Field, {
     label: "Subtasks"
   }, /*#__PURE__*/React.createElement(DragReorderList, {
     items: t.actions || [],

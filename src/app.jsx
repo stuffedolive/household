@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v59";
+const APP_VERSION = "v60";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -3837,7 +3837,18 @@ function TaskForm({
             color: C.inkSoft,
             lineHeight: 1.3,
             cursor: "pointer"
-          }}><input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={e => set("startsOnDue", e.target.checked)} />Due date is do date</label>}</div></Field><Field label="Subtasks"><DragReorderList items={t.actions || []} keyFn={a => a.id} onFinalize={arr => set("actions", arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
+          }}><input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={e => set("startsOnDue", e.target.checked)} />Due date is do date</label>}</div></Field><div style={{
+        marginBottom: 14
+      }}><button type="button" onClick={() => set("manualTodo", !t.manualTodo)} style={{
+          border: `1px solid ${t.manualTodo ? C.sage : C.rule}`,
+          background: t.manualTodo ? "#E3EBDD" : C.white,
+          color: C.sageDeep,
+          cursor: "pointer",
+          padding: "6px 12px",
+          fontSize: 12.5,
+          fontWeight: 600,
+          borderRadius: 8
+        }}>{t.manualTodo ? "✓ On the to-do list — tap to remove" : "+ Add to the to-do list"}</button></div><Field label="Subtasks"><DragReorderList items={t.actions || []} keyFn={a => a.id} onFinalize={arr => set("actions", arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
           display: "flex",
           alignItems: "center",
           gap: 5,
