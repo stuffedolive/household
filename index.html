@@ -129,7 +129,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v60";
+const APP_VERSION = "v61";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -355,6 +355,20 @@ function LoveLoading({
   }, "Tap to skip"));
 }
 const TODAY_COLLECTION = "today";
+// "On my to-do list" is per person. Older tasks only have a single manualTodo flag, which counted for both of you,
+// so until someone changes it we treat that as "on both lists".
+const onListFor = (task, person) => task.manualTodoBy && typeof task.manualTodoBy === "object" ? !!task.manualTodoBy[person] : !!task.manualTodo;
+const withListFor = (task, person, on) => {
+  const base = task.manualTodoBy && typeof task.manualTodoBy === "object" ? task.manualTodoBy : task.manualTodo ? Object.fromEntries(Object.keys(PEOPLE).map(k => [k, true])) : {};
+  const by = {
+    ...base,
+    [person]: on
+  };
+  return {
+    manualTodoBy: by,
+    manualTodo: Object.values(by).some(Boolean) // kept as "on anyone's list" for older copies of the app
+  };
+};
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 function sanitizeList(arr, fallback) {
   const clean = [...new Set((arr || []).map(s => String(s).trim()).filter(Boolean))];
@@ -969,9 +983,7 @@ function App() {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
     captureUndo("To-do list", [taskId]);
-    db.collection(TASKS_COLLECTION).doc(taskId).update({
-      manualTodo: !task.manualTodo
-    }).catch(console.error);
+    db.collection(TASKS_COLLECTION).doc(taskId).update(withListFor(task, me, !onListFor(task, me))).catch(console.error);
   };
 
   /* scope-aware: pinning a task only clears the previous occupant of that slot
@@ -2391,7 +2403,8 @@ function ActionAsRow({
   onSnooze,
   onAddToToday,
   onRestore,
-  onToggleManualTodo
+  onToggleManualTodo,
+  me
 }) {
   const overdue = action.dueDate && action.dueDate < adelaideToday();
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
@@ -2500,8 +2513,8 @@ function ActionAsRow({
   React.createElement("button", {
     onClick: () => onToggleManualTodo(task.id),
     style: {
-      border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
-      background: task.manualTodo ? "#E3EBDD" : C.white,
+      border: `1px solid ${onListFor(task, me) ? C.sage : C.rule}`,
+      background: onListFor(task, me) ? "#E3EBDD" : C.white,
       color: C.sageDeep,
       cursor: "pointer",
       padding: "2px 8px",
@@ -2510,7 +2523,7 @@ function ActionAsRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, task.manualTodo ? "− List" : "+ List"), onRestore &&
+  }, onListFor(task, me) ? "− List" : "+ List"), onRestore &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
@@ -3027,7 +3040,7 @@ function ToDoList({
   // chores: dated (own date, or a nearer subtask date) OR manually added despite having no date; ranked by
   // tier on the effective date, with date-less manual adds sorting to the bottom of their importance group.
   // Recurring chores only appear once within their lead window (or overdue) — see withinLeadWindow.
-  const chores = useMemo(() => active.filter(t => t.listType === "chore" && (!!effectiveDueDate(t) || t.manualTodo)).filter(t => t.manualTodo || withinLeadWindow(t, today)).sort((a, b) => {
+  const chores = useMemo(() => active.filter(t => t.listType === "chore" && (!!effectiveDueDate(t) || onListFor(t, me))).filter(t => onListFor(t, me) || withinLeadWindow(t, today)).sort((a, b) => {
     const da = effectiveDueDate(a),
       db = effectiveDueDate(b);
     const ta = tierFor(da, a.priority, today),
@@ -3059,7 +3072,7 @@ function ToDoList({
 
   // Other Projects: manually added but not pinned — shown the same way, just ranked below Priority Projects
   const otherProjectItems = useMemo(() => {
-    const items = active.filter(t => t.listType === "project" && t.manualTodo && !(t.gridBucket && t.gridBucket[me])).map(t => ({
+    const items = active.filter(t => t.listType === "project" && onListFor(t, me) && !(t.gridBucket && t.gridBucket[me])).map(t => ({
       task: t,
       action: nextAction(t)
     })).filter(({
@@ -3315,6 +3328,7 @@ function ToDoList({
     /*#__PURE__*/
     /*#__PURE__*/
     React.createElement(ActionAsRow, {
+      me: me,
       key: t.id,
       task: t,
       action: driving,
@@ -3322,7 +3336,7 @@ function ToDoList({
       onEdit: onEdit,
       onSnooze: overwhelmed ? dateStr => snoozeProjectAction(t, driving, dateStr) : undefined,
       onAddToToday: inPlan(t.id, driving.id) ? undefined : onAddTaskToToday,
-      onToggleManualTodo: t.manualTodo ? onToggleManualTodo : undefined
+      onToggleManualTodo: onListFor(t, me) ? onToggleManualTodo : undefined
     }) :
     /*#__PURE__*/
     /*#__PURE__*/
@@ -3332,7 +3346,7 @@ function ToDoList({
       ...rowProps,
       onSnooze: overwhelmed ? dateStr => snoozeChore(t, dateStr) : undefined,
       onAddToToday: inPlan(t.id, null) ? undefined : onAddTaskToToday,
-      onToggleManualTodo: t.manualTodo ? onToggleManualTodo : undefined
+      onToggleManualTodo: onListFor(t, me) ? onToggleManualTodo : undefined
     });
   })), displayProjects.length > 0 &&
   /*#__PURE__*/
@@ -3357,6 +3371,7 @@ function ToDoList({
     /*#__PURE__*/
     /*#__PURE__*/
     React.createElement(ActionAsRow, {
+      me: me,
       task: task,
       action: action,
       onToggleAction: onToggleAction,
@@ -3387,6 +3402,7 @@ function ToDoList({
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(ActionAsRow, {
+    me: me,
     key: task.id + action.id,
     task: task,
     action: action,
@@ -3442,6 +3458,7 @@ function ToDoList({
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(ActionAsRow, {
+    me: me,
     key: task.id + action.id,
     task: task,
     action: action,
@@ -4827,8 +4844,8 @@ function TaskRow({
       onToggleManualTodo(task.id);
     },
     style: {
-      border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
-      background: task.manualTodo ? "#E3EBDD" : C.white,
+      border: `1px solid ${onListFor(task, me) ? C.sage : C.rule}`,
+      background: onListFor(task, me) ? "#E3EBDD" : C.white,
       color: C.sageDeep,
       cursor: "pointer",
       padding: "2px 8px",
@@ -4837,7 +4854,7 @@ function TaskRow({
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
-  }, task.manualTodo ? "− List" : "+ List"), onRestore &&
+  }, onListFor(task, me) ? "− List" : "+ List"), onRestore &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
@@ -5661,10 +5678,13 @@ function TaskForm({
     }
   }, /*#__PURE__*/React.createElement("button", {
     type: "button",
-    onClick: () => set("manualTodo", !t.manualTodo),
+    onClick: () => setT(prev => ({
+      ...prev,
+      ...withListFor(prev, me, !onListFor(prev, me))
+    })),
     style: {
-      border: `1px solid ${t.manualTodo ? C.sage : C.rule}`,
-      background: t.manualTodo ? "#E3EBDD" : C.white,
+      border: `1px solid ${onListFor(t, me) ? C.sage : C.rule}`,
+      background: onListFor(t, me) ? "#E3EBDD" : C.white,
       color: C.sageDeep,
       cursor: "pointer",
       padding: "6px 12px",
@@ -5672,7 +5692,7 @@ function TaskForm({
       fontWeight: 600,
       borderRadius: 8
     }
-  }, t.manualTodo ? "✓ On the to-do list — tap to remove" : "+ Add to the to-do list")), /*#__PURE__*/React.createElement(Field, {
+  }, onListFor(t, me) ? "✓ On your to-do list — tap to remove" : "+ Add to your to-do list")), /*#__PURE__*/React.createElement(Field, {
     label: "Subtasks"
   }, /*#__PURE__*/React.createElement(DragReorderList, {
     items: t.actions || [],

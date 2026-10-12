@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v60";
+const APP_VERSION = "v61";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -287,6 +287,20 @@ function LoveLoading({
     }}>Tap to skip</div>}</div>;
 }
 const TODAY_COLLECTION = "today";
+// "On my to-do list" is per person. Older tasks only have a single manualTodo flag, which counted for both of you,
+// so until someone changes it we treat that as "on both lists".
+const onListFor = (task, person) => task.manualTodoBy && typeof task.manualTodoBy === "object" ? !!task.manualTodoBy[person] : !!task.manualTodo;
+const withListFor = (task, person, on) => {
+  const base = task.manualTodoBy && typeof task.manualTodoBy === "object" ? task.manualTodoBy : task.manualTodo ? Object.fromEntries(Object.keys(PEOPLE).map(k => [k, true])) : {};
+  const by = {
+    ...base,
+    [person]: on
+  };
+  return {
+    manualTodoBy: by,
+    manualTodo: Object.values(by).some(Boolean) // kept as "on anyone's list" for older copies of the app
+  };
+};
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 function sanitizeList(arr, fallback) {
   const clean = [...new Set((arr || []).map(s => String(s).trim()).filter(Boolean))];
@@ -854,9 +868,7 @@ function App() {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
     captureUndo("To-do list", [taskId]);
-    db.collection(TASKS_COLLECTION).doc(taskId).update({
-      manualTodo: !task.manualTodo
-    }).catch(console.error);
+    db.collection(TASKS_COLLECTION).doc(taskId).update(withListFor(task, me, !onListFor(task, me))).catch(console.error);
   };
 
   /* scope-aware: pinning a task only clears the previous occupant of that slot
@@ -1643,7 +1655,8 @@ function ActionAsRow({
   onSnooze,
   onAddToToday,
   onRestore,
-  onToggleManualTodo
+  onToggleManualTodo,
+  me
 }) {
   const overdue = action.dueDate && action.dueDate < adelaideToday();
   const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
@@ -1712,8 +1725,8 @@ function ActionAsRow({
           borderRadius: 6,
           whiteSpace: "nowrap"
         }}>+ The plan</button>}{onToggleManualTodo && /*#__PURE__*/<button onClick={() => onToggleManualTodo(task.id)} style={{
-          border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
-          background: task.manualTodo ? "#E3EBDD" : C.white,
+          border: `1px solid ${onListFor(task, me) ? C.sage : C.rule}`,
+          background: onListFor(task, me) ? "#E3EBDD" : C.white,
           color: C.sageDeep,
           cursor: "pointer",
           padding: "2px 8px",
@@ -1721,7 +1734,7 @@ function ActionAsRow({
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
-        }}>{task.manualTodo ? "− List" : "+ List"}</button>}{onRestore && /*#__PURE__*/<button onClick={() => onRestore()} style={{
+        }}>{onListFor(task, me) ? "− List" : "+ List"}</button>}{onRestore && /*#__PURE__*/<button onClick={() => onRestore()} style={{
           border: `1px solid ${C.rule}`,
           background: C.white,
           color: C.sageDeep,
@@ -2156,7 +2169,7 @@ function ToDoList({
   // chores: dated (own date, or a nearer subtask date) OR manually added despite having no date; ranked by
   // tier on the effective date, with date-less manual adds sorting to the bottom of their importance group.
   // Recurring chores only appear once within their lead window (or overdue) — see withinLeadWindow.
-  const chores = useMemo(() => active.filter(t => t.listType === "chore" && (!!effectiveDueDate(t) || t.manualTodo)).filter(t => t.manualTodo || withinLeadWindow(t, today)).sort((a, b) => {
+  const chores = useMemo(() => active.filter(t => t.listType === "chore" && (!!effectiveDueDate(t) || onListFor(t, me))).filter(t => onListFor(t, me) || withinLeadWindow(t, today)).sort((a, b) => {
     const da = effectiveDueDate(a),
       db = effectiveDueDate(b);
     const ta = tierFor(da, a.priority, today),
@@ -2188,7 +2201,7 @@ function ToDoList({
 
   // Other Projects: manually added but not pinned — shown the same way, just ranked below Priority Projects
   const otherProjectItems = useMemo(() => {
-    const items = active.filter(t => t.listType === "project" && t.manualTodo && !(t.gridBucket && t.gridBucket[me])).map(t => ({
+    const items = active.filter(t => t.listType === "project" && onListFor(t, me) && !(t.gridBucket && t.gridBucket[me])).map(t => ({
       task: t,
       action: nextAction(t)
     })).filter(({
@@ -2376,7 +2389,7 @@ function ToDoList({
       marginTop: 40
     }}>Nothing pressing right now.</div>}{displayChores.length > 0 && /*#__PURE__*/<CollapsibleSection collapsedAll={collapsedAll} title="Chores" count={displayChores.length} defaultOpen={true}>{displayChores.map(t => {
         const driving = drivingSubtask(t);
-        return driving ? /*#__PURE__*/<ActionAsRow key={t.id} task={t} action={driving} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(t, driving, dateStr) : undefined} onAddToToday={inPlan(t.id, driving.id) ? undefined : onAddTaskToToday} onToggleManualTodo={t.manualTodo ? onToggleManualTodo : undefined} /> : /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(t, dateStr) : undefined} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={t.manualTodo ? onToggleManualTodo : undefined} />;
+        return driving ? /*#__PURE__*/<ActionAsRow me={me} key={t.id} task={t} action={driving} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(t, driving, dateStr) : undefined} onAddToToday={inPlan(t.id, driving.id) ? undefined : onAddTaskToToday} onToggleManualTodo={onListFor(t, me) ? onToggleManualTodo : undefined} /> : /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(t, dateStr) : undefined} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={onListFor(t, me) ? onToggleManualTodo : undefined} />;
       })}</CollapsibleSection>}{displayProjects.length > 0 && /*#__PURE__*/<CollapsibleSection collapsedAll={collapsedAll} title="Priority Projects" count={displayProjects.length} defaultOpen={true}>{displayProjects.map(({
         task,
         action
@@ -2385,11 +2398,11 @@ function ToDoList({
         const notYetDue = !!d && d > today;
         return /*#__PURE__*/<div key={task.id + (action ? action.id : "")} style={notYetDue ? {
           opacity: 0.55
-        } : undefined}>{action ? /*#__PURE__*/<ActionAsRow task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? kind => snoozeProjectAction(task, action, kind) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} /> : /*#__PURE__*/<TaskRow task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} />}</div>;
+        } : undefined}>{action ? /*#__PURE__*/<ActionAsRow me={me} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? kind => snoozeProjectAction(task, action, kind) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} /> : /*#__PURE__*/<TaskRow task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} />}</div>;
       })}</CollapsibleSection>}{displayOtherProjects.length > 0 && /*#__PURE__*/<CollapsibleSection collapsedAll={collapsedAll} title="Other Projects" count={displayOtherProjects.length} defaultOpen={true}>{displayOtherProjects.map(({
         task,
         action
-      }) => action ? /*#__PURE__*/<ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(task, action, dateStr) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} /> : /*#__PURE__*/<TaskRow key={task.id} task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} />)}</CollapsibleSection>}<CollapsibleSection collapsedAll={collapsedAll} title="Postponed" count={postponedChores.length + postponedProjectItems.length} defaultOpen={false}><div style={{
+      }) => action ? /*#__PURE__*/<ActionAsRow me={me} key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={overwhelmed ? dateStr => snoozeProjectAction(task, action, dateStr) : undefined} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} /> : /*#__PURE__*/<TaskRow key={task.id} task={task} {...rowProps} onSnooze={overwhelmed ? dateStr => snoozeChore(task, dateStr) : undefined} onAddToToday={inPlan(task.id, null) ? undefined : onAddTaskToToday} onToggleManualTodo={onToggleManualTodo} />)}</CollapsibleSection>}<CollapsibleSection collapsedAll={collapsedAll} title="Postponed" count={postponedChores.length + postponedProjectItems.length} defaultOpen={false}><div style={{
         fontSize: 11,
         color: C.inkSoft,
         marginBottom: 6
@@ -2401,7 +2414,7 @@ function ToDoList({
       }}>Nothing postponed right now.</div>}{postponedChores.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onRestore={() => onSetTaskHiddenUntil(t.id, null)} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}{postponedProjectItems.map(({
         task,
         action
-      }) => /*#__PURE__*/<ActionAsRow key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onRestore={() => onSetActionHiddenUntil(task.id, action.id, null)} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} />)}</CollapsibleSection><CollapsibleSection collapsedAll={collapsedAll} title="Upcoming" count={upcoming.length} defaultOpen={false}><div style={{
+      }) => /*#__PURE__*/<ActionAsRow me={me} key={task.id + action.id} task={task} action={action} onToggleAction={onToggleAction} onEdit={onEdit} onRestore={() => onSetActionHiddenUntil(task.id, action.id, null)} onAddToToday={inPlan(task.id, action.id) ? undefined : onAddTaskToToday} />)}</CollapsibleSection><CollapsibleSection collapsedAll={collapsedAll} title="Upcoming" count={upcoming.length} defaultOpen={false}><div style={{
         fontSize: 11,
         color: C.inkSoft,
         marginBottom: 6
@@ -3248,8 +3261,8 @@ function TaskRow({
           e.stopPropagation();
           onToggleManualTodo(task.id);
         }} style={{
-          border: `1px solid ${task.manualTodo ? C.sage : C.rule}`,
-          background: task.manualTodo ? "#E3EBDD" : C.white,
+          border: `1px solid ${onListFor(task, me) ? C.sage : C.rule}`,
+          background: onListFor(task, me) ? "#E3EBDD" : C.white,
           color: C.sageDeep,
           cursor: "pointer",
           padding: "2px 8px",
@@ -3257,7 +3270,7 @@ function TaskRow({
           fontWeight: 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
-        }}>{task.manualTodo ? "− List" : "+ List"}</button>}{onRestore && /*#__PURE__*/<button onClick={e => {
+        }}>{onListFor(task, me) ? "− List" : "+ List"}</button>}{onRestore && /*#__PURE__*/<button onClick={e => {
           e.stopPropagation();
           onRestore();
         }} style={{
@@ -3839,16 +3852,19 @@ function TaskForm({
             cursor: "pointer"
           }}><input type="checkbox" id="starts-on-due" checked={!!t.startsOnDue} onChange={e => set("startsOnDue", e.target.checked)} />Due date is do date</label>}</div></Field><div style={{
         marginBottom: 14
-      }}><button type="button" onClick={() => set("manualTodo", !t.manualTodo)} style={{
-          border: `1px solid ${t.manualTodo ? C.sage : C.rule}`,
-          background: t.manualTodo ? "#E3EBDD" : C.white,
+      }}><button type="button" onClick={() => setT(prev => ({
+            ...prev,
+            ...withListFor(prev, me, !onListFor(prev, me))
+          }))} style={{
+          border: `1px solid ${onListFor(t, me) ? C.sage : C.rule}`,
+          background: onListFor(t, me) ? "#E3EBDD" : C.white,
           color: C.sageDeep,
           cursor: "pointer",
           padding: "6px 12px",
           fontSize: 12.5,
           fontWeight: 600,
           borderRadius: 8
-        }}>{t.manualTodo ? "✓ On the to-do list — tap to remove" : "+ Add to the to-do list"}</button></div><Field label="Subtasks"><DragReorderList items={t.actions || []} keyFn={a => a.id} onFinalize={arr => set("actions", arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
+        }}>{onListFor(t, me) ? "✓ On your to-do list — tap to remove" : "+ Add to your to-do list"}</button></div><Field label="Subtasks"><DragReorderList items={t.actions || []} keyFn={a => a.id} onFinalize={arr => set("actions", arr)} renderRow={(a, idx, startDrag) => /*#__PURE__*/<div style={{
           display: "flex",
           alignItems: "center",
           gap: 5,
