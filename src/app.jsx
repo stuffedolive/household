@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v61";
+const APP_VERSION = "v62";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -2137,7 +2137,7 @@ function ToDoList({
     onToggle(task);
   };
   const effectiveTasks = useMemo(() => tasks.map(t => pendingComplete[t.id] ? pendingComplete[t.id].snapshot : t), [tasks, pendingComplete]);
-  const assignedToMe = useMemo(() => effectiveTasks.filter(t => t.scope === "personal" ? t.owner === me : t.assignee === me || !t.assignee), [effectiveTasks, me]);
+  const assignedToMe = useMemo(() => effectiveTasks.filter(t => t.scope === "personal" ? t.owner === me : t.assignee === me || !t.assignee || !!(t.manualTodoBy && t.manualTodoBy[me])), [effectiveTasks, me]); // a task assigned to someone else still shows if you put it on your own list
   const justDone = useMemo(() => tasks.filter(t => t.lastCompletedAt && now - t.lastCompletedAt < LINGER_MS && !pendingComplete[t.id]).sort((a, b) => (b.lastCompletedAt || 0) - (a.lastCompletedAt || 0)), [tasks, now, pendingComplete]);
 
   // upcoming: recurring, "due date is start date" tasks approaching their window — computed before the
