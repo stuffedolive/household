@@ -54,7 +54,8 @@ const SECTION_LABELS = {
   household: "Household chores",
   personalTasks: "Personal chores",
   shared: "Shared projects",
-  personal: "Personal projects"
+  personal: "Personal projects",
+  frenzy: "Task frenzy"
 };
 const TYPE_CHOICES = ["household", "personalTasks", "shared", "personal"].map(k => [k, SECTION_LABELS[k]]);
 /* "Skip" in overwhelmed mode only hides a card until local midnight — remembered on this device, per person, and never
@@ -78,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v64";
+const APP_VERSION = "v65";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -944,7 +945,7 @@ function App() {
     }}>Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too.</div>}{view === "grid" ? /*#__PURE__*/<PriorityGrid tasks={tasks} me={me} viewingPerson={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={t => {
       setEditing(t);
       setShowForm(true);
-    }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} config={config} onToggle={toggleComplete} onEdit={t => {
+    }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
     }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} onConvertNote={n => {
@@ -2053,7 +2054,7 @@ function withinLeadWindow(t, todayStr) {
   return daysUntil <= upcomingLeadDays(period);
 }
 
-/* ---------- Cleaning day: a focused mode for working through chores room by room ---------- */
+/* ---------- Task frenzy: a focused mode for working through chores room by room (started from All tasks) ---------- */
 const adelaideDateOf = ts => new Date(ts).toLocaleDateString("en-CA", {
   timeZone: "Australia/Adelaide"
 });
@@ -2130,15 +2131,9 @@ function CleaningDayView({
   return /*#__PURE__*/<div>
     <div style={{
       display: "flex",
-      alignItems: "baseline",
-      justifyContent: "space-between",
+      justifyContent: "flex-end",
       marginBottom: 8
-    }}><div style={{
-        fontFamily: "Fraunces, serif",
-        fontSize: 20,
-        fontWeight: 600,
-        color: C.ink
-      }}>Cleaning day</div><button onClick={onEnd} style={{
+    }}><button onClick={onEnd} style={{
         border: "none",
         background: "none",
         color: C.inkSoft,
@@ -2146,7 +2141,7 @@ function CleaningDayView({
         fontSize: 12,
         cursor: "pointer",
         padding: 0
-      }}>End cleaning day</button></div>
+      }}>End task frenzy</button></div>
     <div style={{
       marginBottom: 14
     }}><div style={{
@@ -2154,7 +2149,7 @@ function CleaningDayView({
         color: allDone ? C.sageDeep : C.inkSoft,
         fontWeight: allDone ? 700 : 500,
         marginBottom: 5
-      }}>{allDone ? "Cleaning day done ✓" : `${doneCount} of ${total} done`}</div><div style={{
+      }}>{allDone ? "Task frenzy done ✓" : `${doneCount} of ${total} done`}</div><div style={{
         height: 6,
         borderRadius: 3,
         background: C.rule,
@@ -2262,10 +2257,103 @@ function CleaningDayView({
       }}>Add newly due chores</button></div>
   </div>;
 }
-function ToDoList({
+
+function FrenzyScreen({
   tasks,
   me,
   config,
+  onToggle,
+  onEdit,
+  onBack
+}) {
+  // The day's list is captured when the frenzy starts (so the progress total stays steady even as ticked recurring
+  // chores roll their due dates forward) and is remembered on this device until midnight.
+  const cleanKey = `lifelist-cleaning-${me}`;
+  const readCleaning = () => {
+    try {
+      const v = JSON.parse(localStorage.getItem(cleanKey));
+      return v && v.date === adelaideToday() ? v : null;
+    } catch (e) {
+      return null;
+    }
+  };
+  const [cleaning, setCleaningRaw] = useState(readCleaning);
+  useEffect(() => {
+    setCleaningRaw(readCleaning());
+  }, [me]);
+  const saveCleaning = v => {
+    setCleaningRaw(v);
+    try {
+      if (v) localStorage.setItem(cleanKey, JSON.stringify(v));else localStorage.removeItem(cleanKey);
+    } catch (e) {}
+  };
+  const start = () => saveCleaning({
+    date: adelaideToday(),
+    ids: cleaningIds(tasks, adelaideToday(), me),
+    skipped: []
+  });
+  const addNew = () => {
+    const have = new Set(cleaning.ids);
+    saveCleaning({
+      ...cleaning,
+      ids: [...cleaning.ids, ...cleaningIds(tasks, adelaideToday(), me).filter(id => !have.has(id))]
+    });
+  };
+  return /*#__PURE__*/<div style={{
+    height: "calc(100% - 150px)",
+    overflowY: "auto",
+    overflowX: "hidden",
+    background: C.card,
+    padding: "10px 16px 90px",
+    boxSizing: "border-box"
+  }}><div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 14
+    }}><button onClick={onBack} aria-label="Back to all tasks" style={{
+        width: 38,
+        padding: "6px 0",
+        borderRadius: 8,
+        border: `1px solid ${C.rule}`,
+        background: C.white,
+        color: C.ink,
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: "pointer",
+        flexShrink: 0
+      }}>←</button><div style={{
+        flex: 1,
+        textAlign: "center",
+        fontFamily: "Fraunces, serif",
+        fontSize: 16,
+        color: C.ink
+      }}>Task frenzy</div><div style={{
+        width: 38,
+        flexShrink: 0
+      }} /></div>{cleaning ? /*#__PURE__*/<CleaningDayView cleaning={cleaning} tasks={tasks} me={me} rooms={config && config.rooms || []} onToggle={onToggle} onEdit={onEdit} onSave={saveCleaning} onEnd={() => saveCleaning(null)} onAddNew={addNew} /> : /*#__PURE__*/<div style={{
+      textAlign: "center",
+      padding: "30px 10px"
+    }}><div style={{
+        color: C.sageDeep,
+        display: "flex",
+        justifyContent: "center",
+        marginBottom: 12
+      }}><SectionIcon kind="frenzy" size={64} /></div><div style={{
+        fontSize: 13.5,
+        color: C.inkSoft,
+        lineHeight: 1.5,
+        maxWidth: 280,
+        margin: "0 auto 18px"
+      }}>One list for a big tidy-up: every chore that's overdue, has no date, is due now or is due soon, grouped by room, with a progress bar.</div><button onClick={start} style={{
+        ...btnStyle(C.ink),
+        width: "100%",
+        maxWidth: 280
+      }}>Start task frenzy</button></div>}</div>;
+}
+function ToDoList({
+  tasks,
+  me,
   onToggle,
   onEdit,
   onDelete,
@@ -2302,42 +2390,6 @@ function ToDoList({
       return false;
     }
   });
-  // Cleaning day: the day's list of chores is captured when the mode starts (so the progress bar has a steady total
-  // even as ticked recurring chores roll their due dates forward) and is remembered on this device until midnight.
-  const cleanKey = `lifelist-cleaning-${me}`;
-  const readCleaning = () => {
-    try {
-      const v = JSON.parse(localStorage.getItem(cleanKey));
-      return v && v.date === adelaideToday() ? v : null;
-    } catch (e) {
-      return null;
-    }
-  };
-  const [cleaning, setCleaningRaw] = useState(readCleaning);
-  useEffect(() => {
-    setCleaningRaw(readCleaning());
-  }, [me]);
-  const saveCleaning = v => {
-    setCleaningRaw(v);
-    try {
-      if (v) localStorage.setItem(cleanKey, JSON.stringify(v));else localStorage.removeItem(cleanKey);
-    } catch (e) {}
-  };
-  const startCleaning = () => {
-    setOverwhelmed(false);
-    saveCleaning({
-      date: adelaideToday(),
-      ids: cleaningIds(tasks, adelaideToday(), me),
-      skipped: []
-    });
-  };
-  const addNewCleaning = () => {
-    const have = new Set(cleaning.ids);
-    saveCleaning({
-      ...cleaning,
-      ids: [...cleaning.ids, ...cleaningIds(tasks, adelaideToday(), me).filter(id => !have.has(id))]
-    });
-  };
   const toggleCollapsedAll = () => setCollapsedAll(c => {
     try {
       localStorage.setItem("lifelist-todo-collapsed", c ? "0" : "1");
@@ -2575,12 +2627,6 @@ function ToDoList({
     ...extraById,
     ...baseById
   }), [extraById, baseById]);
-  if (cleaning) return /*#__PURE__*/<div style={{
-    height: "calc(100% - 120px)",
-    overflowY: "auto",
-    overflowX: "hidden",
-    padding: "14px 16px 90px"
-  }}><CleaningDayView cleaning={cleaning} tasks={tasks} me={me} rooms={config && config.rooms || []} onToggle={onToggle} onEdit={onEdit} onSave={saveCleaning} onEnd={() => saveCleaning(null)} onAddNew={addNewCleaning} /></div>;
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 120px)",
     overflowY: "auto",
@@ -2597,19 +2643,7 @@ function ToDoList({
       fontWeight: 600,
       cursor: "pointer",
       marginBottom: 12
-    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button><button onClick={startCleaning} style={{
-      width: "100%",
-      border: `1px solid ${C.rule}`,
-      background: C.card,
-      color: C.inkSoft,
-      borderRadius: 8,
-      padding: "7px 0",
-      fontSize: 12,
-      fontWeight: 600,
-      cursor: "pointer",
-      marginTop: -6,
-      marginBottom: 12
-    }}>Cleaning day</button>{overwhelmed && skipped.length > 0 && /*#__PURE__*/<div style={{
+    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button>{overwhelmed && skipped.length > 0 && /*#__PURE__*/<div style={{
       textAlign: "center",
       marginTop: -6,
       marginBottom: 12
@@ -2927,6 +2961,7 @@ function SectionIcon({ kind, size = 76 }) {
   if (kind === "household") return /*#__PURE__*/<svg {...common}><path d="M20.5 3.5L13.2 10.8" /><path d="M10.6 9.6l3.8 3.8-3.1 5.9a1 1 0 0 1-1.6.3l-4.4-4.4a1 1 0 0 1 .3-1.6z" /><path d="M9.2 14.6l-2.3 3.4M11.8 16.1l-1.3 2.4" /></svg>;
   if (kind === "personalTasks") return /*#__PURE__*/<svg {...common}><circle cx="10" cy="8" r="3.2" /><path d="M4 20c0-3.5 2.7-6 6-6s6 2.5 6 6" /><path d="M16.5 6.5l1.8 1.8 3.2-3.6" /></svg>;
   if (kind === "shared") return /*#__PURE__*/<svg {...common}><path d="M3 11l9-8 9 8" /><path d="M5 10v10h14V10" /><path d="M10 18l4-4" /><path d="M12.4 12.4l2.1-1 1.1 1.1-1 2.1z" /></svg>;
+  if (kind === "frenzy") return /*#__PURE__*/<svg {...common}><path d="M13.5 2.5L5 13.5h6.2l-1 8 8.8-11.5h-6.4l.9-7.5z" /></svg>;
   return /*#__PURE__*/<svg {...common}><circle cx="10" cy="8" r="3.2" /><path d="M4 20c0-3.5 2.7-6 6-6s6 2.5 6 6" /><path d="M19 3l.9 1.9 2.1.3-1.5 1.5.4 2.1L19 7.8l-1.9 1 .4-2.1L16 5.2l2.1-.3z" /></svg>;
 }
 function TaskSections({ tasks, me, onOpen }) {
@@ -2937,7 +2972,7 @@ function TaskSections({ tasks, me, onOpen }) {
     if ((k === "personalTasks" || k === "personal") && t.owner !== me) return;
     counts[k]++;
   });
-  const keys = ["household", "personalTasks", "shared", "personal"];
+  const keys = ["household", "personalTasks", "shared", "personal", "frenzy"];
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 150px)",
     padding: "14px 16px",
@@ -2948,13 +2983,13 @@ function TaskSections({ tasks, me, onOpen }) {
     background: C.card
   }}>{keys.map(k => /*#__PURE__*/<button key={k} onClick={() => onOpen(k)} aria-label={SECTION_LABELS[k]} style={{
       position: "relative",
-      flex: 1,
-      minHeight: 0,
+      flex: k === "frenzy" ? "0 0 64px" : 1,
+      minHeight: k === "frenzy" ? 64 : 0,
       display: "flex",
-      flexDirection: "column",
+      flexDirection: k === "frenzy" ? "row" : "column",
       alignItems: "center",
       justifyContent: "center",
-      gap: 8,
+      gap: k === "frenzy" ? 12 : 8,
       width: "100%",
       borderRadius: 16,
       border: `1px solid ${C.rule}`,
@@ -2964,18 +2999,18 @@ function TaskSections({ tasks, me, onOpen }) {
     }}><span style={{
         color: C.sageDeep,
         display: "flex"
-      }}><SectionIcon kind={k} /></span><span style={{
-        fontSize: 12,
+      }}><SectionIcon kind={k} size={k === "frenzy" ? 32 : 76} /></span><span style={{
+        fontSize: k === "frenzy" ? 13 : 12,
         color: C.inkSoft,
         letterSpacing: 0.3
-      }}>{SECTION_LABELS[k]}</span><span style={{
+      }}>{SECTION_LABELS[k]}</span>{k !== "frenzy" && /*#__PURE__*/<span style={{
         position: "absolute",
         top: 10,
         right: 14,
         fontSize: 12,
         fontWeight: 700,
         color: C.inkSoft
-      }}>{counts[k]}</span></button>)}</div>;
+      }}>{counts[k]}</span>}</button>)}</div>;
 }
 function QueueView(props) {
   const {
@@ -3069,6 +3104,7 @@ function QueueView(props) {
     return () => clearTimeout(t);
   }, [jumpToSection]);
   if (!section) return /*#__PURE__*/<TaskSections tasks={tasks} me={me} onOpen={setSection} />;
+  if (section === "frenzy") return /*#__PURE__*/<FrenzyScreen tasks={tasks} me={me} config={config} onToggle={onToggle} onEdit={onEdit} onBack={() => setSection(null)} />;
   const sectionTitle = SECTION_LABELS[section];
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 150px)",
@@ -3240,9 +3276,9 @@ function StackedSection({
       alignItems: "center",
       gap: 4,
       background: "transparent",
-      borderBottom: `1px solid ${isJumpTarget ? C.mustard : C.ink}`,
+      borderBottom: `1px solid ${isJumpTarget ? C.mustard : C.rule}`,
       boxShadow: isJumpTarget ? `0 2px 0 ${C.mustard}` : "none",
-      padding: "6px 2px",
+      padding: "4px 2px",
       marginBottom: 2
     }}><button onClick={toggleHeader} style={{
         flex: 1,
@@ -3256,7 +3292,7 @@ function StackedSection({
         gap: 6
       }}><span style={{
           fontFamily: "Fraunces, serif",
-          fontSize: 16,
+          fontSize: 15,
           fontWeight: 600,
           color: C.ink
         }}>{name}</span><span style={{
@@ -3439,7 +3475,7 @@ function TaskRow({
     borderBottom: `1px solid ${C.rule}66`,
     boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
     borderRadius: highlighted || overdue ? 6 : 0,
-    padding: "5px 4px",
+    padding: "6px 4px",
     marginBottom: 0
   } : {
     background: C.card,
@@ -3478,7 +3514,7 @@ function TaskRow({
           alignItems: "center",
           gap: 6
         }}><div style={{
-            fontSize: compact ? 13 : 14,
+            fontSize: flat ? 14 : compact ? 13 : 14,
             color: C.ink,
             fontWeight: 600,
             textDecoration: isDone ? "line-through" : "none"
@@ -3526,13 +3562,13 @@ function TaskRow({
           e.stopPropagation();
           onToggleManualTodo(task.id);
         }} style={{
-          border: `1px solid ${onListFor(task, me) ? C.sage : C.rule}`,
-          background: onListFor(task, me) ? "#E3EBDD" : C.white,
-          color: C.sageDeep,
+          border: flat ? "none" : `1px solid ${onListFor(task, me) ? C.sage : C.rule}`,
+          background: flat ? "none" : onListFor(task, me) ? "#E3EBDD" : C.white,
+          color: flat && !onListFor(task, me) ? C.inkSoft : C.sageDeep,
           cursor: "pointer",
-          padding: flat ? "2px 8px" : "2px 6px",
+          padding: flat ? "2px 4px" : "2px 6px",
           fontSize: flat ? 11 : 10.5,
-          fontWeight: 600,
+          fontWeight: flat && !onListFor(task, me) ? 500 : 600,
           borderRadius: 6,
           whiteSpace: "nowrap"
         }}>{onListFor(task, me) ? "− List" : "+ List"}</button>}{onRestore && /*#__PURE__*/<button onClick={e => {

@@ -105,7 +105,8 @@ const SECTION_LABELS = {
   household: "Household chores",
   personalTasks: "Personal chores",
   shared: "Shared projects",
-  personal: "Personal projects"
+  personal: "Personal projects",
+  frenzy: "Task frenzy"
 };
 const TYPE_CHOICES = ["household", "personalTasks", "shared", "personal"].map(k => [k, SECTION_LABELS[k]]);
 /* "Skip" in overwhelmed mode only hides a card until local midnight — remembered on this device, per person, and never
@@ -129,7 +130,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v64";
+const APP_VERSION = "v65";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1117,7 +1118,6 @@ function App() {
   /*#__PURE__*/
   React.createElement(ToDoList, {
     tasks: visibleTasks,
-    config: config,
     onToggle: toggleComplete,
     onEdit: t => {
       setEditing(t);
@@ -2925,7 +2925,7 @@ function withinLeadWindow(t, todayStr) {
   return daysUntil <= upcomingLeadDays(period);
 }
 
-/* ---------- Cleaning day: a focused mode for working through chores room by room ---------- */
+/* ---------- Task frenzy: a focused mode for working through chores room by room (started from All tasks) ---------- */
 const adelaideDateOf = ts => new Date(ts).toLocaleDateString("en-CA", {
   timeZone: "Australia/Adelaide"
 });
@@ -3009,18 +3009,10 @@ function CleaningDayView({
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      alignItems: "baseline",
-      justifyContent: "space-between",
+      justifyContent: "flex-end",
       marginBottom: 8
     }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontFamily: "Fraunces, serif",
-      fontSize: 20,
-      fontWeight: 600,
-      color: C.ink
-    }
-  }, "Cleaning day"), /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("button", {
     onClick: onEnd,
     style: {
       border: "none",
@@ -3031,7 +3023,7 @@ function CleaningDayView({
       cursor: "pointer",
       padding: 0
     }
-  }, "End cleaning day")), /*#__PURE__*/React.createElement("div", {
+  }, "End task frenzy")), /*#__PURE__*/React.createElement("div", {
     style: {
       marginBottom: 14
     }
@@ -3042,7 +3034,7 @@ function CleaningDayView({
       fontWeight: allDone ? 700 : 500,
       marginBottom: 5
     }
-  }, allDone ? "Cleaning day done ✓" : `${doneCount} of ${total} done`), /*#__PURE__*/React.createElement("div", {
+  }, allDone ? "Task frenzy done ✓" : `${doneCount} of ${total} done`), /*#__PURE__*/React.createElement("div", {
     style: {
       height: 6,
       borderRadius: 3,
@@ -3197,10 +3189,142 @@ function CleaningDayView({
     }
   }, "Add newly due chores")));
 }
-function ToDoList({
+function FrenzyScreen({
   tasks,
   me,
   config,
+  onToggle,
+  onEdit,
+  onBack
+}) {
+  // The day's list is captured when the frenzy starts (so the progress total stays steady even as ticked recurring
+  // chores roll their due dates forward) and is remembered on this device until midnight.
+  const cleanKey = `lifelist-cleaning-${me}`;
+  const readCleaning = () => {
+    try {
+      const v = JSON.parse(localStorage.getItem(cleanKey));
+      return v && v.date === adelaideToday() ? v : null;
+    } catch (e) {
+      return null;
+    }
+  };
+  const [cleaning, setCleaningRaw] = useState(readCleaning);
+  useEffect(() => {
+    setCleaningRaw(readCleaning());
+  }, [me]);
+  const saveCleaning = v => {
+    setCleaningRaw(v);
+    try {
+      if (v) localStorage.setItem(cleanKey, JSON.stringify(v));else localStorage.removeItem(cleanKey);
+    } catch (e) {}
+  };
+  const start = () => saveCleaning({
+    date: adelaideToday(),
+    ids: cleaningIds(tasks, adelaideToday(), me),
+    skipped: []
+  });
+  const addNew = () => {
+    const have = new Set(cleaning.ids);
+    saveCleaning({
+      ...cleaning,
+      ids: [...cleaning.ids, ...cleaningIds(tasks, adelaideToday(), me).filter(id => !have.has(id))]
+    });
+  };
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    style: {
+      height: "calc(100% - 150px)",
+      overflowY: "auto",
+      overflowX: "hidden",
+      background: C.card,
+      padding: "10px 16px 90px",
+      boxSizing: "border-box"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 14
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onBack,
+    "aria-label": "Back to all tasks",
+    style: {
+      width: 38,
+      padding: "6px 0",
+      borderRadius: 8,
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      color: C.ink,
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      flexShrink: 0
+    }
+  }, "←"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      textAlign: "center",
+      fontFamily: "Fraunces, serif",
+      fontSize: 16,
+      color: C.ink
+    }
+  }, "Task frenzy"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: 38,
+      flexShrink: 0
+    }
+  })), cleaning ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(CleaningDayView, {
+    cleaning: cleaning,
+    tasks: tasks,
+    me: me,
+    rooms: config && config.rooms || [],
+    onToggle: onToggle,
+    onEdit: onEdit,
+    onSave: saveCleaning,
+    onEnd: () => saveCleaning(null),
+    onAddNew: addNew
+  }) :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      textAlign: "center",
+      padding: "30px 10px"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      color: C.sageDeep,
+      display: "flex",
+      justifyContent: "center",
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/React.createElement(SectionIcon, {
+    kind: "frenzy",
+    size: 64
+  })), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 13.5,
+      color: C.inkSoft,
+      lineHeight: 1.5,
+      maxWidth: 280,
+      margin: "0 auto 18px"
+    }
+  }, "One list for a big tidy-up: every chore that's overdue, has no date, is due now or is due soon, grouped by room, with a progress bar."), /*#__PURE__*/React.createElement("button", {
+    onClick: start,
+    style: {
+      ...btnStyle(C.ink),
+      width: "100%",
+      maxWidth: 280
+    }
+  }, "Start task frenzy")));
+}
+function ToDoList({
+  tasks,
+  me,
   onToggle,
   onEdit,
   onDelete,
@@ -3237,42 +3361,6 @@ function ToDoList({
       return false;
     }
   });
-  // Cleaning day: the day's list of chores is captured when the mode starts (so the progress bar has a steady total
-  // even as ticked recurring chores roll their due dates forward) and is remembered on this device until midnight.
-  const cleanKey = `lifelist-cleaning-${me}`;
-  const readCleaning = () => {
-    try {
-      const v = JSON.parse(localStorage.getItem(cleanKey));
-      return v && v.date === adelaideToday() ? v : null;
-    } catch (e) {
-      return null;
-    }
-  };
-  const [cleaning, setCleaningRaw] = useState(readCleaning);
-  useEffect(() => {
-    setCleaningRaw(readCleaning());
-  }, [me]);
-  const saveCleaning = v => {
-    setCleaningRaw(v);
-    try {
-      if (v) localStorage.setItem(cleanKey, JSON.stringify(v));else localStorage.removeItem(cleanKey);
-    } catch (e) {}
-  };
-  const startCleaning = () => {
-    setOverwhelmed(false);
-    saveCleaning({
-      date: adelaideToday(),
-      ids: cleaningIds(tasks, adelaideToday(), me),
-      skipped: []
-    });
-  };
-  const addNewCleaning = () => {
-    const have = new Set(cleaning.ids);
-    saveCleaning({
-      ...cleaning,
-      ids: [...cleaning.ids, ...cleaningIds(tasks, adelaideToday(), me).filter(id => !have.has(id))]
-    });
-  };
   const toggleCollapsedAll = () => setCollapsedAll(c => {
     try {
       localStorage.setItem("lifelist-todo-collapsed", c ? "0" : "1");
@@ -3510,24 +3598,6 @@ function ToDoList({
     ...extraById,
     ...baseById
   }), [extraById, baseById]);
-  if (cleaning) return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
-    style: {
-      height: "calc(100% - 120px)",
-      overflowY: "auto",
-      overflowX: "hidden",
-      padding: "14px 16px 90px"
-    }
-  }, /*#__PURE__*/React.createElement(CleaningDayView, {
-    cleaning: cleaning,
-    tasks: tasks,
-    me: me,
-    rooms: config && config.rooms || [],
-    onToggle: onToggle,
-    onEdit: onEdit,
-    onSave: saveCleaning,
-    onEnd: () => saveCleaning(null),
-    onAddNew: addNewCleaning
-  }));
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       height: "calc(100% - 120px)",
@@ -3549,22 +3619,7 @@ function ToDoList({
       cursor: "pointer",
       marginBottom: 12
     }
-  }, overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"), /*#__PURE__*/React.createElement("button", {
-    onClick: startCleaning,
-    style: {
-      width: "100%",
-      border: `1px solid ${C.rule}`,
-      background: C.card,
-      color: C.inkSoft,
-      borderRadius: 8,
-      padding: "7px 0",
-      fontSize: 12,
-      fontWeight: 600,
-      cursor: "pointer",
-      marginTop: -6,
-      marginBottom: 12
-    }
-  }, "Cleaning day"), overwhelmed && skipped.length > 0 &&
+  }, overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"), overwhelmed && skipped.length > 0 &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -4260,6 +4315,9 @@ function SectionIcon({
   }), /*#__PURE__*/React.createElement("path", {
     d: "M12.4 12.4l2.1-1 1.1 1.1-1 2.1z"
   }));
+  if (kind === "frenzy") return /*#__PURE__*/ /*#__PURE__*/React.createElement("svg", common, /*#__PURE__*/React.createElement("path", {
+    d: "M13.5 2.5L5 13.5h6.2l-1 8 8.8-11.5h-6.4l.9-7.5z"
+  }));
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("svg", common, /*#__PURE__*/React.createElement("circle", {
     cx: "10",
     cy: "8",
@@ -4287,7 +4345,7 @@ function TaskSections({
     if ((k === "personalTasks" || k === "personal") && t.owner !== me) return;
     counts[k]++;
   });
-  const keys = ["household", "personalTasks", "shared", "personal"];
+  const keys = ["household", "personalTasks", "shared", "personal", "frenzy"];
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       height: "calc(100% - 150px)",
@@ -4307,13 +4365,13 @@ function TaskSections({
     "aria-label": SECTION_LABELS[k],
     style: {
       position: "relative",
-      flex: 1,
-      minHeight: 0,
+      flex: k === "frenzy" ? "0 0 64px" : 1,
+      minHeight: k === "frenzy" ? 64 : 0,
       display: "flex",
-      flexDirection: "column",
+      flexDirection: k === "frenzy" ? "row" : "column",
       alignItems: "center",
       justifyContent: "center",
-      gap: 8,
+      gap: k === "frenzy" ? 12 : 8,
       width: "100%",
       borderRadius: 16,
       border: `1px solid ${C.rule}`,
@@ -4327,14 +4385,18 @@ function TaskSections({
       display: "flex"
     }
   }, /*#__PURE__*/React.createElement(SectionIcon, {
-    kind: k
+    kind: k,
+    size: k === "frenzy" ? 32 : 76
   })), /*#__PURE__*/React.createElement("span", {
     style: {
-      fontSize: 12,
+      fontSize: k === "frenzy" ? 13 : 12,
       color: C.inkSoft,
       letterSpacing: 0.3
     }
-  }, SECTION_LABELS[k]), /*#__PURE__*/React.createElement("span", {
+  }, SECTION_LABELS[k]), k !== "frenzy" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("span", {
     style: {
       position: "absolute",
       top: 10,
@@ -4440,6 +4502,14 @@ function QueueView(props) {
     tasks: tasks,
     me: me,
     onOpen: setSection
+  });
+  if (section === "frenzy") return /*#__PURE__*/ /*#__PURE__*/React.createElement(FrenzyScreen, {
+    tasks: tasks,
+    me: me,
+    config: config,
+    onToggle: onToggle,
+    onEdit: onEdit,
+    onBack: () => setSection(null)
   });
   const sectionTitle = SECTION_LABELS[section];
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
@@ -4710,9 +4780,9 @@ function StackedSection({
       alignItems: "center",
       gap: 4,
       background: "transparent",
-      borderBottom: `1px solid ${isJumpTarget ? C.mustard : C.ink}`,
+      borderBottom: `1px solid ${isJumpTarget ? C.mustard : C.rule}`,
       boxShadow: isJumpTarget ? `0 2px 0 ${C.mustard}` : "none",
-      padding: "6px 2px",
+      padding: "4px 2px",
       marginBottom: 2
     }
   }, /*#__PURE__*/React.createElement("button", {
@@ -4731,7 +4801,7 @@ function StackedSection({
   }, /*#__PURE__*/React.createElement("span", {
     style: {
       fontFamily: "Fraunces, serif",
-      fontSize: 16,
+      fontSize: 15,
       fontWeight: 600,
       color: C.ink
     }
@@ -5041,7 +5111,7 @@ function TaskRow({
     borderBottom: `1px solid ${C.rule}66`,
     boxShadow: highlighted ? `0 0 0 2px ${C.mustard}` : "none",
     borderRadius: highlighted || overdue ? 6 : 0,
-    padding: "5px 4px",
+    padding: "6px 4px",
     marginBottom: 0
   } : {
     background: C.card,
@@ -5093,7 +5163,7 @@ function TaskRow({
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
-      fontSize: compact ? 13 : 14,
+      fontSize: flat ? 14 : compact ? 13 : 14,
       color: C.ink,
       fontWeight: 600,
       textDecoration: isDone ? "line-through" : "none"
@@ -5188,13 +5258,13 @@ function TaskRow({
       onToggleManualTodo(task.id);
     },
     style: {
-      border: `1px solid ${onListFor(task, me) ? C.sage : C.rule}`,
-      background: onListFor(task, me) ? "#E3EBDD" : C.white,
-      color: C.sageDeep,
+      border: flat ? "none" : `1px solid ${onListFor(task, me) ? C.sage : C.rule}`,
+      background: flat ? "none" : onListFor(task, me) ? "#E3EBDD" : C.white,
+      color: flat && !onListFor(task, me) ? C.inkSoft : C.sageDeep,
       cursor: "pointer",
-      padding: flat ? "2px 8px" : "2px 6px",
+      padding: flat ? "2px 4px" : "2px 6px",
       fontSize: flat ? 11 : 10.5,
-      fontWeight: 600,
+      fontWeight: flat && !onListFor(task, me) ? 500 : 600,
       borderRadius: 6,
       whiteSpace: "nowrap"
     }
