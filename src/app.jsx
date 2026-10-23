@@ -78,7 +78,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v63";
+const APP_VERSION = "v64";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -944,7 +944,7 @@ function App() {
     }}>Can't sync sections (rooms/categories) — check your Firestore rules cover /meta/config too.</div>}{view === "grid" ? /*#__PURE__*/<PriorityGrid tasks={tasks} me={me} viewingPerson={me} onOpenPicker={setPickerFor} onClearBucket={clearBucket} onToggleAction={toggleAction} onEditTask={t => {
       setEditing(t);
       setShowForm(true);
-    }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} onToggle={toggleComplete} onEdit={t => {
+    }} /> : view === "todo" ? /*#__PURE__*/<ToDoList tasks={visibleTasks} config={config} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
     }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onSetTaskDueDate={setTaskDueDate} onSetTaskHiddenUntil={setTaskHiddenUntil} onSetActionHiddenUntil={setActionHiddenUntil} onToggleManualTodo={toggleManualTodo} me={me} todayItems={todayItems} onAddSundry={addSundry} onToggleSundry={toggleSundry} onDeleteSundry={deleteSundry} onAddTaskToToday={addTaskToToday} onRemoveTaskFromToday={removeTaskFromToday} onReorderToday={reorderToday} onReorderTodayBucketFull={reorderTodayBucketFull} onResetToday={resetToday} onSetTodayBucket={setTodayBucket} onToggleTodayTaskDone={toggleTodayTaskDone} onConvertNote={n => {
@@ -2052,9 +2052,220 @@ function withinLeadWindow(t, todayStr) {
   const daysUntil = Math.round((new Date(eff + "T00:00:00") - new Date(todayStr + "T00:00:00")) / DAY_MS);
   return daysUntil <= upcomingLeadDays(period);
 }
+
+/* ---------- Cleaning day: a focused mode for working through chores room by room ---------- */
+const adelaideDateOf = ts => new Date(ts).toLocaleDateString("en-CA", {
+  timeZone: "Australia/Adelaide"
+});
+// Which chores belong on a cleaning day: overdue (or stale), no due date, due today, or due soon — "soon" uses the
+// same look-ahead as Upcoming (scaled by how often the chore repeats), whether or not "Due date is do date" is ticked.
+function cleaningEligible(t, todayStr, person) {
+  if (t.listType !== "chore" || t.completed) return false;
+  if (t.hiddenUntil && t.hiddenUntil[person] && t.hiddenUntil[person] > todayStr) return false;
+  const eff = effectiveDueDate(t);
+  if (!eff || eff <= todayStr) return true;
+  const daysUntil = Math.round((new Date(eff + "T00:00:00") - new Date(todayStr + "T00:00:00")) / DAY_MS);
+  return daysUntil <= upcomingLeadDays(recurrencePeriodDays(t.recurrence));
+}
+function cleaningIds(tasks, todayStr, person) {
+  return tasks.filter(t => cleaningEligible(t, todayStr, person)).sort((a, b) => {
+    const da = effectiveDueDate(a),
+      db = effectiveDueDate(b);
+    const ta = tierFor(da, a.priority, todayStr),
+      tb = tierFor(db, b.priority, todayStr);
+    if (ta !== tb) return ta - tb;
+    return (da || "9999").localeCompare(db || "9999");
+  }).map(t => t.id);
+}
+function CleaningDayView({
+  cleaning,
+  tasks,
+  me,
+  rooms,
+  onToggle,
+  onEdit,
+  onSave,
+  onEnd,
+  onAddNew
+}) {
+  const [filter, setFilter] = useState("all");
+  const todayStr = adelaideToday();
+  const byId = useMemo(() => {
+    const m = {};
+    tasks.forEach(t => {
+      m[t.id] = t;
+    });
+    return m;
+  }, [tasks]);
+  const skipped = cleaning.skipped || [];
+  const matches = t => filter === "all" || (t.scope === "personal" ? t.owner === filter : t.assignee === filter || !t.assignee);
+  // a chore that has vanished from the loaded list was completed (or deleted) since the day started — count it as done
+  const isDone = t => !t || t.completed || !!(t.lastCompletedAt && adelaideDateOf(t.lastCompletedAt) === todayStr);
+  const rows = cleaning.ids.filter(id => !skipped.includes(id)).map(id => ({
+    id,
+    task: byId[id] || null
+  })).filter(r => !r.task || matches(r.task));
+  const doneCount = rows.filter(r => isDone(r.task)).length;
+  const total = rows.length;
+  const roomOrder = [...rooms, "Unassigned"];
+  const groups = {};
+  rows.forEach(r => {
+    if (!r.task) return;
+    const room = r.task.room || "Unassigned";
+    (groups[room] = groups[room] || []).push(r);
+  });
+  const roomNames = [...roomOrder.filter(n => groups[n]), ...Object.keys(groups).filter(n => !roomOrder.includes(n))];
+  const allDone = total > 0 && doneCount === total;
+  const chip = (k, label) => /*#__PURE__*/<button key={k} onClick={() => setFilter(k)} style={{
+    flex: 1,
+    padding: "6px 0",
+    borderRadius: 20,
+    border: `1px solid ${filter === k ? C.sageDeep : C.rule}`,
+    background: filter === k ? C.sageDeep : "transparent",
+    color: filter === k ? C.white : C.inkSoft,
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer"
+  }}>{label}</button>;
+  return /*#__PURE__*/<div>
+    <div style={{
+      display: "flex",
+      alignItems: "baseline",
+      justifyContent: "space-between",
+      marginBottom: 8
+    }}><div style={{
+        fontFamily: "Fraunces, serif",
+        fontSize: 20,
+        fontWeight: 600,
+        color: C.ink
+      }}>Cleaning day</div><button onClick={onEnd} style={{
+        border: "none",
+        background: "none",
+        color: C.inkSoft,
+        textDecoration: "underline",
+        fontSize: 12,
+        cursor: "pointer",
+        padding: 0
+      }}>End cleaning day</button></div>
+    <div style={{
+      marginBottom: 14
+    }}><div style={{
+        fontSize: 12,
+        color: allDone ? C.sageDeep : C.inkSoft,
+        fontWeight: allDone ? 700 : 500,
+        marginBottom: 5
+      }}>{allDone ? "Cleaning day done ✓" : `${doneCount} of ${total} done`}</div><div style={{
+        height: 6,
+        borderRadius: 3,
+        background: C.rule,
+        overflow: "hidden"
+      }}><div style={{
+          height: "100%",
+          width: total ? `${doneCount / total * 100}%` : "0%",
+          background: C.sage,
+          borderRadius: 3,
+          transition: "width 0.3s ease"
+        }} /></div></div>
+    <div style={{
+      display: "flex",
+      gap: 6,
+      marginBottom: 14
+    }}>{[["all", "All"], ["jade", "Jade"], ["john", "John"]].map(([k, l]) => chip(k, l))}</div>
+    {total === 0 && /*#__PURE__*/<div style={{
+      color: C.inkSoft,
+      fontSize: 13,
+      textAlign: "center",
+      padding: "20px 0"
+    }}>Nothing on the list for this view.</div>}
+    {roomNames.map(room => /*#__PURE__*/<div key={room} style={{
+      marginBottom: 14
+    }}><div style={{
+        fontFamily: "Fraunces, serif",
+        fontSize: 15,
+        fontWeight: 600,
+        color: C.ink,
+        borderBottom: `1px solid ${C.rule}`,
+        padding: "4px 2px",
+        marginBottom: 2
+      }}>{room}</div>{groups[room].map(({
+        id,
+        task
+      }) => {
+        const done = isDone(task);
+        const eff = effectiveDueDate(task);
+        const overdue = !done && eff && eff < todayStr;
+        const person = task.scope === "personal" ? task.owner : task.assignee;
+        return /*#__PURE__*/<div key={id} style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "6px 4px",
+          borderBottom: `1px solid ${C.rule}66`,
+          background: overdue ? "rgba(214, 120, 140, 0.11)" : "transparent",
+          borderRadius: overdue ? 6 : 0,
+          opacity: done ? 0.55 : 1
+        }}><button onClick={() => !done && onToggle(task)} aria-label={done ? "Done" : "Mark done"} style={{
+            width: 20,
+            height: 20,
+            borderRadius: "50%",
+            border: `2px solid ${done ? C.sage : C.inkSoft}`,
+            background: done ? C.sage : "transparent",
+            color: C.white,
+            fontSize: 11,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: done ? "default" : "pointer",
+            flexShrink: 0
+          }}>{done && "✓"}</button><div onClick={() => onEdit(task)} style={{
+            flex: 1,
+            minWidth: 0,
+            fontSize: 14,
+            fontWeight: 600,
+            color: C.ink,
+            textDecoration: done ? "line-through" : "none",
+            cursor: "pointer"
+          }}>{task.title}</div>{person && /*#__PURE__*/<PersonBadge person={person} size={16} />}{!done && /*#__PURE__*/<button onClick={() => onSave({
+            ...cleaning,
+            skipped: [...skipped, id]
+          })} style={{
+            border: "none",
+            background: "none",
+            color: C.inkSoft,
+            fontSize: 11,
+            cursor: "pointer",
+            padding: "2px 4px"
+          }}>not today</button>}</div>;
+      })}</div>)}
+    <div style={{
+      display: "flex",
+      justifyContent: "center",
+      gap: 18,
+      marginTop: 6
+    }}>{skipped.length > 0 && /*#__PURE__*/<button onClick={() => onSave({
+        ...cleaning,
+        skipped: []
+      })} style={{
+        border: "none",
+        background: "none",
+        color: C.inkSoft,
+        textDecoration: "underline",
+        fontSize: 11.5,
+        cursor: "pointer"
+      }}>Show {skipped.length} skipped</button>}<button onClick={onAddNew} style={{
+        border: "none",
+        background: "none",
+        color: C.inkSoft,
+        textDecoration: "underline",
+        fontSize: 11.5,
+        cursor: "pointer"
+      }}>Add newly due chores</button></div>
+  </div>;
+}
 function ToDoList({
   tasks,
   me,
+  config,
   onToggle,
   onEdit,
   onDelete,
@@ -2091,6 +2302,42 @@ function ToDoList({
       return false;
     }
   });
+  // Cleaning day: the day's list of chores is captured when the mode starts (so the progress bar has a steady total
+  // even as ticked recurring chores roll their due dates forward) and is remembered on this device until midnight.
+  const cleanKey = `lifelist-cleaning-${me}`;
+  const readCleaning = () => {
+    try {
+      const v = JSON.parse(localStorage.getItem(cleanKey));
+      return v && v.date === adelaideToday() ? v : null;
+    } catch (e) {
+      return null;
+    }
+  };
+  const [cleaning, setCleaningRaw] = useState(readCleaning);
+  useEffect(() => {
+    setCleaningRaw(readCleaning());
+  }, [me]);
+  const saveCleaning = v => {
+    setCleaningRaw(v);
+    try {
+      if (v) localStorage.setItem(cleanKey, JSON.stringify(v));else localStorage.removeItem(cleanKey);
+    } catch (e) {}
+  };
+  const startCleaning = () => {
+    setOverwhelmed(false);
+    saveCleaning({
+      date: adelaideToday(),
+      ids: cleaningIds(tasks, adelaideToday(), me),
+      skipped: []
+    });
+  };
+  const addNewCleaning = () => {
+    const have = new Set(cleaning.ids);
+    saveCleaning({
+      ...cleaning,
+      ids: [...cleaning.ids, ...cleaningIds(tasks, adelaideToday(), me).filter(id => !have.has(id))]
+    });
+  };
   const toggleCollapsedAll = () => setCollapsedAll(c => {
     try {
       localStorage.setItem("lifelist-todo-collapsed", c ? "0" : "1");
@@ -2328,6 +2575,12 @@ function ToDoList({
     ...extraById,
     ...baseById
   }), [extraById, baseById]);
+  if (cleaning) return /*#__PURE__*/<div style={{
+    height: "calc(100% - 120px)",
+    overflowY: "auto",
+    overflowX: "hidden",
+    padding: "14px 16px 90px"
+  }}><CleaningDayView cleaning={cleaning} tasks={tasks} me={me} rooms={config && config.rooms || []} onToggle={onToggle} onEdit={onEdit} onSave={saveCleaning} onEnd={() => saveCleaning(null)} onAddNew={addNewCleaning} /></div>;
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 120px)",
     overflowY: "auto",
@@ -2344,7 +2597,19 @@ function ToDoList({
       fontWeight: 600,
       cursor: "pointer",
       marginBottom: 12
-    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button>{overwhelmed && skipped.length > 0 && /*#__PURE__*/<div style={{
+    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button><button onClick={startCleaning} style={{
+      width: "100%",
+      border: `1px solid ${C.rule}`,
+      background: C.card,
+      color: C.inkSoft,
+      borderRadius: 8,
+      padding: "7px 0",
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+      marginTop: -6,
+      marginBottom: 12
+    }}>Cleaning day</button>{overwhelmed && skipped.length > 0 && /*#__PURE__*/<div style={{
       textAlign: "center",
       marginTop: -6,
       marginBottom: 12
