@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v68";
+const APP_VERSION = "v69";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -327,6 +327,7 @@ function App() {
   const [lastUndo, setLastUndo] = useState(null); // { label, fn } | null — only ever the most recent action
   const [searchQuery, setSearchQuery] = useState("");
   const [showMenu, setShowMenu] = useState(false);
+  const [detailsTask, setDetailsTask] = useState(null);
   const setUndo = (label, fn) => setLastUndo({
     label,
     fn
@@ -997,9 +998,11 @@ function App() {
       deleteTask(id);
       setShowForm(false);
     }} />}{showNeedsDetails && /*#__PURE__*/<NeedsDetailsList tasks={needsDetailsTasks} onClose={() => setShowNeedsDetails(false)} onPick={t => {
-      setEditing(t);
-      setShowForm(true);
+      setDetailsTask(t);
       setShowNeedsDetails(false);
+    }} />}{detailsTask && /*#__PURE__*/<AddTaskWizard key={detailsTask.id} me={me} initial={detailsTask} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => setDetailsTask(null)} onSave={t => {
+      upsertTask(t);
+      setDetailsTask(null);
     }} />}{pickerFor && /*#__PURE__*/<BucketPicker tasks={tasks.filter(t => t.listType === "project" && !t.completed && (pickerFor.scope === "shared" ? t.scope === "shared" && (t.assignee === pickerFor.person || !t.assignee) : t.scope === "personal" && t.owner === pickerFor.person) && (!t.priorityBucket || t.priorityBucket === pickerFor.bucket))} onPick={taskId => {
       setBucket(taskId, pickerFor.person, pickerFor.bucket, pickerFor.scope);
       setPickerFor(null);
@@ -4421,6 +4424,7 @@ function TaskForm({
 /* New-task pop-up: one question at a time. Editing an existing task still uses the full TaskForm. */
 function AddTaskWizard({
   me,
+  initial,
   prefillTitle,
   config,
   onAddRoom,
@@ -4428,7 +4432,16 @@ function AddTaskWizard({
   onClose,
   onSave
 }) {
-  const [t, setT] = useState(() => ({
+  const [t, setT] = useState(() => initial ? {
+    ...initial,
+    // a "details later" task was saved with placeholder type/scope, so ask for them properly
+    listType: null,
+    scope: null,
+    room: "Unassigned",
+    category: "Unassigned",
+    actions: initial.actions || [],
+    recurrence: normRecurrence(initial.recurrence)
+  } : {
     id: uid(),
     title: prefillTitle || "",
     listType: null,
@@ -4454,17 +4467,17 @@ function AddTaskWizard({
     startsOnDue: false,
     createdAt: Date.now(),
     completedAt: null
-  }));
+  });
   const set = (k, v) => setT(p => ({
     ...p,
     [k]: v
   }));
-  const [stepKey, setStepKey] = useState("name");
+  const [stepKey, setStepKey] = useState(initial ? "type" : "name");
   const [newAction, setNewAction] = useState("");
   const [newPlace, setNewPlace] = useState("");
   const [extraPlaces, setExtraPlaces] = useState([]);
   const typeChosen = !!t.listType && !!t.scope;
-  const steps = ["name", "defer", "type", ...(t.scope === "shared" ? ["assignee"] : []), "place", "due", ...(t.listType === "chore" ? ["repeat"] : []), "importance", "subtasks", "list"];
+  const steps = [...(initial ? [] : ["name", "defer"]), "type", ...(t.scope === "shared" ? ["assignee"] : []), "place", "due", ...(t.listType === "chore" ? ["repeat"] : []), "importance", "subtasks", "list"];
   const idx = Math.max(0, steps.indexOf(stepKey));
   const next = () => setStepKey(steps[Math.min(steps.length - 1, idx + 1)]);
   const back = () => setStepKey(steps[Math.max(0, idx - 1)]);
