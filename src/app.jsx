@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v70";
+const APP_VERSION = "v71";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -2724,8 +2724,8 @@ function ToDoList({
       const sub = pick.kind === "chore" ? (drivingSubtask(pick.item) || {}).id || null : pick.item.action ? pick.item.action.id : null;
       return todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === sub);
     };
-    return out.filter(p => !skipped.includes(pickKey(p)) && !planned(p)).sort((x, y) => x.tier - y.tier || x.due.localeCompare(y.due));
-  }, [chores, projectItems, otherProjectItems, today, skipped, todayItems]);
+    return out.filter(p => !planned(p)).sort((x, y) => x.tier - y.tier || x.due.localeCompare(y.due));
+  }, [chores, projectItems, otherProjectItems, today, todayItems]);
   const topPick = pickStack[0] || null;
   const skipPick = pick => {
     const next = [...skipped, pickKey(pick)];
@@ -2940,11 +2940,11 @@ function ToDoList({
       }} />;
       if (c.kind === "pick") {
         const t = taskOfPick(c.pick);
-        return /*#__PURE__*/<HeroCard key={k} pick={c.pick} kicker={c.planned ? `On the plan · ${list.length} left` : `Could do now · ${list.length} left`} rightLabel={c.planned ? "Keep" : "Plan"} leftLabel={c.planned ? "Remove" : "Skip"} onToggle={wrappedToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={d => snoozePick(c.pick, d)} onPlan={() => {
+        return /*#__PURE__*/<HeroCard key={k} pick={c.pick} kicker={c.planned ? `On the plan · ${list.length} left` : `Could do now · ${list.length} left`} rightLabel="Plan" leftLabel="Skip" onToggle={wrappedToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={d => snoozePick(c.pick, d)} onPlan={() => {
           if (!c.planned) planPick(c.pick);
           decide(pickPlanKey(c.pick));
         }} onSkip={() => {
-          if (c.planned) onRemoveTaskFromToday(t.id, c.pick.kind === "chore" ? (drivingSubtask(t) || {}).id || null : c.pick.item.action ? c.pick.item.action.id : null);else skipPick(c.pick);
+          if (c.planned) onRemoveTaskFromToday(t.id, c.pick.kind === "chore" ? (drivingSubtask(t) || {}).id || null : c.pick.item.action ? c.pick.item.action.id : null);
           decide(pickPlanKey(c.pick));
         }} />;
       }
@@ -2998,7 +2998,7 @@ function ToDoList({
     if (stage1.length) return stageCard(stage1, "Plan");
     if (stage2.length) return stageCard(stage2, "Details");
     if (stage3.length) return stageCard(stage3, "New");
-    if (!staleMode) return endCard("That's everything", [endBtn(`Review stale projects${stale.length ? ` (${stale.length})` : ""}`, () => setStaleMode(true), true), endBtn("Done for now", () => setOverwhelmed(false), false), ...(skipped.length ? [endBtn(`Start over (${skipped.length} skipped)`, resetSkips, false)] : [])]);
+    if (!staleMode) return endCard("That's everything", [endBtn(`Review stale projects${stale.length ? ` (${stale.length})` : ""}`, () => setStaleMode(true), true), endBtn("Done for now", () => setOverwhelmed(false), false)]);
     if (stale.length) return stageCard(stale, "Stale");
     return endCard("All reviewed", [endBtn("Done for now", () => setOverwhelmed(false), true)]);
   })();
@@ -4717,7 +4717,7 @@ function AddTaskWizard({
   const [newPlace, setNewPlace] = useState("");
   const [extraPlaces, setExtraPlaces] = useState([]);
   const typeChosen = !!t.listType && !!t.scope;
-  const steps = [...(initial ? [] : ["name", "defer"]), "due", "type", ...(t.scope === "shared" ? ["assignee"] : []), "place", ...(t.listType === "chore" ? ["repeat"] : []), "importance", "subtasks", "notes", "list"];
+  const steps = [...(initial ? [] : ["name", "defer"]), "due", "assignee", "type", "place", ...(t.listType === "chore" ? ["repeat"] : []), "importance", "subtasks", "notes", "list"];
   const idx = Math.max(0, steps.indexOf(stepKey));
   const next = () => setStepKey(steps[Math.min(steps.length - 1, idx + 1)]);
   const back = () => setStepKey(steps[Math.max(0, idx - 1)]);
@@ -4755,7 +4755,7 @@ function AddTaskWizard({
       room: "Unassigned",
       category: "Unassigned"
     }));
-    setStepKey(scope === "shared" ? "assignee" : "place");
+    setStepKey("place");
   };
   const chip = (label, active, onClick, key) => /*#__PURE__*/<button key={key || label} onClick={onClick} style={{
     border: `1px solid ${active ? C.ink : C.rule}`,
@@ -4831,7 +4831,7 @@ function AddTaskWizard({
       display: "flex",
       flexDirection: "column",
       gap: 10
-    }}>{bigBtn("Yes, sort it later", () => finish(true), true, "Saves it now. It will wait for you to fill in the details.")}{bigBtn("No, add details now", next, false)}</div>;
+    }}>{bigBtn("Yes", () => finish(true), true)}{bigBtn("No", next, false)}</div>;
   } else if (stepKey === "type") {
     question = "What kind of thing is it?";
     body = /*#__PURE__*/<div style={{
@@ -4875,7 +4875,7 @@ function AddTaskWizard({
         gap: 8,
         flexWrap: "wrap",
         marginBottom: 14
-      }}>{placeOptions.map(o => chip(o === "Unassigned" ? "Not sure" : o, false, () => {
+      }}>{placeOptions.map(o => chip(o === "Unassigned" ? "None" : o, false, () => {
           set(t.listType === "chore" ? "room" : "category", o);
           next();
         }, o))}</div><div style={{
@@ -4977,7 +4977,7 @@ function AddTaskWizard({
       display: "flex",
       gap: 8,
       flexWrap: "wrap"
-    }}>{[[null, "Not set"], ...IMPORTANCE.map(i => [i.key, i.label])].map(([v, label]) => chip(label, t.priority === v, () => {
+    }}>{[[null, "None"], ...IMPORTANCE.map(i => [i.key, i.label])].map(([v, label]) => chip(label, t.priority === v, () => {
         set("priority", v);
         next();
       }, String(v)))}</div>;
@@ -5022,7 +5022,7 @@ function AddTaskWizard({
     }} style={{
       ...btnStyle(C.ink),
       width: "100%"
-    }}>{(t.actions || []).length || newAction.trim() ? "Next" : "No subtasks"}</button>;
+    }}>{(t.actions || []).length || newAction.trim() ? "Next" : "Skip"}</button>;
   } else if (stepKey === "notes") {
     question = "Any notes?";
     body = /*#__PURE__*/<textarea value={t.notes || ""} onChange={e => set("notes", e.target.value)} rows={4} placeholder="Add notes…" aria-label="Notes" style={{
@@ -5033,20 +5033,20 @@ function AddTaskWizard({
     footer = /*#__PURE__*/<button onClick={next} style={{
       ...btnStyle(C.ink),
       width: "100%"
-    }}>{(t.notes || "").trim() ? "Next" : "No notes"}</button>;
+    }}>{(t.notes || "").trim() ? "Next" : "Skip"}</button>;
   } else if (stepKey === "list") {
     question = "Add to your to-do list?";
     body = /*#__PURE__*/<div style={{
       display: "flex",
       flexDirection: "column",
       gap: 10
-    }}>{bigBtn("Yes, add it", () => finish(false, {
+    }}>{bigBtn("Yes", () => finish(false, {
       ...withListFor(t, me, true),
       sortedBy: {
         ...(t.sortedBy || {}),
         [me]: true
       }
-    }), true)}{bigBtn("No, just save it", () => finish(false, {
+    }), true)}{bigBtn("No", () => finish(false, {
       sortedBy: {
         ...(t.sortedBy || {}),
         [me]: true
@@ -5130,7 +5130,7 @@ function AddTaskWizard({
           textDecoration: "underline",
           fontSize: 12.5,
           cursor: "pointer"
-        }}>Save now{typeChosen ? "" : " and sort it later"}</button></div>}</div></div>;
+        }}>Save now</button></div>}</div></div>;
 }
 function SelectField({ label, value, onChange, options }) {
   return /*#__PURE__*/<Field label={label}><select value={value === null || value === undefined ? "" : String(value)} onChange={e => {
