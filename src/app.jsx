@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v69";
+const APP_VERSION = "v70";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -301,6 +301,10 @@ const withListFor = (task, person, on) => {
     manualTodo: Object.values(by).some(Boolean) // kept as "on anyone's list" for older copies of the app
   };
 };
+/* Schedule only treats projects created after this moment as "new" (so your existing list doesn't flood it) */
+const SCHEDULE_LAUNCH = 1794377940000;
+const SORT_BLUE = "#3E6A8A";
+const impRank = k => k === "high" ? 0 : k === "med" ? 1 : k === "low" ? 2 : 3;
 const HOUSEHOLD_EMAIL = "access@household-ledger.local";
 function sanitizeList(arr, fallback) {
   const clean = [...new Set((arr || []).map(s => String(s).trim()).filter(Boolean))];
@@ -861,6 +865,19 @@ function App() {
   };
   /* manual "add to to-do list" — lets a date-less chore or an unpinned project show up in the to-do list
      even though it wouldn't qualify automatically. Independent of pinning/priority and of the plan. */
+  // Schedule decision about a project: on / off your to-do list, and remember that you've decided
+  const sortProject = (taskId, onList) => {
+    const task = tasks.find(t => t.id === taskId);
+    if (!task) return;
+    captureUndo("To-do list", [taskId]);
+    db.collection(TASKS_COLLECTION).doc(taskId).update({
+      ...withListFor(task, me, onList),
+      sortedBy: {
+        ...(task.sortedBy || {}),
+        [me]: true
+      }
+    }).catch(console.error);
+  };
   const toggleManualTodo = taskId => {
     const task = tasks.find(t => t.id === taskId);
     if (!task) return;
@@ -925,7 +942,7 @@ function App() {
         }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setRealMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
   }
   if (tasks === null) return /*#__PURE__*/<Shell><LoveLoading note={loveNote} text="Loading the list…" /></Shell>;
-  return /*#__PURE__*/<Shell><Header me={me} realMe={realMe} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} onOpenMenu={() => setShowMenu(true)} />{configError && /*#__PURE__*/<div style={{
+  return /*#__PURE__*/<Shell><Header me={me} realMe={realMe} view={view} setView={goView} needsDetailsCount={0} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} onOpenMenu={() => setShowMenu(true)} />{configError && /*#__PURE__*/<div style={{
       background: C.plum,
       color: C.white,
       fontSize: 11,
@@ -941,7 +958,7 @@ function App() {
       setEditing(null);
       setConvertNote(n);
       setShowForm(true);
-    }} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} searchSlot={/*#__PURE__*/<SearchBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
+    }} onFillDetails={t => setDetailsTask(t)} onSortProject={sortProject} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} searchSlot={/*#__PURE__*/<SearchBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
       setSearchQuery("");
       setView("queue");
       setQueueSection(sectionForTask(t));
@@ -1963,6 +1980,14 @@ function SnoozeControl({
    The buttons underneath do the same thing for anyone who'd rather tap. */
 function HeroCard({
   pick,
+  custom,
+  rightLabel = "Plan",
+  leftLabel = "Skip",
+  bg,
+  kicker = "Most pressing right now",
+  showDone = true,
+  showSnooze = true,
+  extra,
   onPlan,
   onSkip,
   onToggle,
@@ -1970,12 +1995,12 @@ function HeroCard({
   onEdit,
   onSnooze
 }) {
-  const isProject = pick.kind === "project" || pick.kind === "otherProject";
-  const task = isProject ? pick.item.task : pick.item;
-  const driving = isProject ? pick.item.action : drivingSubtask(task);
-  const title = driving ? driving.title : task.title;
-  const dueDate = driving ? driving.dueDate || task.dueDate : effectiveDueDate(task);
-  const imp = IMPORTANCE.find(x => x.key === task.priority) || null;
+  const isProject = !custom && (pick.kind === "project" || pick.kind === "otherProject");
+  const task = custom ? custom.task || null : isProject ? pick.item.task : pick.item;
+  const driving = custom ? null : isProject ? pick.item.action : drivingSubtask(task);
+  const title = custom ? custom.title : driving ? driving.title : task.title;
+  const dueDate = custom ? custom.dueDate || null : driving ? driving.dueDate || task.dueDate : effectiveDueDate(task);
+  const imp = IMPORTANCE.find(x => x.key === (custom ? custom.priority : task.priority)) || null;
   const THRESHOLD = 90;
   const [dx, setDx] = useState(0);
   const [leaving, setLeaving] = useState(null); // "plan" | "skip" while the card flies off
@@ -2048,7 +2073,7 @@ function HeroCard({
     cursor: "pointer"
   };
   return /*#__PURE__*/<div style={{
-    background: C.ink,
+    background: bg || C.ink,
     color: C.white,
     borderRadius: 20,
     padding: "30px 24px",
@@ -2077,7 +2102,7 @@ function HeroCard({
       padding: "2px 9px",
       transform: "rotate(-8deg)",
       opacity: shift > 0 ? strength : 0
-    }}>Plan</div><div style={{
+    }}>{rightLabel}</div><div style={{
       position: "absolute",
       top: 16,
       right: 18,
@@ -2091,13 +2116,13 @@ function HeroCard({
       padding: "2px 9px",
       transform: "rotate(8deg)",
       opacity: shift < 0 ? strength : 0
-    }}>Skip</div><div style={{
+    }}>{leftLabel}</div><div style={{
       fontSize: 10,
       opacity: 0.55,
       marginBottom: 10,
       textTransform: "uppercase",
       letterSpacing: 1
-    }}>Most pressing right now</div>{driving && /*#__PURE__*/<div style={{
+    }}>{kicker}</div>{driving && /*#__PURE__*/<div style={{
       fontSize: 11,
       opacity: 0.6,
       marginBottom: 8,
@@ -2115,7 +2140,7 @@ function HeroCard({
       borderRadius: 20,
       marginBottom: 14
     }}>{imp.label} importance</div>}<div onClick={() => {
-      if (!moved.current) onEdit(task);
+      if (!moved.current && task && onEdit) onEdit(task);
     }} style={{
       fontFamily: "Fraunces, serif",
       fontSize: 26,
@@ -2128,18 +2153,18 @@ function HeroCard({
       fontSize: 13,
       opacity: 0.8,
       marginBottom: 14
-    }}>{fmtDate(dueDate)}</div><div style={{
+    }}>{!custom || dueDate ? fmtDate(dueDate) : null}</div><div style={{
       fontSize: 10.5,
       opacity: 0.5,
       marginBottom: 14
-    }} /><div style={{
+    }} />{extra}<div style={{
       display: "flex",
       alignItems: "center",
       justifyContent: "space-between",
       marginBottom: 18,
       marginLeft: -10,
       marginRight: -10
-    }}><button onClick={() => finish("skip")} style={quietBtn}>← Skip</button><button onClick={() => driving ? onToggleAction(task.id, driving.id) : onToggle(task)} style={{
+    }}><button onClick={() => finish("skip")} style={quietBtn}>← {leftLabel}</button>{showDone ? /*#__PURE__*/<button onClick={() => driving ? onToggleAction(task.id, driving.id) : onToggle(task)} style={{
         background: C.white,
         color: C.ink,
         border: "none",
@@ -2148,10 +2173,10 @@ function HeroCard({
         fontWeight: 700,
         fontSize: 14,
         cursor: "pointer"
-      }}>Done</button><button onClick={() => finish("plan")} style={quietBtn}>Plan →</button></div><div style={{
+      }}>Done</button> : /*#__PURE__*/<span />}<button onClick={() => finish("plan")} style={quietBtn}>{rightLabel} →</button></div>{showSnooze && /*#__PURE__*/<div style={{
       display: "flex",
       justifyContent: "center"
-    }}><SnoozeControl onSnooze={onSnooze} /></div></div>;
+    }}><SnoozeControl onSnooze={onSnooze} /></div>}</div>;
 }
 function upcomingLeadDays(periodDays) {
   if (periodDays == null) return 7; // one-off tasks: a week's notice before their single due date
@@ -2498,9 +2523,21 @@ function ToDoList({
   onResetToday,
   onSetTodayBucket,
   onToggleTodayTaskDone,
-  onConvertNote
+  onConvertNote,
+  onFillDetails,
+  onSortProject
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
+  // Schedule session state (not remembered): cards already dealt with, whether stale review was chosen, a remount counter
+  const [decided, setDecided] = useState([]);
+  const [staleMode, setStaleMode] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    if (!overwhelmed) {
+      setDecided([]);
+      setStaleMode(false);
+    }
+  }, [overwhelmed]);
   const [skipped, setSkipped] = useState(() => loadSkipped(me));
   // remembered on this device: whether the lists under the plan are collapsed
   const [collapsedAll, setCollapsedAll] = useState(() => {
@@ -2708,9 +2745,9 @@ function ToDoList({
   const snoozeChore = (task, dateStr) => onSetTaskHiddenUntil(task.id, dateStr);
   const snoozeProjectAction = (task, action, dateStr) => onSetActionHiddenUntil(task.id, action.id, dateStr);
   const sameItem = (a, b) => a.task.id === b.task.id && (a.action ? a.action.id : null) === (b.action ? b.action.id : null);
-  const displayChores = overwhelmed && topPick && topPick.kind === "chore" ? chores.filter(t => t.id !== topPick.item.id) : chores;
-  const displayProjects = overwhelmed && topPick && topPick.kind === "project" ? projectItems.filter(item => !sameItem(item, topPick.item)) : projectItems;
-  const displayOtherProjects = overwhelmed && topPick && topPick.kind === "otherProject" ? otherProjectItems.filter(item => !sameItem(item, topPick.item)) : otherProjectItems;
+  const displayChores = chores;
+  const displayProjects = projectItems;
+  const displayOtherProjects = otherProjectItems;
   const inPlan = (taskId, subtaskId) => todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null));
   const baseById = useMemo(() => {
     const m = {};
@@ -2747,39 +2784,230 @@ function ToDoList({
     ...extraById,
     ...baseById
   }), [extraById, baseById]);
+  // ---- Schedule: rebuilds the plan, then sorts what's new ----
+  const planKeyOf = (taskId, sub) => "task" + taskId + (sub || "");
+  const pickPlanKey = pick => pick.kind === "chore" ? planKeyOf(pick.item.id, (drivingSubtask(pick.item) || {}).id || null) : planKeyOf(pick.item.task.id, pick.item.action ? pick.item.action.id : null);
+  const taskOfPick = pick => pick.kind === "chore" ? pick.item : pick.item.task;
+  const schedule = useMemo(() => {
+    const ok = t => t && !t.completed && !t.needsDetails;
+    const rankOf = (priority, due) => ({
+      r: impRank(priority),
+      tier: tierFor(due, priority, today),
+      due: due || "9999"
+    });
+    const byRank = (x, y) => x.r - y.r || x.tier - y.tier || x.due.localeCompare(y.due);
+    // 1) the plan itself (so you can keep or remove each thing), plus everything that could be added
+    const stage1 = [];
+    todayItems.forEach(it => {
+      const key = planKeyOf(it.id, it.subtaskId || null);
+      if (it.type === "sundry") {
+        if (!decided.includes(key)) stage1.push({
+          key,
+          kind: "note",
+          it,
+          r: 3,
+          tier: 99,
+          due: "9999"
+        });
+        return;
+      }
+      const t = tasksById[it.id];
+      if (!ok(t) || it.completedToday === true || decided.includes(key)) return;
+      const pick = t.listType === "chore" ? {
+        kind: "chore",
+        item: t
+      } : {
+        kind: "project",
+        item: {
+          task: t,
+          action: it.subtaskId ? (t.actions || []).find(a => a.id === it.subtaskId) || null : nextAction(t)
+        }
+      };
+      const due = pick.kind === "chore" ? effectiveDueDate(t) : pick.item.action && pick.item.action.dueDate || t.dueDate;
+      stage1.push({
+        key,
+        kind: "pick",
+        pick,
+        planned: true,
+        ...rankOf(t.priority, due)
+      });
+    });
+    pickStack.forEach(pick => {
+      const t = taskOfPick(pick);
+      if (!ok(t) || decided.includes(pickPlanKey(pick))) return;
+      stage1.push({
+        key: "pick:" + pickKey(pick),
+        kind: "pick",
+        pick,
+        planned: false,
+        r: impRank(t.priority),
+        tier: pick.tier,
+        due: pick.due
+      });
+    });
+    stage1.sort(byRank);
+    // 2) things that still need details
+    const stage2 = assignedToMe.filter(t => t.needsDetails && !t.completed && !decided.includes("det:" + t.id)).map(t => ({
+      key: "det:" + t.id,
+      kind: "details",
+      task: t,
+      r: impRank(t.priority),
+      tier: 0,
+      due: t.createdAt ? String(t.createdAt) : "9999"
+    })).sort((x, y) => x.r - y.r);
+    // 3) new projects (or ones assigned to you) that nobody has decided about yet
+    const stage3 = assignedToMe.filter(t => ok(t) && t.listType === "project" && (t.createdAt || 0) >= SCHEDULE_LAUNCH && !(t.sortedBy && t.sortedBy[me]) && !decided.includes("new:" + t.id)).map(t => ({
+      key: "new:" + t.id,
+      kind: "newProject",
+      task: t,
+      r: impRank(t.priority),
+      tier: 0,
+      due: String(t.createdAt || 0)
+    })).sort((x, y) => x.r - y.r);
+    // 4) stale projects: overdue, or high/medium importance, and not already on your to-do list
+    const stale = assignedToMe.filter(t => ok(t) && t.listType === "project" && !onListFor(t, me) && !isHidden(t) && !decided.includes("stale:" + t.id) && (effectiveDueDate(t) && effectiveDueDate(t) < today || t.priority === "high" || t.priority === "med")).map(t => ({
+      key: "stale:" + t.id,
+      kind: "stale",
+      task: t,
+      r: impRank(t.priority),
+      tier: 0,
+      due: effectiveDueDate(t) || "9999"
+    })).sort((x, y) => x.r - y.r || x.due.localeCompare(y.due));
+    return {
+      stage1,
+      stage2,
+      stage3,
+      stale
+    };
+  }, [todayItems, tasksById, pickStack, assignedToMe, decided, today, me]);
+  const newForBadge = useMemo(() => assignedToMe.filter(t => !t.completed && !t.needsDetails && t.listType === "project" && (t.createdAt || 0) >= SCHEDULE_LAUNCH && !(t.sortedBy && t.sortedBy[me])).length, [assignedToMe, me]);
+  const decide = key => setDecided(d => d.includes(key) ? d : [...d, key]);
+  const snoozePick = (pick, dateStr) => {
+    if (pick.kind === "project" || pick.kind === "otherProject") {
+      if (pick.item.action) snoozeProjectAction(pick.item.task, pick.item.action, dateStr);else snoozeChore(pick.item.task, dateStr);
+      return;
+    }
+    const driving = drivingSubtask(pick.item);
+    if (driving) snoozeProjectAction(pick.item, driving, dateStr);else snoozeChore(pick.item, dateStr);
+  };
+  const planCardStamp = {
+    right: "Plan",
+    left: "Skip"
+  };
+  const scheduleView = (() => {
+    if (!overwhelmed) return null;
+    const {
+      stage1,
+      stage2,
+      stage3,
+      stale
+    } = schedule;
+    const endCard = (heading, buttons) => /*#__PURE__*/<div style={{
+      background: C.ink,
+      color: C.white,
+      borderRadius: 20,
+      padding: "30px 24px",
+      textAlign: "center",
+      marginBottom: 18
+    }}><div style={{
+        fontFamily: "Fraunces, serif",
+        fontSize: 22,
+        marginBottom: 18
+      }}>{heading}</div><div style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 10
+      }}>{buttons}</div></div>;
+    const endBtn = (label, onClick, primary) => /*#__PURE__*/<button key={label} onClick={onClick} style={{
+      border: primary ? "none" : "1px solid rgba(255,255,255,0.5)",
+      background: primary ? C.white : "transparent",
+      color: primary ? C.ink : C.white,
+      borderRadius: 10,
+      padding: "12px 0",
+      fontSize: 14,
+      fontWeight: 700,
+      cursor: "pointer"
+    }}>{label}</button>;
+    const stageCard = (list, label) => {
+      const c = list[0];
+      const k = `${c.key}:${nonce}`;
+      const left = `${label} · ${list.length} left`;
+      if (c.kind === "note") return /*#__PURE__*/<HeroCard key={k} custom={{
+        title: c.it.title
+      }} kicker={`Quick note · ${list.length} left`} rightLabel="Keep" leftLabel="Remove" showDone={false} showSnooze={false} onPlan={() => decide(c.key)} onSkip={() => {
+        onDeleteSundry(c.it.id);
+        decide(c.key);
+      }} />;
+      if (c.kind === "pick") {
+        const t = taskOfPick(c.pick);
+        return /*#__PURE__*/<HeroCard key={k} pick={c.pick} kicker={c.planned ? `On the plan · ${list.length} left` : `Could do now · ${list.length} left`} rightLabel={c.planned ? "Keep" : "Plan"} leftLabel={c.planned ? "Remove" : "Skip"} onToggle={wrappedToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={d => snoozePick(c.pick, d)} onPlan={() => {
+          if (!c.planned) planPick(c.pick);
+          decide(pickPlanKey(c.pick));
+        }} onSkip={() => {
+          if (c.planned) onRemoveTaskFromToday(t.id, c.pick.kind === "chore" ? (drivingSubtask(t) || {}).id || null : c.pick.item.action ? c.pick.item.action.id : null);else skipPick(c.pick);
+          decide(pickPlanKey(c.pick));
+        }} />;
+      }
+      if (c.kind === "details") return /*#__PURE__*/<HeroCard key={k} custom={{
+        title: c.task.title,
+        task: c.task,
+        priority: c.task.priority
+      }} bg={SORT_BLUE} kicker={`Needs details · ${list.length} left`} rightLabel="Details" leftLabel="Skip" showDone={false} showSnooze={false} onEdit={onEdit} onPlan={() => {
+        onFillDetails(c.task);
+        setNonce(n => n + 1);
+      }} onSkip={() => decide(c.key)} />;
+      if (c.kind === "newProject") return /*#__PURE__*/<HeroCard key={k} custom={{
+        title: c.task.title,
+        task: c.task,
+        dueDate: c.task.dueDate,
+        priority: c.task.priority
+      }} bg={SORT_BLUE} kicker={`${c.task.createdBy && c.task.createdBy !== me ? `New from ${PEOPLE[c.task.createdBy] || "someone"}` : "New project"} · ${list.length} left`} rightLabel="To-do list" leftLabel="Not on list" showDone={false} showSnooze={false} onEdit={onEdit} extra={/*#__PURE__*/<div style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 8,
+          marginBottom: 16,
+          fontSize: 12,
+          opacity: 0.9
+        }}>Due<input type="date" value={c.task.dueDate || ""} onChange={e => onSetTaskDueDate(c.task.id, e.target.value || null)} style={{
+            border: "none",
+            borderRadius: 6,
+            padding: "4px 6px",
+            fontSize: 12,
+            background: "rgba(255,255,255,0.9)",
+            color: C.ink
+          }} /></div>} onPlan={() => {
+        onSortProject(c.task.id, true);
+        decide(c.key);
+        decide(planKeyOf(c.task.id, (nextAction(c.task) || {}).id || null));
+      }} onSkip={() => {
+        onSortProject(c.task.id, false);
+        decide(c.key);
+      }} />;
+      return /*#__PURE__*/<HeroCard key={k} custom={{
+        title: c.task.title,
+        task: c.task,
+        dueDate: effectiveDueDate(c.task),
+        priority: c.task.priority
+      }} kicker={`Stale project · ${list.length} left`} rightLabel="To-do list" leftLabel="Skip" showDone={false} showSnooze={false} onEdit={onEdit} onPlan={() => {
+        onSortProject(c.task.id, true);
+        decide(c.key);
+        decide(planKeyOf(c.task.id, (nextAction(c.task) || {}).id || null));
+      }} onSkip={() => decide(c.key)} />;
+    };
+    if (stage1.length) return stageCard(stage1, "Plan");
+    if (stage2.length) return stageCard(stage2, "Details");
+    if (stage3.length) return stageCard(stage3, "New");
+    if (!staleMode) return endCard("That's everything", [endBtn(`Review stale projects${stale.length ? ` (${stale.length})` : ""}`, () => setStaleMode(true), true), endBtn("Done for now", () => setOverwhelmed(false), false), ...(skipped.length ? [endBtn(`Start over (${skipped.length} skipped)`, resetSkips, false)] : [])]);
+    if (stale.length) return stageCard(stale, "Stale");
+    return endCard("All reviewed", [endBtn("Done for now", () => setOverwhelmed(false), true)]);
+  })();
   return /*#__PURE__*/<div style={{
     height: "calc(100% - 118px)",
     overflowY: "auto",
     overflowX: "hidden",
     padding: "14px 16px 90px"
-  }}><PlanHeader scheduling={overwhelmed} onToggleSchedule={() => setOverwhelmed(o => !o)} onReset={onResetToday} />{overwhelmed && skipped.length > 0 && /*#__PURE__*/<div style={{
-      textAlign: "center",
-      marginTop: -6,
-      marginBottom: 12
-    }}><button onClick={resetSkips} style={{
-        border: "none",
-        background: "none",
-        color: C.inkSoft,
-        fontSize: 11.5,
-        textDecoration: "underline",
-        cursor: "pointer"
-      }}>Start over ({skipped.length} skipped)</button></div>}{overwhelmed && !topPick && /*#__PURE__*/<div style={{
-      background: C.ink,
-      color: C.white,
-      borderRadius: 20,
-      padding: "34px 24px",
-      textAlign: "center",
-      marginBottom: 18,
-      fontFamily: "Fraunces, serif",
-      fontSize: 20
-    }}>All caught up for now</div>}{overwhelmed && topPick && /*#__PURE__*/<HeroCard key={pickKey(topPick)} pick={topPick} onPlan={() => planPick(topPick)} onSkip={() => skipPick(topPick)} onToggle={wrappedToggle} onToggleAction={onToggleAction} onEdit={onEdit} onSnooze={dateStr => {
-      if (topPick.kind === "project" || topPick.kind === "otherProject") {
-        if (topPick.item.action) snoozeProjectAction(topPick.item.task, topPick.item.action, dateStr);else snoozeChore(topPick.item.task, dateStr);
-        return;
-      }
-      const driving = drivingSubtask(topPick.item);
-      if (driving) snoozeProjectAction(topPick.item, driving, dateStr);else snoozeChore(topPick.item, dateStr);
-    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} /><div style={{
+  }}><PlanHeader scheduling={overwhelmed} badge={newForBadge} onToggleSchedule={() => setOverwhelmed(o => !o)} onReset={onResetToday} />{scheduleView}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} /><div style={{
       display: "flex",
       justifyContent: "space-between",
       alignItems: "baseline",
@@ -2844,6 +3072,7 @@ function ToDoList({
 /* "The plan" title sits outside the box, with Schedule (the old overwhelmed mode) and Reset on the right */
 function PlanHeader({
   scheduling,
+  badge,
   onToggleSchedule,
   onReset
 }) {
@@ -2870,7 +3099,14 @@ function PlanHeader({
         fontSize: 11.5,
         fontWeight: 600,
         cursor: "pointer"
-      }}>{scheduling ? "✕ Schedule" : "Schedule"}</button>{!resetting ? /*#__PURE__*/<button onClick={() => setResetting(true)} style={{
+      }}>{scheduling ? "✕ Schedule" : "Schedule"}{!scheduling && badge > 0 && /*#__PURE__*/<span style={{
+          marginLeft: 6,
+          background: SORT_BLUE,
+          color: C.white,
+          borderRadius: 10,
+          padding: "1px 6px",
+          fontSize: 10.5
+        }}>{badge}</span>}</button>{!resetting ? /*#__PURE__*/<button onClick={() => setResetting(true)} style={{
         border: `1px solid ${C.plum}`,
         color: C.plum,
         background: "none",
@@ -3283,7 +3519,11 @@ function QueueView(props) {
           fontSize: 14,
           cursor: "pointer",
           flexShrink: 0
-        }}>☰</button></div>{section === "household" && /*#__PURE__*/<div style={{
+        }}>☰</button></div>{props.searchSlot && /*#__PURE__*/<div style={{
+        padding: "8px 16px 0",
+        position: "relative",
+        zIndex: 25
+      }}>{props.searchSlot}</div>}{section === "household" && /*#__PURE__*/<div style={{
         display: "flex",
         gap: 6,
         padding: "8px 16px 0"
@@ -4472,12 +4712,12 @@ function AddTaskWizard({
     ...p,
     [k]: v
   }));
-  const [stepKey, setStepKey] = useState(initial ? "type" : "name");
+  const [stepKey, setStepKey] = useState(initial ? "due" : "name");
   const [newAction, setNewAction] = useState("");
   const [newPlace, setNewPlace] = useState("");
   const [extraPlaces, setExtraPlaces] = useState([]);
   const typeChosen = !!t.listType && !!t.scope;
-  const steps = [...(initial ? [] : ["name", "defer"]), "type", ...(t.scope === "shared" ? ["assignee"] : []), "place", "due", ...(t.listType === "chore" ? ["repeat"] : []), "importance", "subtasks", "list"];
+  const steps = [...(initial ? [] : ["name", "defer"]), "due", "type", ...(t.scope === "shared" ? ["assignee"] : []), "place", ...(t.listType === "chore" ? ["repeat"] : []), "importance", "subtasks", "notes", "list"];
   const idx = Math.max(0, steps.indexOf(stepKey));
   const next = () => setStepKey(steps[Math.min(steps.length - 1, idx + 1)]);
   const back = () => setStepKey(steps[Math.max(0, idx - 1)]);
@@ -4783,13 +5023,35 @@ function AddTaskWizard({
       ...btnStyle(C.ink),
       width: "100%"
     }}>{(t.actions || []).length || newAction.trim() ? "Next" : "No subtasks"}</button>;
+  } else if (stepKey === "notes") {
+    question = "Any notes?";
+    body = /*#__PURE__*/<textarea value={t.notes || ""} onChange={e => set("notes", e.target.value)} rows={4} placeholder="Add notes…" aria-label="Notes" style={{
+      ...inputStyle,
+      fontFamily: "inherit",
+      fontSize: 14
+    }} />;
+    footer = /*#__PURE__*/<button onClick={next} style={{
+      ...btnStyle(C.ink),
+      width: "100%"
+    }}>{(t.notes || "").trim() ? "Next" : "No notes"}</button>;
   } else if (stepKey === "list") {
     question = "Add to your to-do list?";
     body = /*#__PURE__*/<div style={{
       display: "flex",
       flexDirection: "column",
       gap: 10
-    }}>{bigBtn("Yes, add it", () => finish(false, withListFor(t, me, true)), true)}{bigBtn("No, just save it", () => finish(false), false)}</div>;
+    }}>{bigBtn("Yes, add it", () => finish(false, {
+      ...withListFor(t, me, true),
+      sortedBy: {
+        ...(t.sortedBy || {}),
+        [me]: true
+      }
+    }), true)}{bigBtn("No, just save it", () => finish(false, {
+      sortedBy: {
+        ...(t.sortedBy || {}),
+        [me]: true
+      }
+    }), false)}</div>;
   }
   const canSaveNow = stepKey !== "name" && stepKey !== "defer";
   return /*#__PURE__*/<div onClick={onClose} style={{
