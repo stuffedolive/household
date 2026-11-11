@@ -130,7 +130,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v66";
+const APP_VERSION = "v67";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -390,10 +390,11 @@ function App() {
       john: DEFAULT_CATEGORIES
     }
   });
-  const [view, setView] = useState("grid");
+  const [view, setView] = useState("todo");
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [lastUndo, setLastUndo] = useState(null); // { label, fn } | null — only ever the most recent action
   const [searchQuery, setSearchQuery] = useState("");
+  const [showMenu, setShowMenu] = useState(false);
   const setUndo = (label, fn) => setLastUndo({
     label,
     fn
@@ -1062,25 +1063,13 @@ function App() {
   return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(Header, {
     me: me,
     realMe: realMe,
-    onViewAs: k => setViewAs(k === realMe ? null : k),
     view: view,
     setView: goView,
     needsDetailsCount: needsDetailsTasks.length,
     onOpenNeedsDetails: () => setShowNeedsDetails(true),
     undoLabel: lastUndo ? lastUndo.label : null,
     onUndo: handleUndo,
-    searchQuery: searchQuery,
-    setSearchQuery: setSearchQuery,
-    searchResults: searchResults,
-    onSelectSearchResult: t => {
-      setSearchQuery("");
-      setView("queue");
-      setQueueSection(sectionForTask(t));
-      setChoreFilter("all");
-      setProjectFilter("all");
-      setHighlightTaskId(t.id);
-    },
-    onOpenSettings: () => setShowSettings(true)
+    onOpenMenu: () => setShowMenu(true)
   }), configError &&
   /*#__PURE__*/
   /*#__PURE__*/
@@ -1156,6 +1145,22 @@ function App() {
     setChoreFilter: setChoreFilter,
     projectFilter: projectFilter,
     setProjectFilter: setProjectFilter,
+    searchSlot:
+    /*#__PURE__*/
+    /*#__PURE__*/
+    React.createElement(SearchBar, {
+      searchQuery: searchQuery,
+      setSearchQuery: setSearchQuery,
+      searchResults: searchResults,
+      onSelectSearchResult: t => {
+        setSearchQuery("");
+        setView("queue");
+        setQueueSection(sectionForTask(t));
+        setChoreFilter("all");
+        setProjectFilter("all");
+        setHighlightTaskId(t.id);
+      }
+    }),
     section: queueSection,
     setSection: setQueueSection,
     highlightTaskId: highlightTaskId,
@@ -1179,30 +1184,34 @@ function App() {
     onSetTaskActions: setTaskActions,
     onSetActionDueDate: setActionDueDate,
     onToggleManualTodo: toggleManualTodo
-  }), /*#__PURE__*/React.createElement("button", {
-    onClick: () => {
+  }), /*#__PURE__*/React.createElement(BottomBar, {
+    view: view,
+    setView: goView,
+    onAdd: () => {
       setEditing(null);
       setShowForm(true);
+    }
+  }), showMenu &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(SidePanel, {
+    me: me,
+    realMe: realMe,
+    onViewAs: k => setViewAs(k === realMe ? null : k),
+    onPriorities: () => {
+      setShowMenu(false);
+      setView("grid");
     },
-    style: {
-      position: "absolute",
-      right: 18,
-      bottom: 22,
-      width: 52,
-      height: 52,
-      borderRadius: "50%",
-      background: C.ink,
-      color: C.white,
-      border: "none",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      boxShadow: "0 6px 16px rgba(43,42,40,0.28)",
-      cursor: "pointer",
-      fontSize: 24
+    onSettings: () => {
+      setShowMenu(false);
+      setShowSettings(true);
     },
-    "aria-label": "Add task"
-  }, "+"), showForm &&
+    onExport: () => {
+      setShowMenu(false);
+      exportData();
+    },
+    onClose: () => setShowMenu(false)
+  }), showForm &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement(TaskForm, {
@@ -1382,45 +1391,41 @@ function btnStyle(bg) {
 function Header({
   me,
   realMe,
-  onViewAs,
   view,
   setView,
   needsDetailsCount,
   onOpenNeedsDetails,
   undoLabel,
   onUndo,
-  searchQuery,
-  setSearchQuery,
-  searchResults,
-  onSelectSearchResult,
-  onOpenSettings
+  onOpenMenu
 }) {
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
-      padding: "18px 18px 10px",
+      padding: "12px 16px 10px 18px",
       borderBottom: `1px solid ${C.rule}`,
       // a coloured strip along the bottom edge shows at a glance when you're looking at the other person's view
       boxShadow: me !== realMe ? `inset 0 -3px 0 ${PERSON_COLOR[me]}` : "none",
-      position: "relative"
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
+      position: "relative",
       display: "flex",
       justifyContent: "space-between",
-      alignItems: "baseline"
+      alignItems: "center",
+      height: 54,
+      boxSizing: "border-box"
     }
   }, /*#__PURE__*/React.createElement("div", {
     style: {
       fontFamily: "Fraunces, serif",
       fontSize: 22,
       fontWeight: 600,
-      color: C.ink
+      color: C.ink,
+      whiteSpace: "nowrap"
     }
   }, "Our Life List"), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
       alignItems: "center",
-      gap: 8
+      gap: 8,
+      minWidth: 0
     }
   }, needsDetailsCount > 0 &&
   /*#__PURE__*/
@@ -1435,101 +1440,103 @@ function Header({
       padding: "3px 9px",
       fontSize: 10.5,
       fontWeight: 700,
-      cursor: "pointer"
-    }
-  }, needsDetailsCount, " need details"), /*#__PURE__*/React.createElement("button", {
-    onClick: onOpenSettings,
-    "aria-label": "Settings",
-    style: {
-      border: "none",
-      background: "none",
-      color: C.inkSoft,
-      fontSize: 15,
       cursor: "pointer",
-      padding: "2px 4px"
+      whiteSpace: "nowrap"
     }
-  }, "⚙"), /*#__PURE__*/React.createElement("div", {
-    role: "group",
-    "aria-label": "View as",
+  }, needsDetailsCount, " need details"), view === "grid" &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => setView("todo"),
     style: {
-      display: "flex",
-      border: `1px solid ${C.rule}`,
+      border: `1px solid ${C.ink}`,
+      background: C.ink,
+      color: C.white,
       borderRadius: 20,
-      overflow: "hidden"
+      padding: "4px 10px",
+      fontSize: 11,
+      fontWeight: 600,
+      cursor: "pointer",
+      whiteSpace: "nowrap"
     }
-  }, Object.entries(PEOPLE).map(([k, label]) => {
-    const active = me === k;
-    return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
-      key: k,
-      onClick: () => onViewAs(k),
-      "aria-pressed": active,
-      style: {
-        border: "none",
-        padding: "3px 10px",
-        fontSize: 11,
-        fontWeight: active ? 700 : 500,
-        cursor: "pointer",
-        background: active ? PERSON_COLOR[k] : C.white,
-        color: active ? C.white : C.inkSoft
-      }
-    }, label, k === realMe ? " · you" : "");
-  })))), /*#__PURE__*/React.createElement("div", {
-    style: {
-      position: "absolute",
-      top: 4,
-      right: 8,
-      fontSize: 8.5,
-      color: C.rule
-    }
-  }, APP_VERSION), /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      gap: 8,
-      alignItems: "center",
-      marginTop: 12
-    }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, "Close ✕"), /*#__PURE__*/React.createElement("button", {
     onClick: onUndo,
     disabled: !undoLabel,
+    "aria-label": "Undo",
     style: {
       display: "flex",
       alignItems: "center",
-      gap: 4,
       border: `1px solid ${C.rule}`,
       background: undoLabel ? C.card : "transparent",
       color: undoLabel ? C.inkSoft : C.rule,
       borderRadius: 20,
-      padding: "6px 12px",
+      padding: "5px 11px",
       fontSize: 11,
       fontWeight: 600,
       cursor: undoLabel ? "pointer" : "default",
       whiteSpace: "nowrap",
-      flexShrink: 0
+      maxWidth: 120,
+      overflow: "hidden",
+      textOverflow: "ellipsis"
     }
-  }, "↺ ", undoLabel ? `Undo ${undoLabel}` : "Undo"), /*#__PURE__*/React.createElement("input", {
+  }, "↺ ", undoLabel ? undoLabel : "Undo"), /*#__PURE__*/React.createElement("button", {
+    onClick: onOpenMenu,
+    "aria-label": "Menu",
+    style: {
+      border: "none",
+      background: "none",
+      color: C.ink,
+      fontSize: 22,
+      lineHeight: 1,
+      cursor: "pointer",
+      padding: "0 2px"
+    }
+  }, "☰")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      top: 2,
+      right: 8,
+      fontSize: 8.5,
+      color: C.rule,
+      pointerEvents: "none"
+    }
+  }, APP_VERSION));
+}
+/* search sits at the top of All tasks */
+function SearchBar({
+  searchQuery,
+  setSearchQuery,
+  searchResults,
+  onSelectSearchResult
+}) {
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "relative",
+      flex: "0 0 auto"
+    }
+  }, /*#__PURE__*/React.createElement("input", {
     value: searchQuery,
     onChange: e => setSearchQuery(e.target.value),
     placeholder: "Search tasks…",
     style: {
-      flex: 1,
-      minWidth: 0,
-      padding: "6px 12px",
+      width: "100%",
+      padding: "9px 14px",
       borderRadius: 20,
       border: `1px solid ${C.rule}`,
       background: C.white,
-      fontSize: 12,
+      fontSize: 13,
       color: C.ink,
       outline: "none",
       boxSizing: "border-box"
     }
-  })), searchQuery.trim() &&
+  }), searchQuery.trim() &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
     style: {
       position: "absolute",
-      left: 18,
-      right: 18,
+      left: 0,
+      right: 0,
       top: "100%",
       background: C.white,
       border: `1px solid ${C.rule}`,
@@ -1579,45 +1586,187 @@ function Header({
       color: C.inkSoft,
       marginLeft: 6
     }
-  }, t.listType === "chore" ? "Chore" : "Project")))), /*#__PURE__*/React.createElement("div", {
+  }, t.listType === "chore" ? "Chore" : "Project")))));
+}
+/* bottom bar: To do list (left), + new task (middle), All tasks (right) */
+function BottomBar({
+  view,
+  setView,
+  onAdd
+}) {
+  const tab = (key, label) => {
+    const active = view === key;
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
+      onClick: () => setView(key),
+      style: {
+        flex: 1,
+        border: "none",
+        background: "none",
+        padding: "14px 0",
+        fontSize: 13,
+        fontWeight: active ? 700 : 500,
+        color: active ? C.ink : C.inkSoft,
+        borderTop: `3px solid ${active ? C.ink : "transparent"}`,
+        cursor: "pointer"
+      }
+    }, label);
+  };
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    style: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      bottom: 0,
+      zIndex: 5,
+      display: "flex",
+      alignItems: "center",
+      background: C.parchment,
+      borderTop: `1px solid ${C.rule}`,
+      paddingBottom: "env(safe-area-inset-bottom)"
+    }
+  }, tab("todo", "To do list"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: "0 0 72px",
+      display: "flex",
+      justifyContent: "center"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onAdd,
+    "aria-label": "Add task",
+    style: {
+      width: 52,
+      height: 52,
+      marginTop: -22,
+      borderRadius: "50%",
+      background: C.ink,
+      color: C.white,
+      border: `4px solid ${C.parchment}`,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      boxShadow: "0 6px 16px rgba(43,42,40,0.28)",
+      cursor: "pointer",
+      fontSize: 26,
+      lineHeight: 1
+    }
+  }, "+")), tab("queue", "All tasks"));
+}
+/* side panel: whose view, priorities, settings, export */
+function SidePanel({
+  me,
+  realMe,
+  onViewAs,
+  onPriorities,
+  onSettings,
+  onExport,
+  onClose
+}) {
+  const row = {
+    display: "block",
+    width: "100%",
+    textAlign: "left",
+    border: "none",
+    borderBottom: `1px solid ${C.rule}`,
+    background: "none",
+    padding: "14px 4px",
+    fontSize: 15,
+    color: C.ink,
+    cursor: "pointer"
+  };
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    onClick: onClose,
+    style: {
+      position: "absolute",
+      inset: 0,
+      background: "rgba(43,42,40,0.4)",
+      zIndex: 30,
+      display: "flex",
+      justifyContent: "flex-end"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    onClick: e => e.stopPropagation(),
+    style: {
+      width: "78%",
+      maxWidth: 300,
+      height: "100%",
+      background: C.parchment,
+      padding: "18px 18px 24px",
+      boxSizing: "border-box",
+      overflowY: "auto"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
-      gap: 8,
-      marginTop: 14
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 16
     }
-  }, /*#__PURE__*/React.createElement(TabButton, {
-    active: view === "todo",
-    onClick: () => setView("todo"),
-    label: "To-do list"
-  }), /*#__PURE__*/React.createElement(TabButton, {
-    active: view === "grid",
-    onClick: () => setView("grid"),
-    label: "Priorities"
-  }), /*#__PURE__*/React.createElement(TabButton, {
-    active: view === "queue",
-    onClick: () => setView("queue"),
-    label: "All tasks"
-  })));
-}
-function TabButton({
-  active,
-  onClick,
-  label
-}) {
-  return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
-    onClick: onClick,
+  }, /*#__PURE__*/React.createElement("div", {
     style: {
-      flex: 1,
-      padding: "9px 0",
-      borderRadius: 8,
-      border: `1px solid ${active ? C.ink : C.rule}`,
-      background: active ? C.ink : "transparent",
-      color: active ? C.white : C.inkSoft,
-      fontSize: 13,
+      fontFamily: "Fraunces, serif",
+      fontSize: 20,
       fontWeight: 600,
+      color: C.ink
+    }
+  }, "Menu"), /*#__PURE__*/React.createElement("button", {
+    onClick: onClose,
+    "aria-label": "Close menu",
+    style: {
+      border: "none",
+      background: "none",
+      fontSize: 20,
+      color: C.inkSoft,
       cursor: "pointer"
     }
-  }, label);
+  }, "✕")), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      marginBottom: 6
+    }
+  }, "Viewing as"), /*#__PURE__*/React.createElement("div", {
+    role: "group",
+    "aria-label": "View as",
+    style: {
+      display: "flex",
+      border: `1px solid ${C.rule}`,
+      borderRadius: 20,
+      overflow: "hidden",
+      marginBottom: 16
+    }
+  }, Object.entries(PEOPLE).map(([k, label]) => {
+    const active = me === k;
+    return /*#__PURE__*/ /*#__PURE__*/React.createElement("button", {
+      key: k,
+      onClick: () => onViewAs(k),
+      "aria-pressed": active,
+      style: {
+        flex: 1,
+        border: "none",
+        padding: "8px 10px",
+        fontSize: 13,
+        fontWeight: active ? 700 : 500,
+        cursor: "pointer",
+        background: active ? PERSON_COLOR[k] : C.white,
+        color: active ? C.white : C.inkSoft
+      }
+    }, label, k === realMe ? " · you" : "");
+  })), /*#__PURE__*/React.createElement("button", {
+    onClick: onPriorities,
+    style: row
+  }, "Priorities"), /*#__PURE__*/React.createElement("button", {
+    onClick: onSettings,
+    style: row
+  }, "Settings"), /*#__PURE__*/React.createElement("button", {
+    onClick: onExport,
+    style: row
+  }, "Export data"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontSize: 10.5,
+      color: C.inkSoft,
+      marginTop: 16
+    }
+  }, APP_VERSION)));
 }
 function PersonBadge({
   person,
@@ -1687,7 +1836,7 @@ function PriorityGrid({
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
       padding: "16px 16px 12px",
-      height: "calc(100% - 150px)",
+      height: "calc(100% - 118px)",
       display: "flex",
       flexDirection: "column"
     }
@@ -3225,7 +3374,7 @@ function FrenzyScreen({
   };
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
-      height: "calc(100% - 150px)",
+      height: "calc(100% - 118px)",
       overflowY: "auto",
       overflowX: "hidden",
       background: C.card,
@@ -3593,26 +3742,16 @@ function ToDoList({
   }), [extraById, baseById]);
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
-      height: "calc(100% - 120px)",
+      height: "calc(100% - 118px)",
       overflowY: "auto",
       overflowX: "hidden",
       padding: "14px 16px 90px"
     }
-  }, /*#__PURE__*/React.createElement("button", {
-    onClick: () => setOverwhelmed(o => !o),
-    style: {
-      width: "100%",
-      border: `1px solid ${C.rule}`,
-      background: overwhelmed ? C.ink : C.card,
-      color: overwhelmed ? C.white : C.inkSoft,
-      borderRadius: 8,
-      padding: "7px 0",
-      fontSize: 12,
-      fontWeight: 600,
-      cursor: "pointer",
-      marginBottom: 12
-    }
-  }, overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"), overwhelmed && skipped.length > 0 &&
+  }, /*#__PURE__*/React.createElement(PlanHeader, {
+    scheduling: overwhelmed,
+    onToggleSchedule: () => setOverwhelmed(o => !o),
+    onReset: onResetToday
+  }), overwhelmed && skipped.length > 0 &&
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -3673,7 +3812,6 @@ function ToDoList({
     onDeleteSundry: onDeleteSundry,
     onReorderBucketFull: onReorderTodayBucketFull,
     onRemoveTask: onRemoveTaskFromToday,
-    onReset: onResetToday,
     onSetBucket: onSetTodayBucket,
     onToggle: onToggle,
     onToggleAction: onToggleAction,
@@ -3682,10 +3820,19 @@ function ToDoList({
     onConvertNote: onConvertNote
   }), /*#__PURE__*/React.createElement("div", {
     style: {
-      textAlign: "right",
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "baseline",
       marginBottom: 6
     }
-  }, /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Fraunces, serif",
+      fontSize: 20,
+      fontWeight: 600,
+      color: C.ink
+    }
+  }, "To do list"), /*#__PURE__*/React.createElement("button", {
     onClick: toggleCollapsedAll,
     style: {
       border: "none",
@@ -3907,6 +4054,80 @@ function ToDoList({
   }))));
 }
 
+/* "The plan" title sits outside the box, with Schedule (the old overwhelmed mode) and Reset on the right */
+function PlanHeader({
+  scheduling,
+  onToggleSchedule,
+  onReset
+}) {
+  const [resetting, setResetting] = useState(false);
+  return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center",
+      marginBottom: 8
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      fontFamily: "Fraunces, serif",
+      fontSize: 20,
+      fontWeight: 600,
+      color: C.ink
+    }
+  }, "The plan"), /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      gap: 8
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: onToggleSchedule,
+    "aria-pressed": scheduling,
+    style: {
+      border: `1px solid ${C.ink}`,
+      background: scheduling ? C.ink : "none",
+      color: scheduling ? C.white : C.ink,
+      borderRadius: 8,
+      padding: "5px 12px",
+      fontSize: 11.5,
+      fontWeight: 600,
+      cursor: "pointer"
+    }
+  }, scheduling ? "✕ Schedule" : "Schedule"), !resetting ?
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => setResetting(true),
+    style: {
+      border: `1px solid ${C.plum}`,
+      color: C.plum,
+      background: "none",
+      borderRadius: 8,
+      padding: "5px 12px",
+      fontSize: 11.5,
+      fontWeight: 600,
+      cursor: "pointer"
+    }
+  }, "Reset") :
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => {
+      onReset();
+      setResetting(false);
+    },
+    style: {
+      border: "none",
+      color: C.white,
+      background: C.plum,
+      borderRadius: 8,
+      padding: "5px 12px",
+      fontSize: 11.5,
+      fontWeight: 700,
+      cursor: "pointer"
+    }
+  }, "Confirm?")));
+}
 /* compact "Today's plan" — just titles, sits at the top of the list like the hero card does for overwhelmed mode */
 function TodayItemRow({
   item,
@@ -4019,7 +4240,6 @@ function TodayPlanSection({
   onDeleteSundry,
   onReorderBucketFull,
   onRemoveTask,
-  onReset,
   onSetBucket,
   onToggle,
   onToggleAction,
@@ -4028,7 +4248,6 @@ function TodayPlanSection({
   onConvertNote
 }) {
   const [newSundry, setNewSundry] = useState("");
-  const [resetting, setResetting] = useState(false);
   const candidates = useMemo(() => Object.values(tasksById).filter(t => !t.completed), [tasksById]);
   const similar = useMemo(() => findSimilarTasks(newSundry, candidates), [newSundry, candidates]);
   const inPlanIds = useMemo(() => new Set(items.filter(it => it.type === "task" && !it.subtaskId).map(it => it.id)), [items]);
@@ -4056,52 +4275,6 @@ function TodayPlanSection({
       flexDirection: "column"
     }
   }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 10
-    }
-  }, /*#__PURE__*/React.createElement("div", {
-    style: {
-      fontFamily: "Fraunces, serif",
-      fontSize: 16,
-      color: C.ink
-    }
-  }, "The plan"), !resetting ?
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement("button", {
-    onClick: () => setResetting(true),
-    style: {
-      border: `1px solid ${C.plum}`,
-      color: C.plum,
-      background: "none",
-      borderRadius: 8,
-      padding: "4px 10px",
-      fontSize: 10.5,
-      fontWeight: 600,
-      cursor: "pointer"
-    }
-  }, "Reset") :
-  /*#__PURE__*/
-  /*#__PURE__*/
-  React.createElement("button", {
-    onClick: () => {
-      onReset();
-      setResetting(false);
-    },
-    style: {
-      border: "none",
-      color: C.white,
-      background: C.plum,
-      borderRadius: 8,
-      padding: "4px 10px",
-      fontSize: 10.5,
-      fontWeight: 700,
-      cursor: "pointer"
-    }
-  }, "Confirm?")), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
     }
@@ -4324,7 +4497,8 @@ function SectionIcon({
 function TaskSections({
   tasks,
   me,
-  onOpen
+  onOpen,
+  search
 }) {
   const open = tasks.filter(t => !t.completed);
   const counts = {
@@ -4341,7 +4515,7 @@ function TaskSections({
   const keys = ["household", "personalTasks", "shared", "personal", "frenzy"];
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
-      height: "calc(100% - 150px)",
+      height: "calc(100% - 118px)",
       padding: "14px 16px",
       display: "flex",
       flexDirection: "column",
@@ -4349,7 +4523,7 @@ function TaskSections({
       boxSizing: "border-box",
       background: C.card
     }
-  }, keys.map(k =>
+  }, search, keys.map(k =>
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("button", {
@@ -4494,7 +4668,8 @@ function QueueView(props) {
   if (!section) return /*#__PURE__*/ /*#__PURE__*/React.createElement(TaskSections, {
     tasks: tasks,
     me: me,
-    onOpen: setSection
+    onOpen: setSection,
+    search: props.searchSlot
   });
   if (section === "frenzy") return /*#__PURE__*/ /*#__PURE__*/React.createElement(FrenzyScreen, {
     tasks: tasks,
@@ -4507,7 +4682,7 @@ function QueueView(props) {
   const sectionTitle = SECTION_LABELS[section];
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
-      height: "calc(100% - 150px)",
+      height: "calc(100% - 118px)",
       display: "flex",
       flexDirection: "column",
       background: C.card

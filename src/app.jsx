@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v66";
+const APP_VERSION = "v67";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -322,10 +322,11 @@ function App() {
       john: DEFAULT_CATEGORIES
     }
   });
-  const [view, setView] = useState("grid");
+  const [view, setView] = useState("todo");
   const [showNeedsDetails, setShowNeedsDetails] = useState(false);
   const [lastUndo, setLastUndo] = useState(null); // { label, fn } | null — only ever the most recent action
   const [searchQuery, setSearchQuery] = useState("");
+  const [showMenu, setShowMenu] = useState(false);
   const setUndo = (label, fn) => setLastUndo({
     label,
     fn
@@ -923,14 +924,7 @@ function App() {
         }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setRealMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
   }
   if (tasks === null) return /*#__PURE__*/<Shell><LoveLoading note={loveNote} text="Loading the list…" /></Shell>;
-  return /*#__PURE__*/<Shell><Header me={me} realMe={realMe} onViewAs={k => setViewAs(k === realMe ? null : k)} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
-      setSearchQuery("");
-      setView("queue");
-      setQueueSection(sectionForTask(t));
-      setChoreFilter("all");
-      setProjectFilter("all");
-      setHighlightTaskId(t.id);
-    }} onOpenSettings={() => setShowSettings(true)} />{configError && /*#__PURE__*/<div style={{
+  return /*#__PURE__*/<Shell><Header me={me} realMe={realMe} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} onOpenMenu={() => setShowMenu(true)} />{configError && /*#__PURE__*/<div style={{
       background: C.plum,
       color: C.white,
       fontSize: 11,
@@ -946,29 +940,29 @@ function App() {
       setEditing(null);
       setConvertNote(n);
       setShowForm(true);
-    }} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
+    }} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} searchSlot={/*#__PURE__*/<SearchBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
+      setSearchQuery("");
+      setView("queue");
+      setQueueSection(sectionForTask(t));
+      setChoreFilter("all");
+      setProjectFilter("all");
+      setHighlightTaskId(t.id);
+    }} />} section={queueSection} setSection={setQueueSection} highlightTaskId={highlightTaskId} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onDeleteRoom={deleteRoom} onDeleteCategory={deleteCategory} onReorderRoomsFull={reorderRoomsFull} onReorderCategoriesFull={reorderCategoriesFull} onToggle={toggleComplete} onEdit={t => {
       setEditing(t);
       setShowForm(true);
-    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onToggleManualTodo={toggleManualTodo} />}<button onClick={() => {
+    }} onDelete={deleteTask} onToggleAction={toggleAction} onAddAction={addAction} onDeleteAction={deleteAction} onReorderAction={reorderAction} onSetTaskActions={setTaskActions} onSetActionDueDate={setActionDueDate} onToggleManualTodo={toggleManualTodo} />}<BottomBar view={view} setView={goView} onAdd={() => {
       setEditing(null);
       setShowForm(true);
-    }} style={{
-      position: "absolute",
-      right: 18,
-      bottom: 22,
-      width: 52,
-      height: 52,
-      borderRadius: "50%",
-      background: C.ink,
-      color: C.white,
-      border: "none",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      boxShadow: "0 6px 16px rgba(43,42,40,0.28)",
-      cursor: "pointer",
-      fontSize: 24
-    }} aria-label="Add task">+</button>{showForm && /*#__PURE__*/<TaskForm me={me} initial={editing} prefillTitle={!editing && convertNote ? convertNote.title : ""} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => {
+    }} />{showMenu && /*#__PURE__*/<SidePanel me={me} realMe={realMe} onViewAs={k => setViewAs(k === realMe ? null : k)} onPriorities={() => {
+      setShowMenu(false);
+      setView("grid");
+    }} onSettings={() => {
+      setShowMenu(false);
+      setShowSettings(true);
+    }} onExport={() => {
+      setShowMenu(false);
+      exportData();
+    }} onClose={() => setShowMenu(false)} />}{showForm && /*#__PURE__*/<TaskForm me={me} initial={editing} prefillTitle={!editing && convertNote ? convertNote.title : ""} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => {
       setShowForm(false);
       setConvertNote(null);
     }} onSave={t => {
@@ -1082,110 +1076,112 @@ function btnStyle(bg) {
 function Header({
   me,
   realMe,
-  onViewAs,
   view,
   setView,
   needsDetailsCount,
   onOpenNeedsDetails,
   undoLabel,
   onUndo,
-  searchQuery,
-  setSearchQuery,
-  searchResults,
-  onSelectSearchResult,
-  onOpenSettings
+  onOpenMenu
 }) {
   return /*#__PURE__*/<div style={{
-    padding: "18px 18px 10px",
+    padding: "12px 16px 10px 18px",
     borderBottom: `1px solid ${C.rule}`,
     // a coloured strip along the bottom edge shows at a glance when you're looking at the other person's view
     boxShadow: me !== realMe ? `inset 0 -3px 0 ${PERSON_COLOR[me]}` : "none",
-    position: "relative"
+    position: "relative",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    height: 54,
+    boxSizing: "border-box"
   }}><div style={{
+      fontFamily: "Fraunces, serif",
+      fontSize: 22,
+      fontWeight: 600,
+      color: C.ink,
+      whiteSpace: "nowrap"
+    }}>Our Life List</div><div style={{
       display: "flex",
-      justifyContent: "space-between",
-      alignItems: "baseline"
-    }}><div style={{
-        fontFamily: "Fraunces, serif",
-        fontSize: 22,
-        fontWeight: 600,
-        color: C.ink
-      }}>Our Life List</div><div style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8
-      }}>{needsDetailsCount > 0 && /*#__PURE__*/<button onClick={onOpenNeedsDetails} style={{
-          border: "none",
-          background: C.mustard,
-          color: C.white,
-          borderRadius: 20,
-          padding: "3px 9px",
-          fontSize: 10.5,
-          fontWeight: 700,
-          cursor: "pointer"
-        }}>{needsDetailsCount} need details</button>}<button onClick={onOpenSettings} aria-label="Settings" style={{
-          border: "none",
-          background: "none",
-          color: C.inkSoft,
-          fontSize: 15,
-          cursor: "pointer",
-          padding: "2px 4px"
-        }}>⚙</button><div role="group" aria-label="View as" style={{
-          display: "flex",
-          border: `1px solid ${C.rule}`,
-          borderRadius: 20,
-          overflow: "hidden"
-        }}>{Object.entries(PEOPLE).map(([k, label]) => {
-          const active = me === k;
-          return /*#__PURE__*/<button key={k} onClick={() => onViewAs(k)} aria-pressed={active} style={{
-            border: "none",
-            padding: "3px 10px",
-            fontSize: 11,
-            fontWeight: active ? 700 : 500,
-            cursor: "pointer",
-            background: active ? PERSON_COLOR[k] : C.white,
-            color: active ? C.white : C.inkSoft
-          }}>{label}{k === realMe ? " · you" : ""}</button>;
-        })}</div></div></div><div style={{
-      position: "absolute",
-      top: 4,
-      right: 8,
-      fontSize: 8.5,
-      color: C.rule
-    }}>{APP_VERSION}</div><div style={{
-      display: "flex",
-      gap: 8,
       alignItems: "center",
-      marginTop: 12
-    }}><button onClick={onUndo} disabled={!undoLabel} style={{
+      gap: 8,
+      minWidth: 0
+    }}>{needsDetailsCount > 0 && /*#__PURE__*/<button onClick={onOpenNeedsDetails} style={{
+        border: "none",
+        background: C.mustard,
+        color: C.white,
+        borderRadius: 20,
+        padding: "3px 9px",
+        fontSize: 10.5,
+        fontWeight: 700,
+        cursor: "pointer",
+        whiteSpace: "nowrap"
+      }}>{needsDetailsCount} need details</button>}{view === "grid" && /*#__PURE__*/<button onClick={() => setView("todo")} style={{
+        border: `1px solid ${C.ink}`,
+        background: C.ink,
+        color: C.white,
+        borderRadius: 20,
+        padding: "4px 10px",
+        fontSize: 11,
+        fontWeight: 600,
+        cursor: "pointer",
+        whiteSpace: "nowrap"
+      }}>Close ✕</button>}<button onClick={onUndo} disabled={!undoLabel} aria-label="Undo" style={{
         display: "flex",
         alignItems: "center",
-        gap: 4,
         border: `1px solid ${C.rule}`,
         background: undoLabel ? C.card : "transparent",
         color: undoLabel ? C.inkSoft : C.rule,
         borderRadius: 20,
-        padding: "6px 12px",
+        padding: "5px 11px",
         fontSize: 11,
         fontWeight: 600,
         cursor: undoLabel ? "pointer" : "default",
         whiteSpace: "nowrap",
-        flexShrink: 0
-      }}>↺ {undoLabel ? `Undo ${undoLabel}` : "Undo"}</button><input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search tasks…" style={{
-        flex: 1,
-        minWidth: 0,
-        padding: "6px 12px",
-        borderRadius: 20,
-        border: `1px solid ${C.rule}`,
-        background: C.white,
-        fontSize: 12,
+        maxWidth: 120,
+        overflow: "hidden",
+        textOverflow: "ellipsis"
+      }}>↺ {undoLabel ? undoLabel : "Undo"}</button><button onClick={onOpenMenu} aria-label="Menu" style={{
+        border: "none",
+        background: "none",
         color: C.ink,
-        outline: "none",
-        boxSizing: "border-box"
-      }} /></div>{searchQuery.trim() && /*#__PURE__*/<div style={{
+        fontSize: 22,
+        lineHeight: 1,
+        cursor: "pointer",
+        padding: "0 2px"
+      }}>☰</button></div><div style={{
       position: "absolute",
-      left: 18,
-      right: 18,
+      top: 2,
+      right: 8,
+      fontSize: 8.5,
+      color: C.rule,
+      pointerEvents: "none"
+    }}>{APP_VERSION}</div></div>;
+}
+/* search sits at the top of All tasks */
+function SearchBar({
+  searchQuery,
+  setSearchQuery,
+  searchResults,
+  onSelectSearchResult
+}) {
+  return /*#__PURE__*/<div style={{
+    position: "relative",
+    flex: "0 0 auto"
+  }}><input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search tasks…" style={{
+      width: "100%",
+      padding: "9px 14px",
+      borderRadius: 20,
+      border: `1px solid ${C.rule}`,
+      background: C.white,
+      fontSize: 13,
+      color: C.ink,
+      outline: "none",
+      boxSizing: "border-box"
+    }} />{searchQuery.trim() && /*#__PURE__*/<div style={{
+      position: "absolute",
+      left: 0,
+      right: 0,
       top: "100%",
       background: C.white,
       border: `1px solid ${C.rule}`,
@@ -1217,28 +1213,140 @@ function Header({
           fontSize: 10.5,
           color: C.inkSoft,
           marginLeft: 6
-        }}>{t.listType === "chore" ? "Chore" : "Project"}</span></button>)}</div>}<div style={{
-      display: "flex",
-      gap: 8,
-      marginTop: 14
-    }}><TabButton active={view === "todo"} onClick={() => setView("todo")} label="To-do list" /><TabButton active={view === "grid"} onClick={() => setView("grid")} label="Priorities" /><TabButton active={view === "queue"} onClick={() => setView("queue")} label="All tasks" /></div></div>;
+        }}>{t.listType === "chore" ? "Chore" : "Project"}</span></button>)}</div>}</div>;
 }
-function TabButton({
-  active,
-  onClick,
-  label
+/* bottom bar: To do list (left), + new task (middle), All tasks (right) */
+function BottomBar({
+  view,
+  setView,
+  onAdd
 }) {
-  return /*#__PURE__*/<button onClick={onClick} style={{
-    flex: 1,
-    padding: "9px 0",
-    borderRadius: 8,
-    border: `1px solid ${active ? C.ink : C.rule}`,
-    background: active ? C.ink : "transparent",
-    color: active ? C.white : C.inkSoft,
-    fontSize: 13,
-    fontWeight: 600,
+  const tab = (key, label) => {
+    const active = view === key;
+    return /*#__PURE__*/<button onClick={() => setView(key)} style={{
+      flex: 1,
+      border: "none",
+      background: "none",
+      padding: "14px 0",
+      fontSize: 13,
+      fontWeight: active ? 700 : 500,
+      color: active ? C.ink : C.inkSoft,
+      borderTop: `3px solid ${active ? C.ink : "transparent"}`,
+      cursor: "pointer"
+    }}>{label}</button>;
+  };
+  return /*#__PURE__*/<div style={{
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 5,
+    display: "flex",
+    alignItems: "center",
+    background: C.parchment,
+    borderTop: `1px solid ${C.rule}`,
+    paddingBottom: "env(safe-area-inset-bottom)"
+  }}>{tab("todo", "To do list")}<div style={{
+      flex: "0 0 72px",
+      display: "flex",
+      justifyContent: "center"
+    }}><button onClick={onAdd} aria-label="Add task" style={{
+        width: 52,
+        height: 52,
+        marginTop: -22,
+        borderRadius: "50%",
+        background: C.ink,
+        color: C.white,
+        border: `4px solid ${C.parchment}`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        boxShadow: "0 6px 16px rgba(43,42,40,0.28)",
+        cursor: "pointer",
+        fontSize: 26,
+        lineHeight: 1
+      }}>+</button></div>{tab("queue", "All tasks")}</div>;
+}
+/* side panel: whose view, priorities, settings, export */
+function SidePanel({
+  me,
+  realMe,
+  onViewAs,
+  onPriorities,
+  onSettings,
+  onExport,
+  onClose
+}) {
+  const row = {
+    display: "block",
+    width: "100%",
+    textAlign: "left",
+    border: "none",
+    borderBottom: `1px solid ${C.rule}`,
+    background: "none",
+    padding: "14px 4px",
+    fontSize: 15,
+    color: C.ink,
     cursor: "pointer"
-  }}>{label}</button>;
+  };
+  return /*#__PURE__*/<div onClick={onClose} style={{
+    position: "absolute",
+    inset: 0,
+    background: "rgba(43,42,40,0.4)",
+    zIndex: 30,
+    display: "flex",
+    justifyContent: "flex-end"
+  }}><div onClick={e => e.stopPropagation()} style={{
+      width: "78%",
+      maxWidth: 300,
+      height: "100%",
+      background: C.parchment,
+      padding: "18px 18px 24px",
+      boxSizing: "border-box",
+      overflowY: "auto"
+    }}><div style={{
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        marginBottom: 16
+      }}><div style={{
+          fontFamily: "Fraunces, serif",
+          fontSize: 20,
+          fontWeight: 600,
+          color: C.ink
+        }}>Menu</div><button onClick={onClose} aria-label="Close menu" style={{
+          border: "none",
+          background: "none",
+          fontSize: 20,
+          color: C.inkSoft,
+          cursor: "pointer"
+        }}>✕</button></div><div style={{
+        fontSize: 11,
+        color: C.inkSoft,
+        marginBottom: 6
+      }}>Viewing as</div><div role="group" aria-label="View as" style={{
+        display: "flex",
+        border: `1px solid ${C.rule}`,
+        borderRadius: 20,
+        overflow: "hidden",
+        marginBottom: 16
+      }}>{Object.entries(PEOPLE).map(([k, label]) => {
+          const active = me === k;
+          return /*#__PURE__*/<button key={k} onClick={() => onViewAs(k)} aria-pressed={active} style={{
+            flex: 1,
+            border: "none",
+            padding: "8px 10px",
+            fontSize: 13,
+            fontWeight: active ? 700 : 500,
+            cursor: "pointer",
+            background: active ? PERSON_COLOR[k] : C.white,
+            color: active ? C.white : C.inkSoft
+          }}>{label}{k === realMe ? " · you" : ""}</button>;
+        })}</div><button onClick={onPriorities} style={row}>Priorities</button><button onClick={onSettings} style={row}>Settings</button><button onClick={onExport} style={row}>Export data</button><div style={{
+        fontSize: 10.5,
+        color: C.inkSoft,
+        marginTop: 16
+      }}>{APP_VERSION}</div></div></div>;
 }
 function PersonBadge({
   person,
@@ -1300,7 +1408,7 @@ function PriorityGrid({
 }) {
   return /*#__PURE__*/<div style={{
     padding: "16px 16px 12px",
-    height: "calc(100% - 150px)",
+    height: "calc(100% - 118px)",
     display: "flex",
     flexDirection: "column"
   }}><div style={{
@@ -2294,7 +2402,7 @@ function FrenzyScreen({
     });
   };
   return /*#__PURE__*/<div style={{
-    height: "calc(100% - 150px)",
+    height: "calc(100% - 118px)",
     overflowY: "auto",
     overflowX: "hidden",
     background: C.card,
@@ -2622,22 +2730,11 @@ function ToDoList({
     ...baseById
   }), [extraById, baseById]);
   return /*#__PURE__*/<div style={{
-    height: "calc(100% - 120px)",
+    height: "calc(100% - 118px)",
     overflowY: "auto",
     overflowX: "hidden",
     padding: "14px 16px 90px"
-  }}><button onClick={() => setOverwhelmed(o => !o)} style={{
-      width: "100%",
-      border: `1px solid ${C.rule}`,
-      background: overwhelmed ? C.ink : C.card,
-      color: overwhelmed ? C.white : C.inkSoft,
-      borderRadius: 8,
-      padding: "7px 0",
-      fontSize: 12,
-      fontWeight: 600,
-      cursor: "pointer",
-      marginBottom: 12
-    }}>{overwhelmed ? "Turn off overwhelmed mode" : "I'm overwhelmed — help me prioritise"}</button>{overwhelmed && skipped.length > 0 && /*#__PURE__*/<div style={{
+  }}><PlanHeader scheduling={overwhelmed} onToggleSchedule={() => setOverwhelmed(o => !o)} onReset={onResetToday} />{overwhelmed && skipped.length > 0 && /*#__PURE__*/<div style={{
       textAlign: "center",
       marginTop: -6,
       marginBottom: 12
@@ -2664,10 +2761,17 @@ function ToDoList({
       }
       const driving = drivingSubtask(topPick.item);
       if (driving) snoozeProjectAction(topPick.item, driving, dateStr);else snoozeChore(topPick.item, dateStr);
-    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onReset={onResetToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} /><div style={{
-      textAlign: "right",
+    }} />}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} /><div style={{
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "baseline",
       marginBottom: 6
-    }}><button onClick={toggleCollapsedAll} style={{
+    }}><div style={{
+        fontFamily: "Fraunces, serif",
+        fontSize: 20,
+        fontWeight: 600,
+        color: C.ink
+      }}>To do list</div><button onClick={toggleCollapsedAll} style={{
         border: "none",
         background: "none",
         color: C.inkSoft,
@@ -2719,6 +2823,58 @@ function ToDoList({
       }}>Nothing coming up yet.</div>}{upcoming.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}</CollapsibleSection>{justDone.length > 0 && /*#__PURE__*/<CollapsibleSection collapsedAll={collapsedAll} title="Recently completed" count={justDone.length} defaultOpen={false}>{justDone.map(t => /*#__PURE__*/<TaskRow key={t.id} task={t} {...rowProps} showAsCompleted={true} onAddToToday={inPlan(t.id, null) ? undefined : onAddTaskToToday} />)}</CollapsibleSection>}</div>;
 }
 
+/* "The plan" title sits outside the box, with Schedule (the old overwhelmed mode) and Reset on the right */
+function PlanHeader({
+  scheduling,
+  onToggleSchedule,
+  onReset
+}) {
+  const [resetting, setResetting] = useState(false);
+  return /*#__PURE__*/<div style={{
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8
+  }}><div style={{
+      fontFamily: "Fraunces, serif",
+      fontSize: 20,
+      fontWeight: 600,
+      color: C.ink
+    }}>The plan</div><div style={{
+      display: "flex",
+      gap: 8
+    }}><button onClick={onToggleSchedule} aria-pressed={scheduling} style={{
+        border: `1px solid ${C.ink}`,
+        background: scheduling ? C.ink : "none",
+        color: scheduling ? C.white : C.ink,
+        borderRadius: 8,
+        padding: "5px 12px",
+        fontSize: 11.5,
+        fontWeight: 600,
+        cursor: "pointer"
+      }}>{scheduling ? "✕ Schedule" : "Schedule"}</button>{!resetting ? /*#__PURE__*/<button onClick={() => setResetting(true)} style={{
+        border: `1px solid ${C.plum}`,
+        color: C.plum,
+        background: "none",
+        borderRadius: 8,
+        padding: "5px 12px",
+        fontSize: 11.5,
+        fontWeight: 600,
+        cursor: "pointer"
+      }}>Reset</button> : /*#__PURE__*/<button onClick={() => {
+        onReset();
+        setResetting(false);
+      }} style={{
+        border: "none",
+        color: C.white,
+        background: C.plum,
+        borderRadius: 8,
+        padding: "5px 12px",
+        fontSize: 11.5,
+        fontWeight: 700,
+        cursor: "pointer"
+      }}>Confirm?</button>}</div></div>;
+}
 /* compact "Today's plan" — just titles, sits at the top of the list like the hero card does for overwhelmed mode */
 function TodayItemRow({
   item,
@@ -2812,7 +2968,6 @@ function TodayPlanSection({
   onDeleteSundry,
   onReorderBucketFull,
   onRemoveTask,
-  onReset,
   onSetBucket,
   onToggle,
   onToggleAction,
@@ -2821,7 +2976,6 @@ function TodayPlanSection({
   onConvertNote
 }) {
   const [newSundry, setNewSundry] = useState("");
-  const [resetting, setResetting] = useState(false);
   const candidates = useMemo(() => Object.values(tasksById).filter(t => !t.completed), [tasksById]);
   const similar = useMemo(() => findSimilarTasks(newSundry, candidates), [newSundry, candidates]);
   const inPlanIds = useMemo(() => new Set(items.filter(it => it.type === "task" && !it.subtaskId).map(it => it.id)), [items]);
@@ -2847,36 +3001,6 @@ function TodayPlanSection({
     display: "flex",
     flexDirection: "column"
   }}><div style={{
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      marginBottom: 10
-    }}><div style={{
-        fontFamily: "Fraunces, serif",
-        fontSize: 16,
-        color: C.ink
-      }}>The plan</div>{!resetting ? /*#__PURE__*/<button onClick={() => setResetting(true)} style={{
-        border: `1px solid ${C.plum}`,
-        color: C.plum,
-        background: "none",
-        borderRadius: 8,
-        padding: "4px 10px",
-        fontSize: 10.5,
-        fontWeight: 600,
-        cursor: "pointer"
-      }}>Reset</button> : /*#__PURE__*/<button onClick={() => {
-        onReset();
-        setResetting(false);
-      }} style={{
-        border: "none",
-        color: C.white,
-        background: C.plum,
-        borderRadius: 8,
-        padding: "4px 10px",
-        fontSize: 10.5,
-        fontWeight: 700,
-        cursor: "pointer"
-      }}>Confirm?</button>}</div><div style={{
       flex: 1
     }}>{nowItems.length === 0 && /*#__PURE__*/<div style={{
         color: C.inkSoft,
@@ -2958,7 +3082,7 @@ function SectionIcon({ kind, size = 76 }) {
   if (kind === "frenzy") return /*#__PURE__*/<svg {...common}><path d="M13.5 2.5L5 13.5h6.2l-1 8 8.8-11.5h-6.4l.9-7.5z" /></svg>;
   return /*#__PURE__*/<svg {...common}><circle cx="10" cy="8" r="3.2" /><path d="M4 20c0-3.5 2.7-6 6-6s6 2.5 6 6" /><path d="M19 3l.9 1.9 2.1.3-1.5 1.5.4 2.1L19 7.8l-1.9 1 .4-2.1L16 5.2l2.1-.3z" /></svg>;
 }
-function TaskSections({ tasks, me, onOpen }) {
+function TaskSections({ tasks, me, onOpen, search }) {
   const open = tasks.filter(t => !t.completed);
   const counts = { household: 0, personalTasks: 0, shared: 0, personal: 0 };
   open.forEach(t => {
@@ -2968,14 +3092,14 @@ function TaskSections({ tasks, me, onOpen }) {
   });
   const keys = ["household", "personalTasks", "shared", "personal", "frenzy"];
   return /*#__PURE__*/<div style={{
-    height: "calc(100% - 150px)",
+    height: "calc(100% - 118px)",
     padding: "14px 16px",
     display: "flex",
     flexDirection: "column",
     gap: 12,
     boxSizing: "border-box",
     background: C.card
-  }}>{keys.map(k => /*#__PURE__*/<button key={k} onClick={() => onOpen(k)} aria-label={SECTION_LABELS[k]} style={{
+  }}>{search}{keys.map(k => /*#__PURE__*/<button key={k} onClick={() => onOpen(k)} aria-label={SECTION_LABELS[k]} style={{
       position: "relative",
       flex: k === "frenzy" ? "0 0 64px" : 1,
       minHeight: k === "frenzy" ? 64 : 0,
@@ -3097,11 +3221,11 @@ function QueueView(props) {
     const t = setTimeout(() => setJumpToSection(null), 4000);
     return () => clearTimeout(t);
   }, [jumpToSection]);
-  if (!section) return /*#__PURE__*/<TaskSections tasks={tasks} me={me} onOpen={setSection} />;
+  if (!section) return /*#__PURE__*/<TaskSections tasks={tasks} me={me} onOpen={setSection} search={props.searchSlot} />;
   if (section === "frenzy") return /*#__PURE__*/<FrenzyScreen tasks={tasks} me={me} config={config} onToggle={onToggle} onEdit={onEdit} onBack={() => setSection(null)} />;
   const sectionTitle = SECTION_LABELS[section];
   return /*#__PURE__*/<div style={{
-    height: "calc(100% - 150px)",
+    height: "calc(100% - 118px)",
     display: "flex",
     flexDirection: "column",
     background: C.card
