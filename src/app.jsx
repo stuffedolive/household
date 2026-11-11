@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v67";
+const APP_VERSION = "v68";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -962,7 +962,22 @@ function App() {
     }} onExport={() => {
       setShowMenu(false);
       exportData();
-    }} onClose={() => setShowMenu(false)} />}{showForm && /*#__PURE__*/<TaskForm me={me} initial={editing} prefillTitle={!editing && convertNote ? convertNote.title : ""} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => {
+    }} onClose={() => setShowMenu(false)} />}{showForm && !editing && /*#__PURE__*/<AddTaskWizard me={me} prefillTitle={convertNote ? convertNote.title : ""} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => {
+      setShowForm(false);
+      setConvertNote(null);
+    }} onSave={t => {
+      upsertTask(t);
+      if (convertNote) {
+        saveToday("Turn note into task", todayItems.map(it => it.type === "sundry" && it.id === convertNote.id ? {
+          type: "task",
+          id: t.id,
+          subtaskId: null,
+          bucket: it.bucket || "now"
+        } : it));
+      }
+      setConvertNote(null);
+      setShowForm(false);
+    }} />}{showForm && editing && /*#__PURE__*/<TaskForm me={me} initial={editing} prefillTitle={!editing && convertNote ? convertNote.title : ""} config={config} onAddRoom={addRoom} onAddCategory={addCategory} onClose={() => {
       setShowForm(false);
       setConvertNote(null);
     }} onSave={t => {
@@ -4402,6 +4417,445 @@ function TaskForm({
       fontWeight: 600,
       cursor: "pointer"
     }}>Delete task</button>}</Overlay>;
+}
+/* New-task pop-up: one question at a time. Editing an existing task still uses the full TaskForm. */
+function AddTaskWizard({
+  me,
+  prefillTitle,
+  config,
+  onAddRoom,
+  onAddCategory,
+  onClose,
+  onSave
+}) {
+  const [t, setT] = useState(() => ({
+    id: uid(),
+    title: prefillTitle || "",
+    listType: null,
+    scope: null,
+    owner: me,
+    room: "Unassigned",
+    category: "Unassigned",
+    assignee: null,
+    priority: null,
+    priorityBucket: null,
+    dueDate: null,
+    recurrence: {
+      unit: "none",
+      amount: 1,
+      mode: "rolling"
+    },
+    notes: "",
+    completed: false,
+    gridBucket: {},
+    actions: [],
+    needsDetails: false,
+    createdBy: me,
+    startsOnDue: false,
+    createdAt: Date.now(),
+    completedAt: null
+  }));
+  const set = (k, v) => setT(p => ({
+    ...p,
+    [k]: v
+  }));
+  const [stepKey, setStepKey] = useState("name");
+  const [newAction, setNewAction] = useState("");
+  const [newPlace, setNewPlace] = useState("");
+  const [extraPlaces, setExtraPlaces] = useState([]);
+  const typeChosen = !!t.listType && !!t.scope;
+  const steps = ["name", "defer", "type", ...(t.scope === "shared" ? ["assignee"] : []), "place", "due", ...(t.listType === "chore" ? ["repeat"] : []), "importance", "subtasks", "list"];
+  const idx = Math.max(0, steps.indexOf(stepKey));
+  const next = () => setStepKey(steps[Math.min(steps.length - 1, idx + 1)]);
+  const back = () => setStepKey(steps[Math.max(0, idx - 1)]);
+  const finish = (deferred, extra) => {
+    const merged = {
+      ...t,
+      ...(extra || {})
+    };
+    const actions = newAction.trim() ? [...(merged.actions || []), {
+      id: uid(),
+      title: newAction.trim(),
+      completed: false,
+      dueDate: null
+    }] : merged.actions || [];
+    const chosen = !!merged.listType && !!merged.scope;
+    onSave({
+      ...merged,
+      title: merged.title.trim(),
+      actions,
+      listType: merged.listType || "chore",
+      scope: merged.scope || "shared",
+      owner: (merged.scope || "shared") === "personal" ? merged.owner || me : null,
+      needsDetails: deferred || !chosen,
+      createdBy: merged.createdBy || me
+    });
+  };
+  const chooseType = k => {
+    const listType = k === "household" || k === "personalTasks" ? "chore" : "project";
+    const scope = k === "household" || k === "shared" ? "shared" : "personal";
+    setT(p => ({
+      ...p,
+      listType,
+      scope,
+      assignee: scope === "personal" ? null : p.assignee,
+      room: "Unassigned",
+      category: "Unassigned"
+    }));
+    setStepKey(scope === "shared" ? "assignee" : "place");
+  };
+  const chip = (label, active, onClick, key) => /*#__PURE__*/<button key={key || label} onClick={onClick} style={{
+    border: `1px solid ${active ? C.ink : C.rule}`,
+    background: active ? C.ink : C.white,
+    color: active ? C.white : C.ink,
+    borderRadius: 20,
+    padding: "9px 16px",
+    fontSize: 14,
+    fontWeight: 600,
+    cursor: "pointer"
+  }}>{label}</button>;
+  const bigBtn = (label, onClick, primary, sub) => /*#__PURE__*/<button key={label} onClick={onClick} style={{
+    width: "100%",
+    textAlign: "left",
+    border: `1px solid ${primary ? C.ink : C.rule}`,
+    background: primary ? C.ink : C.white,
+    color: primary ? C.white : C.ink,
+    borderRadius: 12,
+    padding: "13px 16px",
+    fontSize: 15,
+    fontWeight: 600,
+    cursor: "pointer"
+  }}>{label}{sub && /*#__PURE__*/<div style={{
+      fontSize: 12,
+      fontWeight: 400,
+      opacity: 0.8,
+      marginTop: 2
+    }}>{sub}</div>}</button>;
+  const placeOptions = t.listType === "chore" ? ["Unassigned", ...config.rooms, ...extraPlaces.filter(x => !config.rooms.includes(x))] : ["Unassigned", ...(t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me] || []), ...extraPlaces.filter(x => !(t.scope === "shared" ? config.sharedCategories : config.personalCategories[t.owner || me] || []).includes(x))];
+  const addPlace = () => {
+    const name = capFirst(newPlace.trim());
+    if (!name) return;
+    if (t.listType === "chore") {
+      onAddRoom(name);
+      set("room", name);
+    } else {
+      onAddCategory(t.scope, t.owner || me, name);
+      set("category", name);
+    }
+    setExtraPlaces(p => [...p, name]);
+    setNewPlace("");
+    next();
+  };
+  const addSub = () => {
+    if (!newAction.trim()) return;
+    set("actions", [...(t.actions || []), {
+      id: uid(),
+      title: newAction.trim(),
+      completed: false,
+      dueDate: null
+    }]);
+    setNewAction("");
+  };
+  let question = "",
+    body = null,
+    footer = null;
+  if (stepKey === "name") {
+    question = "Name?";
+    body = /*#__PURE__*/<input autoFocus value={t.title} onChange={e => set("title", capFirst(e.target.value))} onKeyDown={e => {
+      if (e.key === "Enter" && t.title.trim()) next();
+    }} placeholder="e.g. Fix the shelf" aria-label="Task name" style={{
+      ...inputStyle,
+      fontSize: 18,
+      padding: "12px 13px"
+    }} />;
+    footer = /*#__PURE__*/<button disabled={!t.title.trim()} onClick={next} style={{
+      ...btnStyle(t.title.trim() ? C.ink : C.rule),
+      width: "100%"
+    }}>Next</button>;
+  } else if (stepKey === "defer") {
+    question = "Add details later?";
+    body = /*#__PURE__*/<div style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }}>{bigBtn("Yes, sort it later", () => finish(true), true, "Saves it now. It will wait for you to fill in the details.")}{bigBtn("No, add details now", next, false)}</div>;
+  } else if (stepKey === "type") {
+    question = "What kind of thing is it?";
+    body = /*#__PURE__*/<div style={{
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 8
+    }}>{TYPE_CHOICES.map(([k, label]) => {
+        const active = typeChosen && sectionForTask(t) === k;
+        return /*#__PURE__*/<button key={k} onClick={() => chooseType(k)} aria-label={label} style={{
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 5,
+          padding: "14px 6px 12px",
+          borderRadius: 12,
+          border: `1px solid ${active ? C.ink : C.rule}`,
+          background: active ? C.ink : C.white,
+          color: active ? C.white : C.sageDeep,
+          cursor: "pointer"
+        }}><SectionIcon kind={k} size={38} /><span style={{
+            fontSize: 12.5,
+            fontWeight: 600,
+            color: active ? C.white : C.ink
+          }}>{label}</span></button>;
+      })}</div>;
+  } else if (stepKey === "assignee") {
+    question = "Who's it for?";
+    body = /*#__PURE__*/<div style={{
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap"
+    }}>{[[null, "Anyone"], ["jade", "Jade"], ["john", "John"]].map(([v, label]) => chip(label, t.assignee === v, () => {
+        set("assignee", v);
+        next();
+      }))}</div>;
+  } else if (stepKey === "place") {
+    question = t.listType === "chore" ? "Which room?" : "Which category?";
+    const cur = t.listType === "chore" ? t.room : t.category;
+    body = /*#__PURE__*/<div><div style={{
+        display: "flex",
+        gap: 8,
+        flexWrap: "wrap",
+        marginBottom: 14
+      }}>{placeOptions.map(o => chip(o === "Unassigned" ? "Not sure" : o, false, () => {
+          set(t.listType === "chore" ? "room" : "category", o);
+          next();
+        }, o))}</div><div style={{
+        display: "flex",
+        gap: 6
+      }}><input value={newPlace} onChange={e => setNewPlace(e.target.value)} onKeyDown={e => {
+          if (e.key === "Enter") addPlace();
+        }} placeholder={t.listType === "chore" ? "Or add a new room" : "Or add a new category"} style={{
+          ...inputStyle,
+          fontSize: 13
+        }} /><button onClick={addPlace} style={{
+          border: "none",
+          background: C.sageDeep,
+          color: C.white,
+          borderRadius: 8,
+          padding: "0 14px",
+          cursor: "pointer"
+        }}>+</button></div></div>;
+  } else if (stepKey === "due") {
+    question = "Due date?";
+    body = /*#__PURE__*/<div style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 12
+    }}><input type="date" value={t.dueDate || ""} onChange={e => set("dueDate", e.target.value || null)} style={{
+        ...inputStyle,
+        fontSize: 16
+      }} />{t.dueDate && /*#__PURE__*/<label htmlFor="w-starts-on-due" style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+        fontSize: 13,
+        color: C.inkSoft,
+        cursor: "pointer"
+      }}><input type="checkbox" id="w-starts-on-due" checked={!!t.startsOnDue} onChange={e => set("startsOnDue", e.target.checked)} />Due date is do date</label>}</div>;
+    footer = /*#__PURE__*/<div style={{
+      display: "flex",
+      gap: 8
+    }}><button onClick={() => {
+        setT(p => ({
+          ...p,
+          dueDate: null,
+          startsOnDue: false
+        }));
+        next();
+      }} style={{
+        ...btnStyle(C.white),
+        color: C.ink,
+        border: `1px solid ${C.rule}`,
+        flex: 1
+      }}>No due date</button><button onClick={next} disabled={!t.dueDate} style={{
+        ...btnStyle(t.dueDate ? C.ink : C.rule),
+        flex: 1
+      }}>Next</button></div>;
+  } else if (stepKey === "repeat") {
+    question = "Does it repeat?";
+    const unit = t.recurrence.unit;
+    body = /*#__PURE__*/<div style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 12
+    }}><div style={{
+        display: "flex",
+        gap: 8,
+        flexWrap: "wrap"
+      }}>{RECUR_UNITS.map(([v, label]) => chip(v === "none" ? "Doesn't repeat" : label, unit === v, () => {
+          set("recurrence", {
+            ...t.recurrence,
+            unit: v
+          });
+          if (v === "none") next();
+        }, v))}</div>{unit !== "none" && /*#__PURE__*/<React.Fragment><div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontSize: 14,
+          color: C.ink
+        }}>Every<input type="number" min="1" value={t.recurrence.amount} onChange={e => set("recurrence", {
+            ...t.recurrence,
+            amount: Math.max(1, parseInt(e.target.value, 10) || 1)
+          })} style={{
+            ...inputStyle,
+            width: 80
+          }} />{unit}(s)</div><div style={{
+          display: "flex",
+          gap: 8,
+          flexWrap: "wrap"
+        }}>{[["rolling", "Restart timer from completion"], ["fixed", "Stick to the schedule"]].map(([v, label]) => chip(label, t.recurrence.mode === v, () => set("recurrence", {
+            ...t.recurrence,
+            mode: v
+          }), v))}</div></React.Fragment>}</div>;
+    footer = unit !== "none" ? /*#__PURE__*/<button onClick={next} style={{
+      ...btnStyle(C.ink),
+      width: "100%"
+    }}>Next</button> : null;
+  } else if (stepKey === "importance") {
+    question = "How important?";
+    body = /*#__PURE__*/<div style={{
+      display: "flex",
+      gap: 8,
+      flexWrap: "wrap"
+    }}>{[[null, "Not set"], ...IMPORTANCE.map(i => [i.key, i.label])].map(([v, label]) => chip(label, t.priority === v, () => {
+        set("priority", v);
+        next();
+      }, String(v)))}</div>;
+  } else if (stepKey === "subtasks") {
+    question = "Any subtasks?";
+    body = /*#__PURE__*/<div>{(t.actions || []).map(a => /*#__PURE__*/<div key={a.id} style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 14,
+        color: C.ink,
+        marginBottom: 7
+      }}><span style={{
+          flex: 1
+        }}>• {a.title}</span><button onClick={() => set("actions", t.actions.filter(x => x.id !== a.id))} aria-label="Remove subtask" style={{
+          border: "none",
+          background: "none",
+          color: C.inkSoft,
+          cursor: "pointer"
+        }}>×</button></div>)}<div style={{
+        display: "flex",
+        gap: 6
+      }}><input value={newAction} onChange={e => setNewAction(capFirst(e.target.value))} onKeyDown={e => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            addSub();
+          }
+        }} placeholder="e.g. Buy grout" style={{
+          ...inputStyle,
+          fontSize: 14
+        }} /><button onClick={addSub} style={{
+          border: "none",
+          background: C.sageDeep,
+          color: C.white,
+          borderRadius: 8,
+          padding: "0 14px",
+          cursor: "pointer"
+        }}>+</button></div></div>;
+    footer = /*#__PURE__*/<button onClick={() => {
+      addSub();
+      next();
+    }} style={{
+      ...btnStyle(C.ink),
+      width: "100%"
+    }}>{(t.actions || []).length || newAction.trim() ? "Next" : "No subtasks"}</button>;
+  } else if (stepKey === "list") {
+    question = "Add to your to-do list?";
+    body = /*#__PURE__*/<div style={{
+      display: "flex",
+      flexDirection: "column",
+      gap: 10
+    }}>{bigBtn("Yes, add it", () => finish(false, withListFor(t, me, true)), true)}{bigBtn("No, just save it", () => finish(false), false)}</div>;
+  }
+  const canSaveNow = stepKey !== "name" && stepKey !== "defer";
+  return /*#__PURE__*/<div onClick={onClose} style={{
+    position: "absolute",
+    inset: 0,
+    background: "rgba(43,42,40,0.45)",
+    zIndex: 40,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    boxSizing: "border-box"
+  }}><div onClick={e => e.stopPropagation()} role="dialog" aria-label="New task" style={{
+      width: "100%",
+      maxWidth: 400,
+      maxHeight: "88%",
+      overflowY: "auto",
+      background: C.parchment,
+      borderRadius: 18,
+      padding: "18px 20px 16px",
+      boxSizing: "border-box",
+      boxShadow: "0 12px 36px rgba(43,42,40,0.35)"
+    }}><div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        marginBottom: 14
+      }}>{idx > 0 ? /*#__PURE__*/<button onClick={back} aria-label="Back" style={{
+          border: "none",
+          background: "none",
+          fontSize: 18,
+          color: C.inkSoft,
+          cursor: "pointer",
+          padding: 0,
+          width: 28,
+          textAlign: "left"
+        }}>←</button> : /*#__PURE__*/<span style={{
+          width: 28
+        }} />}<div style={{
+          display: "flex",
+          gap: 5
+        }}>{steps.map((k, i) => /*#__PURE__*/<span key={k} style={{
+            width: 6,
+            height: 6,
+            borderRadius: "50%",
+            background: i <= idx ? C.ink : C.rule
+          }} />)}</div><button onClick={onClose} aria-label="Cancel" style={{
+          border: "none",
+          background: "none",
+          fontSize: 18,
+          color: C.inkSoft,
+          cursor: "pointer",
+          padding: 0,
+          width: 28,
+          textAlign: "right"
+        }}>✕</button></div><div style={{
+        fontFamily: "Fraunces, serif",
+        fontSize: 24,
+        fontWeight: 600,
+        color: C.ink,
+        marginBottom: 16
+      }}>{question}</div>{stepKey !== "name" && t.title.trim() && /*#__PURE__*/<div style={{
+        fontSize: 12,
+        color: C.inkSoft,
+        marginTop: -10,
+        marginBottom: 14
+      }}>{t.title}</div>}<div>{body}</div>{footer && /*#__PURE__*/<div style={{
+        marginTop: 16
+      }}>{footer}</div>}{canSaveNow && stepKey !== "list" && /*#__PURE__*/<div style={{
+        textAlign: "center",
+        marginTop: 14
+      }}><button onClick={() => finish(false)} style={{
+          border: "none",
+          background: "none",
+          color: C.inkSoft,
+          textDecoration: "underline",
+          fontSize: 12.5,
+          cursor: "pointer"
+        }}>Save now{typeChosen ? "" : " and sort it later"}</button></div>}</div></div>;
 }
 function SelectField({ label, value, onChange, options }) {
   return /*#__PURE__*/<Field label={label}><select value={value === null || value === undefined ? "" : String(value)} onChange={e => {
