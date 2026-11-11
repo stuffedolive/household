@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v65";
+const APP_VERSION = "v66";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -229,7 +229,6 @@ const PRESENCE_DOC = db.collection("meta").doc("presence");
 const LOVE_DOC = db.collection("meta").doc("loveNotes");
 const LOVE_CACHE_KEY = "lifelist-love-notes";
 const LOVE_LAST_KEY = "lifelist-love-last";
-const LOVE_MIN_MS = 5000;
 const loadLoveCache = () => {
   try {
     const v = JSON.parse(localStorage.getItem(LOVE_CACHE_KEY));
@@ -354,14 +353,9 @@ function App() {
   }, [highlightTaskId]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
-  // John's loading screen shows one of Jade's love notes and stays up for at least 5 seconds (tap to skip once loaded)
+  // John's loading screen shows one of Jade's love notes while the list loads, then goes away
   const [loveTexts, setLoveTexts] = useState(loadLoveCache);
   const [loveNote, setLoveNote] = useState(() => new URLSearchParams(window.location.search).get("user") === "john" ? pickLoveNote(loadLoveCache()) : null);
-  const [loveHoldDone, setLoveHoldDone] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setLoveHoldDone(true), LOVE_MIN_MS);
-    return () => clearTimeout(t);
-  }, []);
   useEffect(() => {
     if (authReady !== true) return;
     return LOVE_DOC.onSnapshot(doc => {
@@ -928,7 +922,7 @@ function App() {
           gap: 12
         }}>{Object.entries(PEOPLE).map(([key, label]) => /*#__PURE__*/<button key={key} onClick={() => setRealMe(key)} style={btnStyle(PERSON_COLOR[key])}>{label}</button>)}</div></div></Shell>;
   }
-  if (tasks === null || loveNote && !loveHoldDone) return /*#__PURE__*/<Shell><LoveLoading note={loveNote} text={tasks === null ? "Loading the list…" : "Ready"} onSkip={tasks !== null ? () => setLoveHoldDone(true) : undefined} /></Shell>;
+  if (tasks === null) return /*#__PURE__*/<Shell><LoveLoading note={loveNote} text="Loading the list…" /></Shell>;
   return /*#__PURE__*/<Shell><Header me={me} realMe={realMe} onViewAs={k => setViewAs(k === realMe ? null : k)} view={view} setView={goView} needsDetailsCount={needsDetailsTasks.length} onOpenNeedsDetails={() => setShowNeedsDetails(true)} undoLabel={lastUndo ? lastUndo.label : null} onUndo={handleUndo} searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
       setSearchQuery("");
       setView("queue");

@@ -130,7 +130,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v65";
+const APP_VERSION = "v66";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -280,7 +280,6 @@ const PRESENCE_DOC = db.collection("meta").doc("presence");
 const LOVE_DOC = db.collection("meta").doc("loveNotes");
 const LOVE_CACHE_KEY = "lifelist-love-notes";
 const LOVE_LAST_KEY = "lifelist-love-last";
-const LOVE_MIN_MS = 5000;
 const loadLoveCache = () => {
   try {
     const v = JSON.parse(localStorage.getItem(LOVE_CACHE_KEY));
@@ -422,14 +421,9 @@ function App() {
   }, [highlightTaskId]);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
-  // John's loading screen shows one of Jade's love notes and stays up for at least 5 seconds (tap to skip once loaded)
+  // John's loading screen shows one of Jade's love notes while the list loads, then goes away
   const [loveTexts, setLoveTexts] = useState(loadLoveCache);
   const [loveNote, setLoveNote] = useState(() => new URLSearchParams(window.location.search).get("user") === "john" ? pickLoveNote(loadLoveCache()) : null);
-  const [loveHoldDone, setLoveHoldDone] = useState(false);
-  useEffect(() => {
-    const t = setTimeout(() => setLoveHoldDone(true), LOVE_MIN_MS);
-    return () => clearTimeout(t);
-  }, []);
   useEffect(() => {
     if (authReady !== true) return;
     return LOVE_DOC.onSnapshot(doc => {
@@ -1061,10 +1055,9 @@ function App() {
       style: btnStyle(PERSON_COLOR[key])
     }, label)))));
   }
-  if (tasks === null || loveNote && !loveHoldDone) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(LoveLoading, {
+  if (tasks === null) return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(LoveLoading, {
     note: loveNote,
-    text: tasks === null ? "Loading the list…" : "Ready",
-    onSkip: tasks !== null ? () => setLoveHoldDone(true) : undefined
+    text: "Loading the list…"
   }));
   return /*#__PURE__*/ /*#__PURE__*/React.createElement(Shell, null, /*#__PURE__*/React.createElement(Header, {
     me: me,
