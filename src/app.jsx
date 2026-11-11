@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v73";
+const APP_VERSION = "v74";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -3205,7 +3205,7 @@ function TodayItemRow({
     completed = false;
     onCheck = () => {};
   }
-  return /*#__PURE__*/<div style={{
+  const rowEl = /*#__PURE__*/<div style={{
     display: "flex",
     alignItems: "center",
     gap: 7,
@@ -3247,6 +3247,38 @@ function TodayItemRow({
       cursor: "pointer",
       fontSize: 12
     }}>×</button></div>;
+  // a whole task on the plan shows its subtasks underneath, each with its own tick
+  const showSubs = item.type === "task" && !item.subtaskId && task && !task.completed && (task.actions || []).length > 0;
+  return /*#__PURE__*/<div style={{
+    opacity: 1
+  }}>{rowEl}{showSubs && /*#__PURE__*/<div style={{
+      paddingLeft: 43,
+      paddingBottom: 4,
+      opacity: dim ? 0.5 : 1
+    }}>{(task.actions || []).map(a => /*#__PURE__*/<div key={a.id} style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "3px 0"
+      }}><button onClick={() => onToggleAction(task.id, a.id)} aria-label={`Tick ${a.title}`} style={{
+          width: 14,
+          height: 14,
+          borderRadius: "50%",
+          border: `2px solid ${C.sage}`,
+          background: a.completed ? C.sage : "transparent",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          cursor: "pointer",
+          color: C.white,
+          fontSize: 8,
+          flexShrink: 0,
+          padding: 0
+        }}>{a.completed && "✓"}</button><span style={{
+          fontSize: 12.5,
+          color: a.completed ? C.inkSoft : C.ink,
+          textDecoration: a.completed ? "line-through" : "none"
+        }}>{a.title}</span></div>)}</div>}</div>;
 }
 function TodayPlanSection({
   items,
