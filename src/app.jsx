@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v72";
+const APP_VERSION = "v73";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -404,6 +404,7 @@ function App() {
   // ready" (like the activity summary) runs against an empty list on slower connections like phones.
   const [activeLoaded, setActiveLoaded] = useState(false);
   const [completedLoaded, setCompletedLoaded] = useState(false);
+  const [completedNoIndex, setCompletedNoIndex] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
     const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", false).onSnapshot(snap => {
@@ -416,14 +417,22 @@ function App() {
   }, [authReady]);
   useEffect(() => {
     if (authReady !== true) return;
-    const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", true).orderBy("lastCompletedAt", "desc").limit(150).onSnapshot(snap => {
+    // if the "most recent first" query needs an index that doesn't exist yet, fall back to a plain one so history still loads
+    const q = completedNoIndex ? db.collection(TASKS_COLLECTION).where("completed", "==", true).limit(150) : db.collection(TASKS_COLLECTION).where("completed", "==", true).orderBy("lastCompletedAt", "desc").limit(150);
+    const unsub = q.onSnapshot(snap => {
       const m = {};
       snap.docs.forEach(d => { m[d.id] = { id: d.id, ...d.data() }; });
       setRecentCompletedMap(m);
       setCompletedLoaded(true);
-    }, err => { console.error("sync error (completed) — if this is an index error, Firestore's console link will create it in one click", err); setRecentCompletedMap({}); setCompletedLoaded(true); });
+    }, err => {
+      console.error("sync error (completed) — if this is an index error, Firestore's console link will create it in one click", err);
+      if (!completedNoIndex) setCompletedNoIndex(true);else {
+        setRecentCompletedMap({});
+        setCompletedLoaded(true);
+      }
+    });
     return unsub;
-  }, [authReady]);
+  }, [authReady, completedNoIndex]);
   const tasks = useMemo(() => {
     if (authReady !== true || !activeLoaded || !completedLoaded) return null;
     return [...Object.values(activeTasksMap), ...Object.values(recentCompletedMap)];
@@ -596,20 +605,28 @@ function App() {
   /* Today's plan — private per person: sundry one-off items + references to real tasks, one combined
      reorderable list. Lives in its own doc per person so it never becomes visible to the other partner. */
   const [todayItems, setTodayItems] = useState([]);
+  const [todayCleared, setTodayCleared] = useState(0); // ticked items already cleared off the plan, so the progress bar keeps counting them until Reset
   useEffect(() => {
     if (authReady !== true || !me) return;
-    const unsub = db.collection(TODAY_COLLECTION).doc(me).onSnapshot(doc => setTodayItems(doc.data() && doc.data().items || []), err => console.error("today sync error — check Firestore rules cover /today/{docId}:", err));
+    const unsub = db.collection(TODAY_COLLECTION).doc(me).onSnapshot(doc => {
+      setTodayItems(doc.data() && doc.data().items || []);
+      setTodayCleared(doc.data() && doc.data().cleared || 0);
+    }, err => console.error("today sync error — check Firestore rules cover /today/{docId}:", err));
     return unsub;
   }, [authReady, me]);
-  const saveTodayRaw = items => db.collection(TODAY_COLLECTION).doc(me).set({
-    items
+  const saveTodayRaw = (items, cleared) => db.collection(TODAY_COLLECTION).doc(me).set({
+    items,
+    ...(typeof cleared === "number" ? {
+      cleared
+    } : {})
   }, {
     merge: true
   }).catch(console.error);
-  const saveToday = (label, items) => {
+  const saveToday = (label, items, cleared) => {
     const prev = todayItems;
-    setUndo(label, () => saveTodayRaw(prev));
-    saveTodayRaw(items);
+    const prevCleared = todayCleared;
+    setUndo(label, () => saveTodayRaw(prev, typeof cleared === "number" ? prevCleared : undefined));
+    saveTodayRaw(items, cleared);
   };
   const todayKey = it => it.type + it.id + (it.subtaskId || "");
   const todayBucket = it => it.bucket === "later" ? "later" : "now";
@@ -623,7 +640,7 @@ function App() {
     bucket: "now"
   }]);
   // ticking off a quick-add note just removes it (it's a private reminder, not a record)
-  const toggleSundry = id => saveToday("Tick off note", todayItems.filter(it => it.id !== id));
+  const toggleSundry = id => saveToday("Tick off note", todayItems.filter(it => it.id !== id), todayCleared + 1);
   const deleteSundry = id => saveToday("Delete sundry", todayItems.filter(it => it.id !== id));
   const addTaskToToday = (taskId, subtaskId) => {
     if (todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null))) return;
@@ -672,7 +689,7 @@ function App() {
       completedToday: typeof next === "boolean" ? next : !it.completedToday
     } : it));
   };
-  const resetToday = () => saveToday("Reset today", []);
+  const resetToday = () => saveToday("Reset today", [], 0);
   const captureUndo = (label, taskIds) => {
     const snapshots = taskIds.map(id => tasks.find(t => t.id === id)).filter(Boolean).map(t => ({
       ...t
@@ -958,9 +975,9 @@ function App() {
       setEditing(null);
       setConvertNote(n);
       setShowForm(true);
-    }} onFillDetails={t => setDetailsTask(t)} onSortProject={sortProject} onClearDone={items => {
+    }} onFillDetails={t => setDetailsTask(t)} onSortProject={sortProject} cleared={todayCleared} onClearDone={items => {
       const keys = items.map(todayKey);
-      saveToday("Clear done", todayItems.filter(it => !keys.includes(todayKey(it))));
+      saveToday("Clear done", todayItems.filter(it => !keys.includes(todayKey(it))), todayCleared + keys.length);
     }} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} searchSlot={/*#__PURE__*/<SearchBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
       setSearchQuery("");
       setView("queue");
@@ -2529,7 +2546,8 @@ function ToDoList({
   onConvertNote,
   onFillDetails,
   onSortProject,
-  onClearDone
+  onClearDone,
+  cleared
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
   // Schedule session state (not remembered): cards already dealt with, whether stale review was chosen, a remount counter
@@ -3011,7 +3029,7 @@ function ToDoList({
     overflowY: "auto",
     overflowX: "hidden",
     padding: "14px 16px 90px"
-  }}><PlanHeader scheduling={overwhelmed} badge={newForBadge} onToggleSchedule={() => setOverwhelmed(o => !o)} onReset={onResetToday} />{scheduleView}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} onClearDone={onClearDone} /><div style={{
+  }}><PlanHeader scheduling={overwhelmed} badge={newForBadge} onToggleSchedule={() => setOverwhelmed(o => !o)} onReset={onResetToday} />{scheduleView}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} onClearDone={onClearDone} cleared={cleared || 0} /><div style={{
       display: "flex",
       justifyContent: "space-between",
       alignItems: "baseline",
@@ -3245,7 +3263,8 @@ function TodayPlanSection({
   onEdit,
   onToggleTodayTaskDone,
   onConvertNote,
-  onClearDone
+  onClearDone,
+  cleared
 }) {
   const [newSundry, setNewSundry] = useState("");
   const [showDone, setShowDone] = useState(false);
@@ -3275,7 +3294,29 @@ function TodayPlanSection({
     minHeight: "45vh",
     display: "flex",
     flexDirection: "column"
-  }}><div style={{
+  }}>{items.length + cleared > 0 && /*#__PURE__*/<div style={{
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 10
+    }}><div style={{
+        flex: 1,
+        height: 5,
+        borderRadius: 3,
+        background: C.rule,
+        overflow: "hidden"
+      }}><div style={{
+          width: `${Math.round((doneItems.length + cleared) / (items.length + cleared) * 100)}%`,
+          height: "100%",
+          background: C.sage,
+          borderRadius: 3,
+          transition: "width 0.4s ease"
+        }} /></div><span style={{
+        fontSize: 11,
+        color: C.inkSoft,
+        minWidth: 34,
+        textAlign: "right"
+      }}>{doneItems.length + cleared >= items.length + cleared ? "Done ✓" : `${doneItems.length + cleared}/${items.length + cleared}`}</span></div>}<div style={{
       flex: 1
     }}>{nowItems.length === 0 && /*#__PURE__*/<div style={{
         color: C.inkSoft,

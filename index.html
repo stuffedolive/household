@@ -6,13 +6,19 @@
 <meta name="robots" content="noindex, nofollow" />
 <title>Our Life List</title>
 
-<!-- Fonts -->
+<!-- Start the network connections early -->
+<link rel="preconnect" href="https://unpkg.com" crossorigin>
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
+<!-- Fonts: loaded without blocking the first paint (text shows straight away, then swaps) -->
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet"></noscript>
 
 <!-- React (no build step needed) -->
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
 
 <!-- Firebase (compat SDK — simplest for a no-build static page) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -44,10 +50,13 @@
   };
   firebase.initializeApp(firebaseConfig);
   const db = firebase.firestore();
+  // keep a copy of the data on this device, so opening the app shows your last list straight away
+  // and then catches up in the background (quietly does nothing if the browser can't store it)
+  db.enablePersistence({ synchronizeTabs: true }).catch(function (e) { console.warn("offline copy unavailable", e && e.code); });
   const auth = firebase.auth();
 </script>
 
-<div id="root"></div>
+<div id="root"><div style="display:flex;height:100vh;height:100dvh;align-items:center;justify-content:center;font-family:Georgia,serif;font-size:22px;font-weight:600;color:#2B2A28">Our Life List</div></div>
 
 <script>const {
   useState,
@@ -130,7 +139,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v72";
+const APP_VERSION = "v73";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -471,6 +480,7 @@ function App() {
   // ready" (like the activity summary) runs against an empty list on slower connections like phones.
   const [activeLoaded, setActiveLoaded] = useState(false);
   const [completedLoaded, setCompletedLoaded] = useState(false);
+  const [completedNoIndex, setCompletedNoIndex] = useState(false);
   useEffect(() => {
     if (authReady !== true) return;
     const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", false).onSnapshot(snap => {
@@ -492,7 +502,9 @@ function App() {
   }, [authReady]);
   useEffect(() => {
     if (authReady !== true) return;
-    const unsub = db.collection(TASKS_COLLECTION).where("completed", "==", true).orderBy("lastCompletedAt", "desc").limit(150).onSnapshot(snap => {
+    // if the "most recent first" query needs an index that doesn't exist yet, fall back to a plain one so history still loads
+    const q = completedNoIndex ? db.collection(TASKS_COLLECTION).where("completed", "==", true).limit(150) : db.collection(TASKS_COLLECTION).where("completed", "==", true).orderBy("lastCompletedAt", "desc").limit(150);
+    const unsub = q.onSnapshot(snap => {
       const m = {};
       snap.docs.forEach(d => {
         m[d.id] = {
@@ -504,11 +516,13 @@ function App() {
       setCompletedLoaded(true);
     }, err => {
       console.error("sync error (completed) — if this is an index error, Firestore's console link will create it in one click", err);
-      setRecentCompletedMap({});
-      setCompletedLoaded(true);
+      if (!completedNoIndex) setCompletedNoIndex(true);else {
+        setRecentCompletedMap({});
+        setCompletedLoaded(true);
+      }
     });
     return unsub;
-  }, [authReady]);
+  }, [authReady, completedNoIndex]);
   const tasks = useMemo(() => {
     if (authReady !== true || !activeLoaded || !completedLoaded) return null;
     return [...Object.values(activeTasksMap), ...Object.values(recentCompletedMap)];
@@ -693,20 +707,28 @@ function App() {
   /* Today's plan — private per person: sundry one-off items + references to real tasks, one combined
      reorderable list. Lives in its own doc per person so it never becomes visible to the other partner. */
   const [todayItems, setTodayItems] = useState([]);
+  const [todayCleared, setTodayCleared] = useState(0); // ticked items already cleared off the plan, so the progress bar keeps counting them until Reset
   useEffect(() => {
     if (authReady !== true || !me) return;
-    const unsub = db.collection(TODAY_COLLECTION).doc(me).onSnapshot(doc => setTodayItems(doc.data() && doc.data().items || []), err => console.error("today sync error — check Firestore rules cover /today/{docId}:", err));
+    const unsub = db.collection(TODAY_COLLECTION).doc(me).onSnapshot(doc => {
+      setTodayItems(doc.data() && doc.data().items || []);
+      setTodayCleared(doc.data() && doc.data().cleared || 0);
+    }, err => console.error("today sync error — check Firestore rules cover /today/{docId}:", err));
     return unsub;
   }, [authReady, me]);
-  const saveTodayRaw = items => db.collection(TODAY_COLLECTION).doc(me).set({
-    items
+  const saveTodayRaw = (items, cleared) => db.collection(TODAY_COLLECTION).doc(me).set({
+    items,
+    ...(typeof cleared === "number" ? {
+      cleared
+    } : {})
   }, {
     merge: true
   }).catch(console.error);
-  const saveToday = (label, items) => {
+  const saveToday = (label, items, cleared) => {
     const prev = todayItems;
-    setUndo(label, () => saveTodayRaw(prev));
-    saveTodayRaw(items);
+    const prevCleared = todayCleared;
+    setUndo(label, () => saveTodayRaw(prev, typeof cleared === "number" ? prevCleared : undefined));
+    saveTodayRaw(items, cleared);
   };
   const todayKey = it => it.type + it.id + (it.subtaskId || "");
   const todayBucket = it => it.bucket === "later" ? "later" : "now";
@@ -720,7 +742,7 @@ function App() {
     bucket: "now"
   }]);
   // ticking off a quick-add note just removes it (it's a private reminder, not a record)
-  const toggleSundry = id => saveToday("Tick off note", todayItems.filter(it => it.id !== id));
+  const toggleSundry = id => saveToday("Tick off note", todayItems.filter(it => it.id !== id), todayCleared + 1);
   const deleteSundry = id => saveToday("Delete sundry", todayItems.filter(it => it.id !== id));
   const addTaskToToday = (taskId, subtaskId) => {
     if (todayItems.some(it => it.type === "task" && it.id === taskId && (it.subtaskId || null) === (subtaskId || null))) return;
@@ -769,7 +791,7 @@ function App() {
       completedToday: typeof next === "boolean" ? next : !it.completedToday
     } : it));
   };
-  const resetToday = () => saveToday("Reset today", []);
+  const resetToday = () => saveToday("Reset today", [], 0);
   const captureUndo = (label, taskIds) => {
     const snapshots = taskIds.map(id => tasks.find(t => t.id === id)).filter(Boolean).map(t => ({
       ...t
@@ -1153,9 +1175,10 @@ function App() {
     },
     onFillDetails: t => setDetailsTask(t),
     onSortProject: sortProject,
+    cleared: todayCleared,
     onClearDone: items => {
       const keys = items.map(todayKey);
-      saveToday("Clear done", todayItems.filter(it => !keys.includes(todayKey(it))));
+      saveToday("Clear done", todayItems.filter(it => !keys.includes(todayKey(it))), todayCleared + keys.length);
     }
   }) :
   /*#__PURE__*/
@@ -3575,7 +3598,8 @@ function ToDoList({
   onConvertNote,
   onFillDetails,
   onSortProject,
-  onClearDone
+  onClearDone,
+  cleared
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
   // Schedule session state (not remembered): cards already dealt with, whether stale review was chosen, a remount counter
@@ -4163,7 +4187,8 @@ function ToDoList({
     onEdit: onEdit,
     onToggleTodayTaskDone: onToggleTodayTaskDone,
     onConvertNote: onConvertNote,
-    onClearDone: onClearDone
+    onClearDone: onClearDone,
+    cleared: cleared || 0
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -4621,7 +4646,8 @@ function TodayPlanSection({
   onEdit,
   onToggleTodayTaskDone,
   onConvertNote,
-  onClearDone
+  onClearDone,
+  cleared
 }) {
   const [newSundry, setNewSundry] = useState("");
   const [showDone, setShowDone] = useState(false);
@@ -4653,7 +4679,40 @@ function TodayPlanSection({
       display: "flex",
       flexDirection: "column"
     }
+  }, items.length + cleared > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      marginBottom: 10
+    }
   }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      flex: 1,
+      height: 5,
+      borderRadius: 3,
+      background: C.rule,
+      overflow: "hidden"
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      width: `${Math.round((doneItems.length + cleared) / (items.length + cleared) * 100)}%`,
+      height: "100%",
+      background: C.sage,
+      borderRadius: 3,
+      transition: "width 0.4s ease"
+    }
+  })), /*#__PURE__*/React.createElement("span", {
+    style: {
+      fontSize: 11,
+      color: C.inkSoft,
+      minWidth: 34,
+      textAlign: "right"
+    }
+  }, doneItems.length + cleared >= items.length + cleared ? "Done ✓" : `${doneItems.length + cleared}/${items.length + cleared}`)), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
     }
