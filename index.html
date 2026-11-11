@@ -130,7 +130,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v71";
+const APP_VERSION = "v72";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1152,7 +1152,11 @@ function App() {
       setShowForm(true);
     },
     onFillDetails: t => setDetailsTask(t),
-    onSortProject: sortProject
+    onSortProject: sortProject,
+    onClearDone: items => {
+      const keys = items.map(todayKey);
+      saveToday("Clear done", todayItems.filter(it => !keys.includes(todayKey(it))));
+    }
   }) :
   /*#__PURE__*/
   /*#__PURE__*/
@@ -3570,7 +3574,8 @@ function ToDoList({
   onToggleTodayTaskDone,
   onConvertNote,
   onFillDetails,
-  onSortProject
+  onSortProject,
+  onClearDone
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
   // Schedule session state (not remembered): cards already dealt with, whether stale review was chosen, a remount counter
@@ -4157,7 +4162,8 @@ function ToDoList({
     onToggleAction: onToggleAction,
     onEdit: onEdit,
     onToggleTodayTaskDone: onToggleTodayTaskDone,
-    onConvertNote: onConvertNote
+    onConvertNote: onConvertNote,
+    onClearDone: onClearDone
   }), /*#__PURE__*/React.createElement("div", {
     style: {
       display: "flex",
@@ -4482,6 +4488,17 @@ function PlanHeader({
   }, "Confirm?")));
 }
 /* compact "Today's plan" — just titles, sits at the top of the list like the hero card does for overwhelmed mode */
+/* is this plan item ticked? (same rule the row uses: this person's own tick if they made one, else "anyone completed it today") */
+function planItemDone(item, tasksById) {
+  if (item.type === "sundry") return !!item.completed;
+  const task = tasksById[item.id];
+  if (!task) return false;
+  const subtask = item.subtaskId ? (task.actions || []).find(a => a.id === item.subtaskId) : null;
+  const doneByAnyone = subtask ? !!subtask.completed : !!task.completed || !!(task.lastCompletedAt && new Date(task.lastCompletedAt).toLocaleDateString("en-CA", {
+    timeZone: "Australia/Adelaide"
+  }) === adelaideToday());
+  return typeof item.completedToday === "boolean" ? item.completedToday : doneByAnyone;
+}
 function TodayItemRow({
   item,
   tasksById,
@@ -4495,7 +4512,8 @@ function TodayItemRow({
   moveLabel,
   onToggleTodayTaskDone,
   onConvertNote,
-  startDrag
+  startDrag,
+  dim
 }) {
   const task = item.type === "task" ? tasksById[item.id] : null;
   const subtask = task && item.subtaskId ? (task.actions || []).find(a => a.id === item.subtaskId) : null;
@@ -4529,7 +4547,8 @@ function TodayItemRow({
       alignItems: "center",
       gap: 7,
       padding: "6px 0",
-      background: C.card
+      background: C.card,
+      opacity: dim ? 0.5 : 1
     }
   }, startDrag &&
   /*#__PURE__*/
@@ -4562,7 +4581,10 @@ function TodayItemRow({
       textDecoration: completed ? "line-through" : "none",
       cursor: task || isNote ? "pointer" : "default"
     }
-  }, title), /*#__PURE__*/React.createElement("button", {
+  }, title), onMove &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
     onClick: onMove,
     style: {
       border: "none",
@@ -4598,9 +4620,11 @@ function TodayPlanSection({
   onToggleAction,
   onEdit,
   onToggleTodayTaskDone,
-  onConvertNote
+  onConvertNote,
+  onClearDone
 }) {
   const [newSundry, setNewSundry] = useState("");
+  const [showDone, setShowDone] = useState(false);
   const candidates = useMemo(() => Object.values(tasksById).filter(t => !t.completed), [tasksById]);
   const similar = useMemo(() => findSimilarTasks(newSundry, candidates), [newSundry, candidates]);
   const inPlanIds = useMemo(() => new Set(items.filter(it => it.type === "task" && !it.subtaskId).map(it => it.id)), [items]);
@@ -4613,8 +4637,10 @@ function TodayPlanSection({
     if (!inPlanIds.has(t.id)) onAddExisting(t.id, null);
     setNewSundry("");
   };
-  const nowItems = items.filter(it => it.bucket !== "later");
-  const laterItems = items.filter(it => it.bucket === "later");
+  const doneItems = items.filter(it => planItemDone(it, tasksById));
+  const openItems = items.filter(it => !planItemDone(it, tasksById));
+  const nowItems = openItems.filter(it => it.bucket !== "later");
+  const laterItems = openItems.filter(it => it.bucket === "later");
   const keyFn = item => item.type + item.id;
   return /*#__PURE__*/ /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4703,7 +4729,63 @@ function TodayPlanSection({
       moveLabel: "↑ Today",
       startDrag: startDrag
     })
-  }))), /*#__PURE__*/React.createElement("div", {
+  })), doneItems.length > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("div", {
+    style: {
+      marginTop: 14,
+      paddingTop: 8,
+      borderTop: `1px dashed ${C.rule}`
+    }
+  }, /*#__PURE__*/React.createElement("div", {
+    style: {
+      display: "flex",
+      justifyContent: "space-between",
+      alignItems: "center"
+    }
+  }, /*#__PURE__*/React.createElement("button", {
+    onClick: () => setShowDone(o => !o),
+    "aria-expanded": showDone,
+    style: {
+      border: "none",
+      background: "none",
+      padding: 0,
+      fontSize: 11,
+      fontWeight: 700,
+      letterSpacing: 0.5,
+      textTransform: "uppercase",
+      color: C.inkSoft,
+      cursor: "pointer"
+    }
+  }, "Done (", doneItems.length, ") ", showDone ? "▾" : "▸"), /*#__PURE__*/React.createElement("button", {
+    onClick: () => onClearDone(doneItems),
+    style: {
+      border: "none",
+      background: "none",
+      padding: 0,
+      fontSize: 11.5,
+      color: C.inkSoft,
+      textDecoration: "underline",
+      cursor: "pointer"
+    }
+  }, "Clear done")), showDone && doneItems.map(item =>
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement(TodayItemRow, {
+    key: item.type + item.id + (item.subtaskId || ""),
+    dim: true,
+    item: item,
+    tasksById: tasksById,
+    onToggleSundry: onToggleSundry,
+    onDeleteSundry: onDeleteSundry,
+    onRemoveTask: onRemoveTask,
+    onToggle: onToggle,
+    onToggleAction: onToggleAction,
+    onEdit: onEdit,
+    onToggleTodayTaskDone: onToggleTodayTaskDone,
+    onConvertNote: onConvertNote
+  })))), /*#__PURE__*/React.createElement("div", {
     style: {
       marginTop: 14
     }
