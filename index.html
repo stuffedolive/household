@@ -139,7 +139,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v74";
+const APP_VERSION = "v75";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -4540,6 +4540,7 @@ function TodayItemRow({
   startDrag,
   dim
 }) {
+  const [subsOpen, setSubsOpen] = useState(false);
   const task = item.type === "task" ? tasksById[item.id] : null;
   const subtask = task && item.subtaskId ? (task.actions || []).find(a => a.id === item.subtaskId) : null;
   let title, completed, onCheck;
@@ -4648,7 +4649,7 @@ function TodayItemRow({
       paddingBottom: 4,
       opacity: dim ? 0.5 : 1
     }
-  }, (task.actions || []).map(a =>
+  }, (subsOpen ? task.actions : (task.actions || []).filter(a => a === (task.actions || []).find(x => !x.completed))).map(a =>
   /*#__PURE__*/
   /*#__PURE__*/
   React.createElement("div", {
@@ -4683,7 +4684,21 @@ function TodayItemRow({
       color: a.completed ? C.inkSoft : C.ink,
       textDecoration: a.completed ? "line-through" : "none"
     }
-  }, a.title)))));
+  }, a.title))), (task.actions || []).length > (subsOpen ? 0 : (task.actions || []).some(a => !a.completed) ? 1 : 0) &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => setSubsOpen(o => !o),
+    "aria-expanded": subsOpen,
+    style: {
+      border: "none",
+      background: "none",
+      padding: "2px 0 0",
+      fontSize: 11,
+      color: C.inkSoft,
+      cursor: "pointer"
+    }
+  }, subsOpen ? "Hide subtasks ▾" : (task.actions || []).some(a => !a.completed) ? `+${task.actions.length - 1} more ▸` : `${task.actions.length} done ▸`)));
 }
 function TodayPlanSection({
   items,
