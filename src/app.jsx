@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v76";
+const APP_VERSION = "v77";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1285,11 +1285,11 @@ function BottomBar({
       flex: 1,
       border: "none",
       background: "none",
-      padding: "14px 0",
+      padding: "14px 0 10px",
       fontSize: 13,
       fontWeight: active ? 700 : 500,
-      color: active ? C.ink : C.inkSoft,
-      borderTop: `3px solid ${active ? C.ink : "transparent"}`,
+      color: active ? C.white : "rgba(255,255,255,0.62)",
+      borderTop: `3px solid ${active ? C.white : "transparent"}`,
       cursor: "pointer"
     }}>{label}</button>;
   };
@@ -1301,9 +1301,8 @@ function BottomBar({
     zIndex: 5,
     display: "flex",
     alignItems: "center",
-    background: C.parchment,
-    borderTop: `1px solid ${C.rule}`,
-    paddingBottom: "env(safe-area-inset-bottom)"
+    background: C.sageDeep,
+    paddingBottom: "max(env(safe-area-inset-bottom), 22px)"
   }}>{tab("todo", "To do list")}<div style={{
       flex: "0 0 72px",
       display: "flex",
@@ -1313,9 +1312,9 @@ function BottomBar({
         height: 52,
         marginTop: -22,
         borderRadius: "50%",
-        background: C.ink,
-        color: C.white,
-        border: `4px solid ${C.parchment}`,
+        background: C.parchment,
+        color: C.ink,
+        border: `4px solid ${C.sageDeep}`,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -1466,7 +1465,7 @@ function PriorityGrid({
 }) {
   return /*#__PURE__*/<div style={{
     padding: "16px 16px 12px",
-    height: "calc(100% - 118px)",
+    height: "calc(100% - 134px)",
     display: "flex",
     flexDirection: "column"
   }}><div style={{
@@ -2468,7 +2467,7 @@ function FrenzyScreen({
     });
   };
   return /*#__PURE__*/<div style={{
-    height: "calc(100% - 118px)",
+    height: "calc(100% - 134px)",
     overflowY: "auto",
     overflowX: "hidden",
     background: C.card,
@@ -3029,7 +3028,7 @@ function ToDoList({
     return endCard("All reviewed", [endBtn("Done for now", () => setOverwhelmed(false), true)]);
   })();
   return /*#__PURE__*/<div style={{
-    height: "calc(100% - 118px)",
+    height: "calc(100% - 134px)",
     overflowY: "auto",
     overflowX: "hidden",
     padding: "14px 16px 90px"
@@ -3488,7 +3487,7 @@ function TaskSections({ tasks, me, onOpen, search }) {
   });
   const keys = ["household", "personalTasks", "shared", "personal", "frenzy"];
   return /*#__PURE__*/<div style={{
-    height: "calc(100% - 118px)",
+    height: "calc(100% - 134px)",
     padding: "14px 16px",
     display: "flex",
     flexDirection: "column",
@@ -3621,7 +3620,7 @@ function QueueView(props) {
   if (section === "frenzy") return /*#__PURE__*/<FrenzyScreen tasks={tasks} me={me} config={config} onToggle={onToggle} onEdit={onEdit} onBack={() => setSection(null)} />;
   const sectionTitle = SECTION_LABELS[section];
   return /*#__PURE__*/<div style={{
-    height: "calc(100% - 118px)",
+    height: "calc(100% - 134px)",
     display: "flex",
     flexDirection: "column",
     background: C.card
