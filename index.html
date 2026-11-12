@@ -139,7 +139,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v75";
+const APP_VERSION = "v76";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -1176,6 +1176,10 @@ function App() {
     onFillDetails: t => setDetailsTask(t),
     onSortProject: sortProject,
     cleared: todayCleared,
+    onResetProgress: items => {
+      const keys = items.map(todayKey);
+      saveToday("Reset progress", todayItems.filter(it => !keys.includes(todayKey(it))), 0);
+    },
     onClearDone: items => {
       const keys = items.map(todayKey);
       saveToday("Clear done", todayItems.filter(it => !keys.includes(todayKey(it))), todayCleared + keys.length);
@@ -3599,6 +3603,7 @@ function ToDoList({
   onFillDetails,
   onSortProject,
   onClearDone,
+  onResetProgress,
   cleared
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
@@ -4188,6 +4193,7 @@ function ToDoList({
     onToggleTodayTaskDone: onToggleTodayTaskDone,
     onConvertNote: onConvertNote,
     onClearDone: onClearDone,
+    onResetProgress: onResetProgress,
     cleared: cleared || 0
   }), /*#__PURE__*/React.createElement("div", {
     style: {
@@ -4716,6 +4722,7 @@ function TodayPlanSection({
   onToggleTodayTaskDone,
   onConvertNote,
   onClearDone,
+  onResetProgress,
   cleared
 }) {
   const [newSundry, setNewSundry] = useState("");
@@ -4781,7 +4788,22 @@ function TodayPlanSection({
       minWidth: 34,
       textAlign: "right"
     }
-  }, doneItems.length + cleared >= items.length + cleared ? "Done ✓" : `${doneItems.length + cleared}/${items.length + cleared}`)), /*#__PURE__*/React.createElement("div", {
+  }, doneItems.length + cleared >= items.length + cleared ? "Done ✓" : `${doneItems.length + cleared}/${items.length + cleared}`), doneItems.length + cleared > 0 &&
+  /*#__PURE__*/
+  /*#__PURE__*/
+  React.createElement("button", {
+    onClick: () => onResetProgress(doneItems),
+    style: {
+      border: "none",
+      background: "none",
+      padding: 0,
+      fontSize: 11,
+      color: C.inkSoft,
+      textDecoration: "underline",
+      cursor: "pointer",
+      whiteSpace: "nowrap"
+    }
+  }, "Reset bar")), /*#__PURE__*/React.createElement("div", {
     style: {
       flex: 1
     }

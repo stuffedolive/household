@@ -79,7 +79,7 @@ const saveSkipped = (person, list) => {
     localStorage.setItem(skipStorageKey(person), JSON.stringify(list));
   } catch (e) {}
 };
-const APP_VERSION = "v75";
+const APP_VERSION = "v76";
 const PEOPLE = {
   jade: "Jade",
   john: "John"
@@ -975,7 +975,10 @@ function App() {
       setEditing(null);
       setConvertNote(n);
       setShowForm(true);
-    }} onFillDetails={t => setDetailsTask(t)} onSortProject={sortProject} cleared={todayCleared} onClearDone={items => {
+    }} onFillDetails={t => setDetailsTask(t)} onSortProject={sortProject} cleared={todayCleared} onResetProgress={items => {
+      const keys = items.map(todayKey);
+      saveToday("Reset progress", todayItems.filter(it => !keys.includes(todayKey(it))), 0);
+    }} onClearDone={items => {
       const keys = items.map(todayKey);
       saveToday("Clear done", todayItems.filter(it => !keys.includes(todayKey(it))), todayCleared + keys.length);
     }} /> : /*#__PURE__*/<QueueView tasks={visibleTasks} me={me} filter={filter} setFilter={setFilter} choreFilter={choreFilter} setChoreFilter={setChoreFilter} projectFilter={projectFilter} setProjectFilter={setProjectFilter} searchSlot={/*#__PURE__*/<SearchBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} searchResults={searchResults} onSelectSearchResult={t => {
@@ -2547,6 +2550,7 @@ function ToDoList({
   onFillDetails,
   onSortProject,
   onClearDone,
+  onResetProgress,
   cleared
 }) {
   const [overwhelmed, setOverwhelmed] = useState(false);
@@ -3029,7 +3033,7 @@ function ToDoList({
     overflowY: "auto",
     overflowX: "hidden",
     padding: "14px 16px 90px"
-  }}><PlanHeader scheduling={overwhelmed} badge={newForBadge} onToggleSchedule={() => setOverwhelmed(o => !o)} onReset={onResetToday} />{scheduleView}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} onClearDone={onClearDone} cleared={cleared || 0} /><div style={{
+  }}><PlanHeader scheduling={overwhelmed} badge={newForBadge} onToggleSchedule={() => setOverwhelmed(o => !o)} onReset={onResetToday} />{scheduleView}<TodayPlanSection items={todayItems} tasksById={tasksById} onAddSundry={onAddSundry} onAddExisting={onAddTaskToToday} onToggleSundry={onToggleSundry} onDeleteSundry={onDeleteSundry} onReorderBucketFull={onReorderTodayBucketFull} onRemoveTask={onRemoveTaskFromToday} onSetBucket={onSetTodayBucket} onToggle={onToggle} onToggleAction={onToggleAction} onEdit={onEdit} onToggleTodayTaskDone={onToggleTodayTaskDone} onConvertNote={onConvertNote} onClearDone={onClearDone} onResetProgress={onResetProgress} cleared={cleared || 0} /><div style={{
       display: "flex",
       justifyContent: "space-between",
       alignItems: "baseline",
@@ -3304,6 +3308,7 @@ function TodayPlanSection({
   onToggleTodayTaskDone,
   onConvertNote,
   onClearDone,
+  onResetProgress,
   cleared
 }) {
   const [newSundry, setNewSundry] = useState("");
@@ -3356,7 +3361,16 @@ function TodayPlanSection({
         color: C.inkSoft,
         minWidth: 34,
         textAlign: "right"
-      }}>{doneItems.length + cleared >= items.length + cleared ? "Done ✓" : `${doneItems.length + cleared}/${items.length + cleared}`}</span></div>}<div style={{
+      }}>{doneItems.length + cleared >= items.length + cleared ? "Done ✓" : `${doneItems.length + cleared}/${items.length + cleared}`}</span>{doneItems.length + cleared > 0 && /*#__PURE__*/<button onClick={() => onResetProgress(doneItems)} style={{
+        border: "none",
+        background: "none",
+        padding: 0,
+        fontSize: 11,
+        color: C.inkSoft,
+        textDecoration: "underline",
+        cursor: "pointer",
+        whiteSpace: "nowrap"
+      }}>Reset bar</button>}</div>}<div style={{
       flex: 1
     }}>{nowItems.length === 0 && /*#__PURE__*/<div style={{
         color: C.inkSoft,
